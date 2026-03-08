@@ -1,0 +1,13 @@
+{
+  "projects": {
+    "default": "myapp-e5237"
+  },
+  "targets": {},
+  "etags": {
+    "myapp-e5237": {
+      "extensionInstances": {
+        "firestore-send-email": "36f2b0e42ef1103239f508a2874b55b411a28bd43ecddcdafae8994f6870c42e"
+      }
+    }
+  }
+}

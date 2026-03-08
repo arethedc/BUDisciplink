@@ -1,0 +1,479 @@
+Analyzing guidance_violation_review_page.dart...
+warning - The declaration '_dynamicDateText' isn't referenced -
+       lib\pages\guidance_admin\guidance_violation_review_page.dart:50:10 -
+       unused_element
+warning - The declaration '_countStatuses' isn't referenced -
+       lib\pages\guidance_admin\guidance_violation_review_page.dart:209:17 -
+       unused_element
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:454:71 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:479:50 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:482:35 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:517:55 -
+          deprecated_member_use
+   info - Statements in an if should be enclosed in a block -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:544:30 -
+          curly_braces_in_flow_control_structures
+   info - Statements in an if should be enclosed in a block -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:545:38 -
+          curly_braces_in_flow_control_structures
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:550:22 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:552:41 -
+          deprecated_member_use
+   info - Statements in an if should be enclosed in a block -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:564:29 -
+          curly_braces_in_flow_control_structures
+   info - Statements in an if should be enclosed in a block -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:565:37 -
+          curly_braces_in_flow_control_structures
+   info - Statements in an if should be enclosed in a block -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:566:35 -
+          curly_braces_in_flow_control_structures
+   info - Statements in an if should be enclosed in a block -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:567:33 -
+          curly_braces_in_flow_control_structures
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:572:22 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:574:41 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:596:44 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:598:78 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:600:43 -
+          deprecated_member_use
+   info - Statements in an if should be enclosed in a block -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:638:34 -
+          curly_braces_in_flow_control_structures
+   info - Statements in an if should be enclosed in a block -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:639:36 -
+          curly_braces_in_flow_control_structures
+   info - Statements in an if should be enclosed in a block -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:640:36 -
+          curly_braces_in_flow_control_structures
+   info - Statements in an if should be enclosed in a block -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:641:38 -
+          curly_braces_in_flow_control_structures
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:645:46 -
+          deprecated_member_use
+warning - The declaration '_HeaderBlock' isn't referenced -
+       lib\pages\guidance_admin\guidance_violation_review_page.dart:673:7 -
+       unused_element
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:691:48 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:694:33 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:713:43 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:797:48 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:837:42 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:866:48 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:869:33 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:887:35 -
+          deprecated_member_use
+warning - The declaration '_Toolbar' isn't referenced -
+       lib\pages\guidance_admin\guidance_violation_review_page.dart:905:7 -
+       unused_element
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:956:48 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:959:33 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:981:60 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:985:60 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:1032:75 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:1036:42 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:1037:42 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:1097:48 -
+          deprecated_member_use
+warning - The declaration '_DesktopTablePanel' isn't referenced -
+       lib\pages\guidance_admin\guidance_violation_review_page.dart:1126:7 -
+       unused_element
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:1160:48 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:1163:33 -
+          deprecated_member_use
+   info - Unnecessary use of multiple underscores -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:1186:37 -
+          unnecessary_underscores
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:1238:35 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:1240:54 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:1326:46 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:1328:65 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:1328:98 -
+          deprecated_member_use
+warning - The declaration '_MobileCardsPanel' isn't referenced -
+       lib\pages\guidance_admin\guidance_violation_review_page.dart:1428:7 -
+       unused_element
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:1460:48 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:1463:33 -
+          deprecated_member_use
+   info - Unnecessary use of multiple underscores -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:1484:37 -
+          unnecessary_underscores
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:1540:50 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:1543:35 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:1558:41 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:1560:60 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:1581:41 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:1583:60 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:1640:44 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:1641:46 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:1648:44 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:1649:46 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:1743:47 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:1745:66 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:1797:39 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:1799:58 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:1866:62 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:1954:62 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:2045:48 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:2048:33 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:2063:41 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:2065:60 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:2088:53 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:2138:45 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:2140:64 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:2210:66 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:2218:46 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:2220:53 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:2245:48 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:2247:55 -
+          deprecated_member_use
+   info - Don't use 'BuildContext's across async gaps, guarded by an unrelated
+          'mounted' check -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:2409:45 -
+          use_build_context_synchronously
+   info - Don't use 'BuildContext's across async gaps, guarded by an unrelated
+          'mounted' check -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:2412:52 -
+          use_build_context_synchronously
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:2512:51 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:2512:84 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:2515:53 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:2515:85 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:2706:49 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:2728:54 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:2731:71 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:2757:51 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:2759:70 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:2791:51 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:2802:51 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:2813:51 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:2916:28 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:2917:27 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:2921:30 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:2922:29 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:2953:48 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:2956:33 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:3002:37 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:3004:56 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:3089:28 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:3090:30 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:3095:28 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:3096:30 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:3101:28 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:3102:30 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:3107:28 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:3108:30 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:3114:28 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:3115:30 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:3120:28 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:3121:30 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:3130:35 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:3130:72 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:3133:38 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:3133:78 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:3135:34 -
+          deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues()
+          to avoid precision loss -
+          lib\pages\guidance_admin\guidance_violation_review_page.dart:3135:72 -
+          deprecated_member_use
+warning - The declaration '_ErrorState' isn't referenced -
+       lib\pages\guidance_admin\guidance_violation_review_page.dart:3160:7 -
+       unused_element
+124 issues found. (ran in 1.3s)
