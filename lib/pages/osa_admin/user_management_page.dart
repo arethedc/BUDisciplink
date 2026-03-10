@@ -29,8 +29,11 @@ class UserManagementPage extends StatefulWidget {
 class _UserManagementPageState extends State<UserManagementPage>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
-  late final Stream<QuerySnapshot<Map<String, dynamic>>> _usersStream;
+  late final Stream<QuerySnapshot<Map<String, dynamic>>> _allUsersStream;
+  late final Stream<QuerySnapshot<Map<String, dynamic>>> _studentUsersStream;
   final _searchCtrl = TextEditingController();
+  Timer? _searchDebounce;
+  String _searchQuery = '';
 
   Map<String, dynamic>? _currentUserData;
   bool _loadingAdminData = true;
@@ -59,6 +62,14 @@ class _UserManagementPageState extends State<UserManagementPage>
   String? _detailEmployeeNoAvailabilityError;
   String _detailOriginalStudentNo = '';
   String _detailOriginalEmployeeNo = '';
+  List<QueryDocumentSnapshot<Map<String, dynamic>>>? _filterCacheSourceDocs;
+  String _filterCacheType = '';
+  String _filterCacheQuery = '';
+  String _filterCachePendingFilter = '';
+  String _filterCacheAdminRole = '';
+  String _filterCacheAdminDept = '';
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _filterCacheResult =
+      const [];
 
   // Design Theme
   static const primaryColor = Color(0xFF1B5E20);
@@ -71,7 +82,13 @@ class _UserManagementPageState extends State<UserManagementPage>
   void initState() {
     super.initState();
     _tabController = TabController(length: 3, vsync: this);
-    _usersStream = FirebaseFirestore.instance.collection('users').snapshots();
+    _allUsersStream = FirebaseFirestore.instance
+        .collection('users')
+        .snapshots();
+    _studentUsersStream = FirebaseFirestore.instance
+        .collection('users')
+        .where('role', isEqualTo: 'student')
+        .snapshots();
     _loadAdminData();
   }
 
@@ -97,6 +114,7 @@ class _UserManagementPageState extends State<UserManagementPage>
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
     _detailStudentNoDebounce?.cancel();
     _detailEmployeeNoDebounce?.cancel();
     _tabController.dispose();
@@ -755,6 +773,100 @@ class _UserManagementPageState extends State<UserManagementPage>
     return _asDate(data['updatedAt']) ?? _asDate(data['createdAt']);
   }
 
+  void _onSearchInputChanged(String value) {
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 220), () {
+      if (!mounted) return;
+      final next = value.trim().toLowerCase();
+      if (_searchQuery == next) return;
+      setState(() => _searchQuery = next);
+    });
+  }
+
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _filteredUsersMemoized({
+    required List<QueryDocumentSnapshot<Map<String, dynamic>>> rawDocs,
+    required String type,
+    required String query,
+    required String adminRole,
+    required String adminDept,
+  }) {
+    final cacheHit =
+        identical(_filterCacheSourceDocs, rawDocs) &&
+        _filterCacheType == type &&
+        _filterCacheQuery == query &&
+        _filterCachePendingFilter == _pendingStudentFilter &&
+        _filterCacheAdminRole == adminRole &&
+        _filterCacheAdminDept == adminDept;
+    if (cacheHit) {
+      return _filterCacheResult;
+    }
+
+    final filtered =
+        rawDocs.where((doc) {
+          final data = doc.data();
+          final role = (data['role'] ?? '').toString().trim().toLowerCase();
+          final accountStatus = _readAccountStatus(data, role: role);
+          final studentVerification = _readStudentVerification(
+            data,
+            role: role,
+          );
+          final userDept = (data['employeeProfile']?['department'] ?? '')
+              .toString();
+          final studentCollege = (data['studentProfile']?['collegeId'] ?? '')
+              .toString();
+
+          if (adminRole == 'department_admin' || adminRole == 'dean') {
+            if (role == 'student') {
+              if (studentCollege != adminDept && userDept != adminDept) {
+                return false;
+              }
+            } else {
+              if (userDept != adminDept) return false;
+            }
+          }
+
+          if (type == 'staff' && role == 'student') return false;
+          if (type == 'active_staff' && role == 'student') return false;
+          if (type == 'inactive_staff' && role == 'student') return false;
+          if (type == 'active_staff' && accountStatus != 'active') return false;
+          if (type == 'inactive_staff' && accountStatus != 'inactive')
+            return false;
+          if ((type == 'students' || type == 'active_students') &&
+              role != 'student') {
+            return false;
+          }
+          if (type == 'active_students' &&
+              !(accountStatus == 'active' &&
+                  studentVerification == 'verified')) {
+            return false;
+          }
+          if (type == 'pending' &&
+              !(role == 'student' &&
+                  accountStatus == 'active' &&
+                  studentVerification == _pendingStudentFilter)) {
+            return false;
+          }
+
+          return _matchesSearch(data, query);
+        }).toList()..sort((a, b) {
+          final ad = _docSortDate(a.data());
+          final bd = _docSortDate(b.data());
+          if (ad == null && bd == null) return 0;
+          if (ad == null) return 1;
+          if (bd == null) return -1;
+          return bd.compareTo(ad);
+        });
+
+    _filterCacheSourceDocs = rawDocs;
+    _filterCacheType = type;
+    _filterCacheQuery = query;
+    _filterCachePendingFilter = _pendingStudentFilter;
+    _filterCacheAdminRole = adminRole;
+    _filterCacheAdminDept = adminDept;
+    _filterCacheResult = filtered;
+    return filtered;
+  }
+
   String _randomPassword() {
     const chars =
         'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789@#%';
@@ -1325,16 +1437,18 @@ class _UserManagementPageState extends State<UserManagementPage>
               ),
               contentPadding: EdgeInsets.zero,
             ),
-            onChanged: (_) => setState(() {}),
+            onChanged: _onSearchInputChanged,
           ),
           tabs: showStudentsOnly
               ? TabBar(
                   controller: _tabController,
-                  onTap: (_) {
+                  onTap: (index) {
                     if (_selectedUserId != null || _detailEditing) {
                       _clearDetailSelection();
                     } else {
-                      setState(() {});
+                      if (_tabController.index != index) {
+                        setState(() {});
+                      }
                     }
                   },
                   isScrollable: true,
@@ -1360,11 +1474,13 @@ class _UserManagementPageState extends State<UserManagementPage>
                 )
               : TabBar(
                   controller: _tabController,
-                  onTap: (_) {
+                  onTap: (index) {
                     if (_selectedUserId != null || _detailEditing) {
                       _clearDetailSelection();
                     } else {
-                      setState(() {});
+                      if (_tabController.index != index) {
+                        setState(() {});
+                      }
                     }
                   },
                   isScrollable: true,
@@ -1410,24 +1526,20 @@ class _UserManagementPageState extends State<UserManagementPage>
       return const Center(child: CircularProgressIndicator());
     }
 
+    final stream = widget.studentsOnlyScope
+        ? _studentUsersStream
+        : _allUsersStream;
+
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: _usersStream,
+      stream: stream,
       builder: (context, snap) {
         if (snap.hasError) return Center(child: Text('Error: ${snap.error}'));
         if (!snap.hasData) {
           return const Center(child: CircularProgressIndicator());
         }
 
-        final q = _searchCtrl.text.trim().toLowerCase();
-        final allDocs = snap.data!.docs.toList()
-          ..sort((a, b) {
-            final ad = _docSortDate(a.data());
-            final bd = _docSortDate(b.data());
-            if (ad == null && bd == null) return 0;
-            if (ad == null) return 1;
-            if (bd == null) return -1;
-            return bd.compareTo(ad);
-          });
+        final q = _searchQuery;
+        final allDocs = snap.data!.docs;
 
         final adminRole = (_currentUserData?['role'] ?? '')
             .toString()
@@ -1437,54 +1549,13 @@ class _UserManagementPageState extends State<UserManagementPage>
             (_currentUserData?['employeeProfile']?['department'] ?? '')
                 .toString();
 
-        final filtered = allDocs.where((doc) {
-          final data = doc.data();
-          final role = (data['role'] ?? '').toString().trim().toLowerCase();
-          final accountStatus = _readAccountStatus(data, role: role);
-          final studentVerification = _readStudentVerification(
-            data,
-            role: role,
-          );
-          final userDept = (data['employeeProfile']?['department'] ?? '')
-              .toString();
-          final studentCollege = (data['studentProfile']?['collegeId'] ?? '')
-              .toString();
-
-          if (adminRole == 'department_admin' || adminRole == 'dean') {
-            if (role == 'student') {
-              if (studentCollege != adminDept && userDept != adminDept) {
-                return false;
-              }
-            } else {
-              if (userDept != adminDept) return false;
-            }
-          }
-
-          if (type == 'staff' && role == 'student') return false;
-          if (type == 'active_staff' && role == 'student') return false;
-          if (type == 'inactive_staff' && role == 'student') return false;
-          if (type == 'active_staff' && accountStatus != 'active') return false;
-          if (type == 'inactive_staff' && accountStatus != 'inactive') {
-            return false;
-          }
-          if ((type == 'students' || type == 'active_students') &&
-              role != 'student') {
-            return false;
-          }
-          if (type == 'active_students' &&
-              !(accountStatus == 'active' &&
-                  studentVerification == 'verified')) {
-            return false;
-          }
-          if (type == 'pending' &&
-              !(role == 'student' &&
-                  accountStatus == 'active' &&
-                  studentVerification == _pendingStudentFilter)) {
-            return false;
-          }
-
-          return _matchesSearch(data, q);
-        }).toList();
+        final filtered = _filteredUsersMemoized(
+          rawDocs: allDocs,
+          type: type,
+          query: q,
+          adminRole: adminRole,
+          adminDept: adminDept,
+        );
 
         if (filtered.isEmpty) {
           return Center(

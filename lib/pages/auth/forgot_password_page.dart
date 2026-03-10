@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
 
 class ForgotPasswordPage extends StatefulWidget {
@@ -35,6 +36,26 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
     return v.contains('@') && v.contains('.');
   }
 
+  String _webResetContinueUrl(String email) {
+    final configured = const String.fromEnvironment(
+      'PASSWORD_RESET_CONTINUE_URL',
+    ).trim();
+    final baseContinueUrl = configured.isNotEmpty
+        ? configured
+        : '${Uri.base.origin}/#/set-password';
+    final separator = baseContinueUrl.contains('?') ? '&' : '?';
+    return
+        '$baseContinueUrl${separator}prefillEmail='
+        '${Uri.encodeComponent(email)}';
+  }
+
+  ActionCodeSettings _webResetSettings(String email) {
+    return ActionCodeSettings(
+      url: _webResetContinueUrl(email),
+      handleCodeInApp: true,
+    );
+  }
+
   Future<void> _sendResetLink() async {
     if (_loading) return;
 
@@ -55,26 +76,68 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
     setState(() => _loading = true);
 
     try {
-      if (kIsWeb) {
-        final baseContinueUrl = '${Uri.base.origin}/#/set-password';
-        final separator = baseContinueUrl.contains('?') ? '&' : '?';
-        final continueUrl = '$baseContinueUrl${separator}prefillEmail='
-            '${Uri.encodeComponent(email)}';
-        final settings = ActionCodeSettings(
-          url: continueUrl,
-          handleCodeInApp: true,
+      String action = 'reset_password';
+      try {
+        final callable = FirebaseFunctions.instanceFor(
+          region: 'asia-east1',
+        ).httpsCallable('resolveForgotPasswordFlow');
+        final res = await callable.call(<String, dynamic>{'email': email});
+        final data = (res.data as Map?) ?? const <String, dynamic>{};
+        action = (data['action'] ?? 'reset_password').toString().trim();
+      } catch (_) {}
+
+      if (action == 'needs_email_verification' ||
+          action == 'needs_activation') {
+        if (!mounted) return;
+        Navigator.pushNamed(
+          context,
+          '/forgot-password-assist',
+          arguments: <String, dynamic>{
+            'email': email,
+            'mode': action == 'needs_activation'
+                ? 'activation'
+                : 'verify_email',
+          },
         );
-        await FirebaseAuth.instance.sendPasswordResetEmail(
-          email: email,
-          actionCodeSettings: settings,
-        );
-      } else {
-        await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
+        return;
+      }
+
+      var sentViaCallable = false;
+      try {
+        final callable = FirebaseFunctions.instanceFor(
+          region: 'asia-east1',
+        ).httpsCallable('sendPublicPasswordResetLink');
+        await callable.call(<String, dynamic>{
+          'email': email,
+          if (kIsWeb) 'continueUrl': _webResetContinueUrl(email),
+        });
+        sentViaCallable = true;
+      } catch (_) {}
+
+      if (!sentViaCallable) {
+        if (kIsWeb) {
+          try {
+            await FirebaseAuth.instance.sendPasswordResetEmail(
+              email: email,
+              actionCodeSettings: _webResetSettings(email),
+            );
+          } on FirebaseAuthException catch (e) {
+            final fallbackToDefault =
+                e.code == 'invalid-continue-uri' ||
+                e.code == 'unauthorized-continue-uri' ||
+                e.code == 'missing-continue-uri';
+            if (!fallbackToDefault) rethrow;
+            await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
+          }
+        } else {
+          await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
+        }
       }
 
       if (!mounted) return;
       setState(() {
-        _infoMessage = "Password reset link sent. Please check your email inbox.";
+        _infoMessage =
+            "Password reset link sent. Please check your email inbox.";
       });
 
       ScaffoldMessenger.of(context).showSnackBar(
@@ -95,9 +158,9 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
         _emailError = msg;
       });
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(msg), backgroundColor: Colors.red),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(msg), backgroundColor: Colors.red));
     } catch (e) {
       if (!mounted) return;
 
@@ -121,16 +184,11 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
     return InputDecoration(
       labelText: label,
       errorText: errorText,
-      labelStyle: const TextStyle(
-        color: hint,
-        fontWeight: FontWeight.w700,
-      ),
+      labelStyle: const TextStyle(color: hint, fontWeight: FontWeight.w700),
       prefixIcon: Icon(icon, color: primary.withValues(alpha: 0.85)),
       filled: true,
       fillColor: Colors.white,
-      border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
-      ),
+      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(12),
         borderSide: const BorderSide(color: primary, width: 1.6),
@@ -172,7 +230,9 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
                     decoration: BoxDecoration(
                       color: primary.withValues(alpha: 0.12),
                       shape: BoxShape.circle,
-                      border: Border.all(color: primary.withValues(alpha: 0.18)),
+                      border: Border.all(
+                        color: primary.withValues(alpha: 0.18),
+                      ),
                     ),
                     child: const Icon(
                       Icons.lock_reset_rounded,
@@ -249,20 +309,20 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
                       ),
                       child: _loading
                           ? const SizedBox(
-                        height: 18,
-                        width: 18,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: Colors.white,
-                        ),
-                      )
+                              height: 18,
+                              width: 18,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
                           : const Text(
-                        "SEND RESET LINK",
-                        style: TextStyle(
-                          fontWeight: FontWeight.w900,
-                          fontSize: 15,
-                        ),
-                      ),
+                              "SEND RESET LINK",
+                              style: TextStyle(
+                                fontWeight: FontWeight.w900,
+                                fontSize: 15,
+                              ),
+                            ),
                     ),
                   ),
 
@@ -275,12 +335,17 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
                       decoration: BoxDecoration(
                         color: const Color(0xFFE3F2E3),
                         borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: primary.withValues(alpha: 0.18)),
+                        border: Border.all(
+                          color: primary.withValues(alpha: 0.18),
+                        ),
                       ),
                       child: Row(
                         children: [
-                          Icon(Icons.info_outline_rounded,
-                              color: primary.withValues(alpha: 0.9), size: 18),
+                          Icon(
+                            Icons.info_outline_rounded,
+                            color: primary.withValues(alpha: 0.9),
+                            size: 18,
+                          ),
                           const SizedBox(width: 10),
                           Expanded(
                             child: Text(

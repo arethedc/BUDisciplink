@@ -105,7 +105,15 @@ class RoleRouter {
         if (!context.mounted) return;
       }
       if (!context.mounted) return;
-      Navigator.pushNamedAndRemoveUntil(context, '/verify-email', (r) => false);
+      Navigator.pushNamedAndRemoveUntil(
+        context,
+        '/verify-email',
+        (r) => false,
+        arguments: {
+          'source': 'logged_unverified',
+          'prefillEmail': freshUser.email ?? '',
+        },
+      );
       return;
     }
 

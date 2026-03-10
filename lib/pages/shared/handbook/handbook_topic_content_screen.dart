@@ -3,7 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'dart:typed_data';
+import 'handbook_ai_assistant_sheet.dart';
 
 class HandbookTopicContentScreen extends StatefulWidget {
   final HandbookTopicDoc topic;
@@ -50,7 +50,8 @@ class _HandbookTopicContentScreenState
       ..addAll(
         blocks.whereType<Map>().map((block) {
           final normalized = Map<String, dynamic>.from(block);
-          normalized['_id'] = (normalized['_id'] ?? '').toString().trim().isEmpty
+          normalized['_id'] =
+              (normalized['_id'] ?? '').toString().trim().isEmpty
               ? _nextBlockId()
               : normalized['_id'];
           return normalized;
@@ -130,11 +131,8 @@ class _HandbookTopicContentScreenState
     if (bytes == null || bytes.isEmpty) {
       throw Exception('No file bytes returned. Please try another image.');
     }
-    final name =
-        (picked.name.isNotEmpty ? picked.name : 'image.jpg').replaceAll(
-          RegExp(r'[^a-zA-Z0-9._-]'),
-          '_',
-        );
+    final name = (picked.name.isNotEmpty ? picked.name : 'image.jpg')
+        .replaceAll(RegExp(r'[^a-zA-Z0-9._-]'), '_');
     final path =
         'handbook_images/${widget.topic.id}/${DateTime.now().millisecondsSinceEpoch}_$name';
 
@@ -217,7 +215,8 @@ class _HandbookTopicContentScreenState
     final width = MediaQuery.of(context).size.width;
     final scale = (width / 430).clamp(1.0, 1.2);
     final pad = (16.0 * scale).clamp(16.0, 24.0);
-    final showEmbeddedHeader = widget.embedded && (widget.manageMode || width < 900);
+    final showEmbeddedHeader =
+        widget.embedded && (widget.manageMode || width < 900);
 
     final content = Container(
       color: _backgroundColor,
@@ -232,8 +231,7 @@ class _HandbookTopicContentScreenState
                   children: [
                     IconButton(
                       onPressed:
-                          widget.onBack ??
-                          () => Navigator.maybePop(context),
+                          widget.onBack ?? () => Navigator.maybePop(context),
                       icon: const Icon(Icons.arrow_back, color: Colors.white),
                     ),
                     const SizedBox(width: 6),
@@ -253,9 +251,7 @@ class _HandbookTopicContentScreenState
                     ),
                     if (widget.manageMode)
                       TextButton(
-                        onPressed: _saving
-                            ? null
-                            : _openDraftForEdit,
+                        onPressed: _saving ? null : _openDraftForEdit,
                         style: TextButton.styleFrom(
                           foregroundColor: Colors.white,
                         ),
@@ -267,7 +263,9 @@ class _HandbookTopicContentScreenState
                             ? null
                             : () async {
                                 final snapshot = await _contentRef.get();
-                                await _saveDraftContent(hasDoc: snapshot.exists);
+                                await _saveDraftContent(
+                                  hasDoc: snapshot.exists,
+                                );
                               },
                         style: TextButton.styleFrom(
                           foregroundColor: Colors.white,
@@ -318,7 +316,8 @@ class _HandbookTopicContentScreenState
                       children: [
                         IconButton(
                           onPressed:
-                              widget.onBack ?? () => Navigator.maybePop(context),
+                              widget.onBack ??
+                              () => Navigator.maybePop(context),
                           icon: const Icon(Icons.arrow_back_rounded, size: 20),
                           tooltip: 'Back to topics',
                         ),
@@ -418,7 +417,8 @@ class _HandbookTopicContentScreenState
                       (data['publishedBlocks'] as List<dynamic>?) ??
                       (data['blocks'] as List<dynamic>? ?? []);
                   final draftBlocks =
-                      (data['draftBlocks'] as List<dynamic>?) ?? publishedBlocks;
+                      (data['draftBlocks'] as List<dynamic>?) ??
+                      publishedBlocks;
                   final blocksForView = publishedBlocks;
 
                   if (!doc.exists && !_editMode) {
@@ -429,6 +429,7 @@ class _HandbookTopicContentScreenState
 
                   if (_editMode) {
                     _initBlocks(draftBlocks);
+                    final messenger = ScaffoldMessenger.of(context);
                     return _EditorBody(
                       blocks: _editBlocks,
                       scale: scale,
@@ -446,7 +447,7 @@ class _HandbookTopicContentScreenState
                           });
                         } catch (e) {
                           if (!mounted) return;
-                          ScaffoldMessenger.of(context).showSnackBar(
+                          messenger.showSnackBar(
                             SnackBar(
                               content: Text('Image upload failed: $e'),
                               backgroundColor: Colors.red.shade700,
@@ -486,7 +487,10 @@ class _HandbookTopicContentScreenState
               Container(
                 width: double.infinity,
                 color: const Color(0xFFE5EFE5),
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 10,
+                ),
                 child: const Text(
                   'Manage Mode: edit draft and publish when ready.',
                   style: TextStyle(
@@ -495,14 +499,28 @@ class _HandbookTopicContentScreenState
                     fontSize: 12.5,
                   ),
                 ),
-            ),
+              ),
           ],
         ),
       ),
     );
 
     if (widget.embedded) return content;
-    return Scaffold(backgroundColor: _backgroundColor, body: content);
+    return Scaffold(
+      backgroundColor: _backgroundColor,
+      body: content,
+      floatingActionButton: widget.manageMode
+          ? null
+          : FloatingActionButton(
+              heroTag: 'handbook_topic_ai_fab',
+              onPressed: () => showHandbookAiAssistantSheet(context),
+              backgroundColor: _topBarColor,
+              foregroundColor: Colors.white,
+              tooltip: 'Open Handbook AI',
+              child: const Icon(Icons.menu_book_rounded),
+            ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
+    );
   }
 }
 
@@ -793,7 +811,8 @@ class _EditorBody extends StatelessWidget {
                           onChanged: (value) => onUpdateText(index, value),
                           maxLines: null,
                           decoration: const InputDecoration(
-                            labelText: 'Optional paragraph under this subsection',
+                            labelText:
+                                'Optional paragraph under this subsection',
                           ),
                         ),
                       ] else ...[
@@ -815,7 +834,7 @@ class _EditorBody extends StatelessWidget {
   }
 }
 
-class _HandbookImagePreview extends StatelessWidget {
+class _HandbookImagePreview extends StatefulWidget {
   final String url;
   final String storagePath;
   final double height;
@@ -827,48 +846,60 @@ class _HandbookImagePreview extends StatelessWidget {
   });
 
   @override
+  State<_HandbookImagePreview> createState() => _HandbookImagePreviewState();
+}
+
+class _HandbookImagePreviewState extends State<_HandbookImagePreview> {
+  late Future<_ResolvedHandbookImage> _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = _resolveHandbookImage(
+      url: widget.url,
+      storagePath: widget.storagePath,
+    );
+  }
+
+  @override
+  void didUpdateWidget(covariant _HandbookImagePreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.url != widget.url ||
+        oldWidget.storagePath != widget.storagePath) {
+      _future = _resolveHandbookImage(
+        url: widget.url,
+        storagePath: widget.storagePath,
+      );
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     return FutureBuilder<_ResolvedHandbookImage>(
-      future: _resolveHandbookImage(url: url, storagePath: storagePath),
+      future: _future,
       builder: (context, snapshot) {
         final resolved = snapshot.data ?? const _ResolvedHandbookImage();
         if (snapshot.connectionState == ConnectionState.waiting &&
-            resolved.url.isEmpty &&
-            resolved.bytes == null) {
+            resolved.url.isEmpty) {
           return Container(
-            height: height,
+            height: widget.height,
             decoration: BoxDecoration(
               color: const Color(0xFFE6E6E6),
               borderRadius: BorderRadius.circular(12),
             ),
-              child: const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+            child: const Center(
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
           );
         }
-        if (resolved.bytes == null && resolved.url.isEmpty) {
+        if (resolved.url.isEmpty) {
           return Container(
-            height: height,
+            height: widget.height,
             decoration: BoxDecoration(
               color: const Color(0xFFE6E6E6),
               borderRadius: BorderRadius.circular(12),
             ),
             child: const Center(child: Text('Image not available')),
-          );
-        }
-
-        if (resolved.bytes != null) {
-          return ClipRRect(
-            borderRadius: BorderRadius.circular(12),
-            child: Image.memory(
-              resolved.bytes!,
-              fit: BoxFit.cover,
-              gaplessPlayback: true,
-              errorBuilder: (_, __, ___) => Container(
-                height: height,
-                color: const Color(0xFFE6E6E6),
-                alignment: Alignment.center,
-                child: const Text('Failed to load image'),
-              ),
-            ),
           );
         }
 
@@ -878,8 +909,8 @@ class _HandbookImagePreview extends StatelessWidget {
             resolved.url,
             fit: BoxFit.cover,
             webHtmlElementStrategy: WebHtmlElementStrategy.prefer,
-            errorBuilder: (_, __, ___) => Container(
-              height: height,
+            errorBuilder: (_, error, stackTrace) => Container(
+              height: widget.height,
               color: const Color(0xFFE6E6E6),
               alignment: Alignment.center,
               child: const Text('Failed to load image'),
@@ -904,44 +935,38 @@ Future<_ResolvedHandbookImage> _resolveHandbookImage({
   required String url,
   required String storagePath,
 }) async {
+  final trimmedUrl = url.trim();
+  if (trimmedUrl.startsWith('http://') || trimmedUrl.startsWith('https://')) {
+    return _ResolvedHandbookImage(url: trimmedUrl);
+  }
+
   final trimmedStoragePath = storagePath.trim();
+  if (trimmedStoragePath.startsWith('http://') ||
+      trimmedStoragePath.startsWith('https://')) {
+    return _ResolvedHandbookImage(url: trimmedStoragePath);
+  }
+
   String? resolvedPath;
   if (trimmedStoragePath.isNotEmpty) {
     resolvedPath = trimmedStoragePath;
   } else {
-    final trimmedUrl = url.trim();
     if (trimmedUrl.startsWith('gs://')) {
       try {
         resolvedPath = FirebaseStorage.instance.refFromURL(trimmedUrl).fullPath;
       } catch (_) {}
-    } else if (trimmedUrl.startsWith('http://') ||
-        trimmedUrl.startsWith('https://')) {
-      resolvedPath = _extractStoragePathFromDownloadUrl(trimmedUrl);
     } else if (trimmedUrl.isNotEmpty && !trimmedUrl.contains('://')) {
       resolvedPath = trimmedUrl;
     }
   }
 
   if (resolvedPath != null && resolvedPath.isNotEmpty) {
+    final ref = FirebaseStorage.instance.ref(resolvedPath);
     try {
-      final ref = FirebaseStorage.instance.ref(resolvedPath);
-      final bytes = await ref.getData(15 * 1024 * 1024);
-      if (bytes != null && bytes.isNotEmpty) {
-        return _ResolvedHandbookImage(
-          url: await ref.getDownloadURL(),
-          bytes: bytes,
-        );
-      }
-    } catch (_) {}
-    try {
-      final refreshed = await FirebaseStorage.instance
-          .ref(resolvedPath)
-          .getDownloadURL();
+      final refreshed = await ref.getDownloadURL();
       return _ResolvedHandbookImage(url: refreshed);
     } catch (_) {}
   }
 
-  final trimmedUrl = url.trim();
   if (trimmedUrl.isEmpty) return const _ResolvedHandbookImage();
 
   if (trimmedUrl.startsWith('gs://')) {
@@ -968,24 +993,10 @@ Future<_ResolvedHandbookImage> _resolveHandbookImage({
   }
 }
 
-String? _extractStoragePathFromDownloadUrl(String rawUrl) {
-  final uri = Uri.tryParse(rawUrl);
-  if (uri == null) return null;
-  if (!uri.host.contains('firebasestorage.googleapis.com')) return null;
-  final path = uri.path;
-  final marker = '/o/';
-  final index = path.indexOf(marker);
-  if (index < 0) return null;
-  final encoded = path.substring(index + marker.length);
-  if (encoded.isEmpty) return null;
-  return Uri.decodeComponent(encoded);
-}
-
 class _ResolvedHandbookImage {
   final String url;
-  final Uint8List? bytes;
 
-  const _ResolvedHandbookImage({this.url = '', this.bytes});
+  const _ResolvedHandbookImage({this.url = ''});
 }
 
 int _subsectionDepth(String number) {

@@ -1441,99 +1441,126 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
     final editingLabel =
         _versionLabelById[_editingVersionId] ?? _editingVersionId ?? '--';
     final editingStatus = _editingVersionStatus ?? 'draft';
+    final normalizedStatus = _statusLabel(editingStatus);
 
     return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
-      ),
-      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-      child: Wrap(
-        spacing: 10,
-        runSpacing: 10,
-        crossAxisAlignment: WrapCrossAlignment.center,
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
+      color: Colors.white,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Icon(Icons.menu_book_rounded, color: _primary, size: 22),
           const Text(
             'Manage Handbook',
             style: TextStyle(
-              color: _textDark,
+              fontSize: 28,
               fontWeight: FontWeight.w900,
-              fontSize: 17,
+              color: _primary,
+              letterSpacing: -0.5,
             ),
           ),
-          _StatusPill(
-            text: 'Active: ${_activeVersionLabel ?? _activeVersionId ?? '--'}',
-            color: _primary,
+          const Text(
+            'Manage sections, topics, and handbook version workflow.',
+            style: TextStyle(
+              color: _hint,
+              fontWeight: FontWeight.w700,
+              fontSize: 14,
+            ),
           ),
-          _StatusPill(
-            text: 'Editing: $editingLabel',
-            color: _statusColor(editingStatus),
+          const SizedBox(height: 10),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                _topStatChip(
+                  'Active Version',
+                  _activeVersionLabel ?? _activeVersionId ?? '--',
+                ),
+                const SizedBox(width: 8),
+                _topStatChip('Editing Version', editingLabel),
+                const SizedBox(width: 8),
+                _topStatChip('Editing Status', normalizedStatus),
+              ],
+            ),
           ),
+          const SizedBox(height: 10),
           if (!_isEditingVersionEditable)
-            const _StatusPill(
-              text: 'Read-only',
-              color: Color(0xFF64748B),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.amber.withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.amber.withValues(alpha: 0.45)),
+              ),
+              child: const Text(
+                'Current editing version is locked. Switch to a Draft version to edit content.',
+                style: TextStyle(
+                  color: Color(0xFF7A5B00),
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
             ),
+          const SizedBox(height: 10),
+          _manageNavBar(),
+          const SizedBox(height: 10),
         ],
       ),
     );
   }
 
   Widget _manageNavBar() {
-    Widget navButton({
-      required int index,
-      required IconData icon,
-      required String label,
-    }) {
-      final selected = _manageTabIndex == index;
-      return Expanded(
-        child: FilledButton.icon(
-          onPressed: () => setState(() => _manageTabIndex = index),
-          style: FilledButton.styleFrom(
-            backgroundColor: selected ? _primary : Colors.white,
-            foregroundColor: selected ? Colors.white : _hint,
-            side: BorderSide(
-              color: selected
-                  ? _primary
-                  : Colors.black.withValues(alpha: 0.14),
-            ),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-            padding: const EdgeInsets.symmetric(vertical: 12),
-          ),
-          icon: Icon(icon, size: 18),
-          label: Text(
-            label,
-            style: const TextStyle(fontWeight: FontWeight.w800),
-          ),
-        ),
-      );
-    }
-
-    return Container(
-      decoration: BoxDecoration(
+    return DefaultTabController(
+      key: ValueKey(_manageTabIndex),
+      length: 2,
+      initialIndex: _manageTabIndex,
+      child: Material(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+        child: TabBar(
+          labelColor: _primary,
+          unselectedLabelColor: Colors.black54,
+          indicatorColor: _primary,
+          indicatorWeight: 2,
+          indicatorSize: TabBarIndicatorSize.tab,
+          dividerColor: Colors.black.withValues(alpha: 0.08),
+          onTap: (index) {
+            if (index == _manageTabIndex) return;
+            setState(() => _manageTabIndex = index);
+          },
+          tabs: const [
+            Tab(text: 'Manage Content'),
+            Tab(text: 'Version Workflow'),
+          ],
+        ),
       ),
-      padding: const EdgeInsets.all(8),
-      child: Row(
-        children: [
-          navButton(
-            index: 0,
-            icon: Icons.menu_book_rounded,
-            label: 'Manage Content',
-          ),
-          const SizedBox(width: 10),
-          navButton(
-            index: 1,
-            icon: Icons.tune_rounded,
-            label: 'Version Workflow',
-          ),
-        ],
+    );
+  }
+
+  Widget _topStatChip(String label, String value) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: _primary.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: _primary.withValues(alpha: 0.16)),
+      ),
+      child: RichText(
+        text: TextSpan(
+          style: const TextStyle(fontFamily: 'Roboto'),
+          children: [
+            TextSpan(
+              text: '$label: ',
+              style: const TextStyle(color: _hint, fontWeight: FontWeight.w700),
+            ),
+            TextSpan(
+              text: value,
+              style: const TextStyle(
+                color: _textDark,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1941,44 +1968,44 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
     if (_manageTabIndex == 0 && !isDesktop && _selectedTopicForContent != null) {
       return Container(
         color: _bg,
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            children: [
-              _pageHeader(),
-              const SizedBox(height: 12),
-              Expanded(child: _contentPanel()),
-            ],
-          ),
+        child: Column(
+          children: [
+            _pageHeader(),
+            const Divider(height: 1),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: _contentPanel(),
+              ),
+            ),
+          ],
         ),
       );
     }
 
     return Container(
       color: _bg,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            _pageHeader(),
-            const SizedBox(height: 12),
-            _manageNavBar(),
-            const SizedBox(height: 12),
-            Expanded(
+      child: Column(
+        children: [
+          _pageHeader(),
+          const Divider(height: 1),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
               child: _manageTabIndex == 1
                   ? _settingsPanel()
                   : (isDesktop
-                        ? Row(
-                            children: [
-                              SizedBox(width: 460, child: _sidebarPanel()),
-                              const SizedBox(width: 14),
-                              Expanded(child: _contentPanel()),
-                            ],
-                          )
-                        : _sidebarPanel()),
+                      ? Row(
+                          children: [
+                            SizedBox(width: 460, child: _sidebarPanel()),
+                            const SizedBox(width: 14),
+                            Expanded(child: _contentPanel()),
+                          ],
+                        )
+                      : _sidebarPanel()),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }

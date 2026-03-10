@@ -484,28 +484,32 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final bool desktopWide = constraints.maxWidth >= 1100;
+        final detailsPaneWidth = (constraints.maxWidth * 0.33)
+            .clamp(320.0, 420.0)
+            .toDouble();
+        final aiDesktopInset = desktopWide && _selectedIndex != null
+            ? detailsPaneWidth + 16
+            : 0.0;
 
         return Scaffold(
           backgroundColor: bg,
+          floatingActionButton: Padding(
+            padding: EdgeInsets.only(right: aiDesktopInset),
+            child: FloatingActionButton(
+              heroTag: 'osa_violation_ai_fab',
+              onPressed: () => showOsaViolationAiAssistantSheet(context),
+              backgroundColor: primaryColor,
+              foregroundColor: Colors.white,
+              tooltip: 'Open OSA AI',
+              child: const Icon(Icons.analytics_rounded),
+            ),
+          ),
+          floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
           body: ModernTableLayout(
-            detailsWidth: (constraints.maxWidth * 0.33)
-                .clamp(320.0, 420.0)
-                .toDouble(),
+            detailsWidth: detailsPaneWidth,
             header: ModernTableHeader(
               title: 'Violation Reviews',
               subtitle: 'Monitor and review student conduct',
-              action: FilledButton.icon(
-                onPressed: () => showOsaViolationAiAssistantSheet(context),
-                style: FilledButton.styleFrom(
-                  backgroundColor: primaryColor,
-                  foregroundColor: Colors.white,
-                ),
-                icon: const Icon(Icons.smart_toy_rounded, size: 18),
-                label: const Text(
-                  'OSA AI',
-                  style: TextStyle(fontWeight: FontWeight.w800),
-                ),
-              ),
               searchBar: TextField(
                 controller: _searchCtrl,
                 onChanged: (_) => setState(() {}),
@@ -2626,6 +2630,7 @@ class _MobileDetailsPage extends StatelessWidget {
     final studentNo = _safeStr(d['studentNo']).isEmpty
         ? '--'
         : _safeStr(d['studentNo']);
+    final studentProgramFuture = _resolveStudentProgramLabel(d, studentUid);
     final caseCode = _safeStr(d['caseCode']).isEmpty
         ? 'No Code'
         : _safeStr(d['caseCode']);
@@ -2770,6 +2775,25 @@ class _MobileDetailsPage extends StatelessWidget {
                                 fontWeight: FontWeight.w700,
                                 fontSize: 14,
                               ),
+                            ),
+                            const SizedBox(height: 2),
+                            FutureBuilder<String>(
+                              future: studentProgramFuture,
+                              initialData: _studentProgramLabelFromCase(d),
+                              builder: (context, snapshot) {
+                                final program =
+                                    _safeStr(snapshot.data).isEmpty
+                                        ? '--'
+                                        : _safeStr(snapshot.data);
+                                return Text(
+                                  'Program: $program',
+                                  style: const TextStyle(
+                                    color: hintColor,
+                                    fontWeight: FontWeight.w700,
+                                    fontSize: 14,
+                                  ),
+                                );
+                              },
                             ),
                           ],
                         ),
@@ -3067,6 +3091,7 @@ class _DetailsPanel extends StatelessWidget {
     final studentNo = _safeStr(d['studentNo']).isEmpty
         ? '--'
         : _safeStr(d['studentNo']);
+    final studentProgramFuture = _resolveStudentProgramLabel(d, studentUid);
     final caseCode = _safeStr(d['caseCode']).isEmpty
         ? 'No Code'
         : _safeStr(d['caseCode']);
@@ -3207,6 +3232,17 @@ class _DetailsPanel extends StatelessWidget {
                         ),
                         const SizedBox(height: 8),
                         _kv('Student No', studentNo),
+                        const SizedBox(height: 8),
+                        FutureBuilder<String>(
+                          future: studentProgramFuture,
+                          initialData: _studentProgramLabelFromCase(d),
+                          builder: (context, snapshot) {
+                            final program = _safeStr(snapshot.data).isEmpty
+                                ? '--'
+                                : _safeStr(snapshot.data);
+                            return _kv('Program', program);
+                          },
+                        ),
                       ],
                     ),
                   ),
@@ -5894,6 +5930,52 @@ class _Tone {
 }
 
 String _safeStr(dynamic v) => (v ?? '').toString().trim();
+
+final Map<String, Future<String>> _studentProgramFutureCache =
+    <String, Future<String>>{};
+
+String _studentProgramLabelFromCase(Map<String, dynamic> data) {
+  final fromCase = _safeStr(
+    data['programId'] ??
+        data['studentProgramId'] ??
+        data['studentProgram'] ??
+        data['program'],
+  );
+  return fromCase.isEmpty ? '--' : fromCase;
+}
+
+Future<String> _resolveStudentProgramLabel(
+  Map<String, dynamic> data,
+  String studentUid,
+) {
+  final fromCase = _studentProgramLabelFromCase(data);
+  if (fromCase != '--') {
+    return Future<String>.value(fromCase);
+  }
+
+  final uid = _safeStr(studentUid);
+  if (uid.isEmpty) {
+    return Future<String>.value('--');
+  }
+
+  return _studentProgramFutureCache.putIfAbsent(uid, () async {
+    final userDoc = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(uid)
+        .get();
+    final userData = userDoc.data() ?? const <String, dynamic>{};
+    final studentProfile =
+        userData['studentProfile'] as Map<String, dynamic>? ??
+        const <String, dynamic>{};
+    final fromUser = _safeStr(
+      studentProfile['programId'] ??
+          studentProfile['program'] ??
+          userData['programId'] ??
+          userData['program'],
+    );
+    return fromUser.isEmpty ? '--' : fromUser;
+  });
+}
 
 String _categoryLabelFromCaseGlobal(Map<String, dynamic> data) {
   final concernValues = <String>{

@@ -32,9 +32,10 @@ class _SignUpPageState extends State<SignUpPage> {
   bool _obscurePass = true;
   bool _obscureConfirm = true;
 
-  String _resolveVerifyContinueUrl() {
+  String _resolveVerifyContinueUrl(String email) {
     if (kIsWeb) {
-      return '${Uri.base.origin}/#/verify-email';
+      final safeEmail = Uri.encodeQueryComponent(email.trim());
+      return '${Uri.base.origin}/#/verify-email?prefillEmail=$safeEmail&source=signup';
     }
     const configured = String.fromEnvironment(
       'SELF_SIGNUP_VERIFY_CONTINUE_URL',
@@ -43,7 +44,7 @@ class _SignUpPageState extends State<SignUpPage> {
   }
 
   Future<void> _sendVerifyEmailUsingSmtp(User user, String email) async {
-    final continueUrl = _resolveVerifyContinueUrl();
+    final continueUrl = _resolveVerifyContinueUrl(email);
 
     if (continueUrl.isNotEmpty) {
       try {
@@ -110,7 +111,12 @@ class _SignUpPageState extends State<SignUpPage> {
 
       // 4) Stay logged in and go to Verify Email page
       if (!mounted) return;
-      Navigator.pushNamedAndRemoveUntil(context, '/verify-email', (r) => false);
+      Navigator.pushNamedAndRemoveUntil(
+        context,
+        '/verify-email',
+        (r) => false,
+        arguments: {'source': 'signup', 'prefillEmail': email},
+      );
     } on FirebaseAuthException catch (e) {
       setState(() => _error = e.message ?? e.code);
     } catch (e) {

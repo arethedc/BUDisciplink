@@ -1,4 +1,5 @@
 import 'package:apps/pages/shared/handbook/handbook_sections_screen.dart';
+import 'package:apps/pages/shared/handbook/handbook_new_layout_page.dart';
 import 'package:apps/pages/shared/notifications/app_notifications_ui.dart';
 import 'package:apps/pages/shared/profile/unified_profile_page.dart';
 import 'package:apps/pages/shared/welcome_screen_page.dart';
@@ -8,7 +9,6 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 import 'osa_home_page.dart';
-import 'osa_violation_review_page.dart';
 
 // ✅ SETTINGS SUB-PAGES (adjust paths to your project)
 import 'academic/academic_years_page.dart';
@@ -16,7 +16,11 @@ import 'handbook_manage_page.dart';
 import 'meeting_schedule_page.dart';
 import 'student_management_page.dart';
 import 'user_management_page.dart';
+import 'violation_analytics_page.dart';
+import 'violation_records_page.dart';
 import 'violation_types_page.dart';
+import 'handbook_docs_editor_page.dart';
+import 'osa_violation_review_page.dart';
 
 class OsaDashboard extends StatefulWidget {
   const OsaDashboard({super.key});
@@ -28,6 +32,8 @@ class OsaDashboard extends StatefulWidget {
 class _OsaDashboardState extends State<OsaDashboard> {
   int _currentIndex = 0;
   bool _showDesktopNotifications = false;
+  ViolationRecordsFilterPreset? _recordsPreset;
+  int _recordsPresetVersion = 0;
 
   // ✅ Settings section open/close
   bool _settingsOpen = false;
@@ -46,7 +52,10 @@ class _OsaDashboardState extends State<OsaDashboard> {
     OsaHomePage(onOpenAcademicSettings: () => _goSettings(4)),
     const HandbookSectionsScreen(),
     const HandbookSectionsScreen(useSidebarDesktop: false),
-    const OsaViolationReviewPage(),
+    ViolationRecordsPage(
+      key: ValueKey('violation-records-$_recordsPresetVersion'),
+      initialFilterPreset: _recordsPreset,
+    ),
 
     // ✅ Settings sub-pages
     const AcademicYearsPage(),
@@ -56,6 +65,18 @@ class _OsaDashboardState extends State<OsaDashboard> {
     const MeetingSchedulePage(),
     const HandbookManagePage(),
     const UnifiedProfilePage(),
+    const HandbookNewLayoutPage(),
+    const HandbookDocsEditorPage(),
+    ViolationAnalyticsPage(
+      onOpenRecords: (preset) {
+        setState(() {
+          _recordsPreset = preset;
+          _recordsPresetVersion++;
+          _currentIndex = 3;
+        });
+      },
+    ),
+    const OsaViolationReviewPage(),
   ];
 
   String _pageTitle() {
@@ -67,7 +88,7 @@ class _OsaDashboardState extends State<OsaDashboard> {
       case 2:
         return "Student Handbook (Classic)";
       case 3:
-        return "Violation Reviews";
+        return "Violation Records";
 
       // ✅ Settings pages
       case 4:
@@ -84,6 +105,14 @@ class _OsaDashboardState extends State<OsaDashboard> {
         return "Manage Handbook";
       case 10:
         return "Profile";
+      case 11:
+        return "Student Handbook (New Layout)";
+      case 12:
+        return "Handbook Docs Editor";
+      case 13:
+        return "Violation Analytics";
+      case 14:
+        return "Violation Review";
 
       default:
         return "OSA Portal";
@@ -106,7 +135,9 @@ class _OsaDashboardState extends State<OsaDashboard> {
   void _go(int i) {
     setState(() {
       _currentIndex = i;
-      if (i == 1 || i == 2 || i == 9) _handbookOpen = true;
+      if (i == 1 || i == 2 || i == 9 || i == 11 || i == 12) {
+        _handbookOpen = true;
+      }
       if (i >= 4 && i <= 8) _settingsOpen = true;
     });
   }
@@ -193,13 +224,17 @@ class _OsaDashboardState extends State<OsaDashboard> {
 
             // ✅ same responsiveness rule as reference
             final bool isDesktop = w >= 900;
-            final bool isPhoneOrTablet = !isDesktop;
+            final double h = constraints.maxHeight;
+            // Treat typical 1366x768 (and nearby compact laptop sizes) as hamburger mode.
+            final bool compactDesktop = isDesktop && (w <= 1450 || h <= 820);
+            final bool showPermanentSidebar = isDesktop && !compactDesktop;
+            final bool useDrawerSidebar = !showPermanentSidebar;
 
             return Scaffold(
               backgroundColor: bg,
 
               // ✅ Drawer only for phone/tablet
-              drawer: isPhoneOrTablet
+              drawer: useDrawerSidebar
                   ? Drawer(
                       child: _MenuPanel(
                         currentIndex: _currentIndex,
@@ -242,7 +277,7 @@ class _OsaDashboardState extends State<OsaDashboard> {
               body: Row(
                 children: [
                   // ✅ Permanent sidebar on desktop
-                  if (isDesktop)
+                  if (showPermanentSidebar)
                     SizedBox(
                       width: 260,
                       child: Material(
@@ -295,7 +330,7 @@ class _OsaDashboardState extends State<OsaDashboard> {
                                     ),
                                     child: Row(
                                       children: [
-                                        if (isPhoneOrTablet)
+                                        if (useDrawerSidebar)
                                           IconButton(
                                             icon: const Icon(
                                               Icons.menu_rounded,
@@ -503,7 +538,9 @@ class _MenuPanel extends StatelessWidget {
                     active:
                         currentIndex == 1 ||
                         currentIndex == 2 ||
-                        currentIndex == 9,
+                        currentIndex == 9 ||
+                        currentIndex == 11 ||
+                        currentIndex == 12,
                     primary: primary,
                     textDark: textDark,
                     hint: hint,
@@ -537,6 +574,24 @@ class _MenuPanel extends StatelessWidget {
                       hint: hint,
                       onTap: () => onSelect(9),
                     ),
+                    _SubItem(
+                      label: 'Handbook New Layout',
+                      icon: Icons.auto_awesome_rounded,
+                      active: currentIndex == 11,
+                      primary: primary,
+                      textDark: textDark,
+                      hint: hint,
+                      onTap: () => onSelect(11),
+                    ),
+                    _SubItem(
+                      label: 'Handbook Docs Editor',
+                      icon: Icons.description_rounded,
+                      active: currentIndex == 12,
+                      primary: primary,
+                      textDark: textDark,
+                      hint: hint,
+                      onTap: () => onSelect(12),
+                    ),
                     const SizedBox(height: 6),
                   ],
                   _SectionLabel(
@@ -545,11 +600,27 @@ class _MenuPanel extends StatelessWidget {
                   ),
                   _MenuItem(
                     icon: Icons.rule_rounded,
-                    label: 'Violation Reviews',
+                    label: 'Violation Review',
+                    active: currentIndex == 14,
+                    primary: primary,
+                    textDark: textDark,
+                    onTap: () => onSelect(14),
+                  ),
+                  _MenuItem(
+                    icon: Icons.assignment_rounded,
+                    label: 'Violation Records',
                     active: currentIndex == 3,
                     primary: primary,
                     textDark: textDark,
                     onTap: () => onSelect(3),
+                  ),
+                  _MenuItem(
+                    icon: Icons.analytics_rounded,
+                    label: 'Violation Analytics',
+                    active: currentIndex == 13,
+                    primary: primary,
+                    textDark: textDark,
+                    onTap: () => onSelect(13),
                   ),
                   const SizedBox(height: 8),
                   Divider(color: primary.withValues(alpha: 0.15), height: 18),

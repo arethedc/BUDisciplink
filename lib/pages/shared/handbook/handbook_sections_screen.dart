@@ -76,6 +76,17 @@ class _HandbookSectionsScreenState extends State<HandbookSectionsScreen> {
         });
   }
 
+  Widget _buildHandbookAiFab({required String heroTag}) {
+    return FloatingActionButton(
+      heroTag: heroTag,
+      onPressed: () => showHandbookAiAssistantSheet(context),
+      backgroundColor: _primary,
+      foregroundColor: Colors.white,
+      tooltip: 'Open Handbook AI',
+      child: const Icon(Icons.menu_book_rounded),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final screenWidth = MediaQuery.of(context).size.width;
@@ -128,459 +139,481 @@ class _HandbookSectionsScreenState extends State<HandbookSectionsScreen> {
     final crossAxisSpacing = isDesktop ? 20.0 : (isTablet ? 16.0 : 0.0);
 
     if (isDesktop && widget.useSidebarDesktop) {
-      return Container(
-        color: bg,
-        child: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
+      return Stack(
+        children: [
+          Container(
+            color: bg,
+            child: SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'College Student Handbook',
-                            style: TextStyle(
-                              fontSize: 26,
-                              fontWeight: FontWeight.w900,
-                              color: _textDark,
-                            ),
+                    Row(
+                      children: [
+                        const Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'College Student Handbook',
+                                style: TextStyle(
+                                  fontSize: 26,
+                                  fontWeight: FontWeight.w900,
+                                  color: _textDark,
+                                ),
+                              ),
+                              SizedBox(height: 4),
+                              Text(
+                                'Sections and topics navigation',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w700,
+                                  color: Color(0xFF8B9489),
+                                ),
+                              ),
+                            ],
                           ),
-                          SizedBox(height: 4),
-                          Text(
-                            'Sections and topics navigation',
-                            style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w700,
-                              color: Color(0xFF8B9489),
-                            ),
-                          ),
-                        ],
-                      ),
+                        ),
+                      ],
                     ),
-                    FilledButton.icon(
-                      onPressed: () => showHandbookAiAssistantSheet(context),
-                      style: FilledButton.styleFrom(
-                        backgroundColor: _primary,
-                        foregroundColor: Colors.white,
-                      ),
-                      icon: const Icon(Icons.smart_toy_rounded, size: 18),
-                      label: const Text(
-                        'Ask Handbook AI',
-                        style: TextStyle(fontWeight: FontWeight.w800),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 14),
-                Expanded(
-                  child: FutureBuilder<String>(
-                    future: _getActiveVersionId(),
-                    builder: (context, metaSnap) {
-                      if (metaSnap.hasError) {
-                        return _CenterMsg(text: "Error: ${metaSnap.error}");
-                      }
-                      if (!metaSnap.hasData) {
-                        return const Center(child: CircularProgressIndicator());
-                      }
-
-                      final versionId = metaSnap.data!;
-                      return StreamBuilder<List<HandbookSectionDoc>>(
-                        stream: _sectionsStream(versionId),
-                        builder: (context, sectionSnap) {
-                          if (sectionSnap.hasError) {
-                            return _CenterMsg(
-                              text: "Firestore error:\n${sectionSnap.error}",
-                            );
+                    const SizedBox(height: 14),
+                    Expanded(
+                      child: FutureBuilder<String>(
+                        future: _getActiveVersionId(),
+                        builder: (context, metaSnap) {
+                          if (metaSnap.hasError) {
+                            return _CenterMsg(text: "Error: ${metaSnap.error}");
                           }
-                          if (!sectionSnap.hasData) {
+                          if (!metaSnap.hasData) {
                             return const Center(
                               child: CircularProgressIndicator(),
                             );
                           }
 
-                          final sections = sectionSnap.data!;
-                          if (sections.isEmpty) {
-                            return const _CenterMsg(text: "No sections found.");
-                          }
-
-                          return StreamBuilder<List<HandbookTopicDoc>>(
-                            stream: _allTopicsStream(versionId),
-                            builder: (context, topicSnap) {
-                              if (topicSnap.hasError) {
+                          final versionId = metaSnap.data!;
+                          return StreamBuilder<List<HandbookSectionDoc>>(
+                            stream: _sectionsStream(versionId),
+                            builder: (context, sectionSnap) {
+                              if (sectionSnap.hasError) {
                                 return _CenterMsg(
                                   text:
-                                      "Failed to load topics:\n${topicSnap.error}",
+                                      "Firestore error:\n${sectionSnap.error}",
                                 );
                               }
-                              if (!topicSnap.hasData) {
+                              if (!sectionSnap.hasData) {
                                 return const Center(
                                   child: CircularProgressIndicator(),
                                 );
                               }
 
-                              final allTopics = topicSnap.data!;
-                              final topicsBySection =
-                                  <String, List<HandbookTopicDoc>>{};
-                              for (final topic in allTopics) {
-                                topicsBySection.putIfAbsent(
-                                  topic.sectionCode,
-                                  () => [],
+                              final sections = sectionSnap.data!;
+                              if (sections.isEmpty) {
+                                return const _CenterMsg(
+                                  text: "No sections found.",
                                 );
-                                topicsBySection[topic.sectionCode]!.add(topic);
                               }
 
-                              final hasSelectedSection =
-                                  _selectedSection != null &&
-                                  sections.any(
-                                    (s) => s.id == _selectedSection!.id,
-                                  );
-                              final activeSection = hasSelectedSection
-                                  ? _selectedSection!
-                                  : sections.first;
-
-                              final hasSelectedTopic =
-                                  _selectedTopic != null &&
-                                  allTopics.any(
-                                    (t) => t.id == _selectedTopic!.id,
-                                  );
-
-                              if (!hasSelectedSection || !hasSelectedTopic) {
-                                HandbookTopicDoc? fallbackTopic;
-                                for (final section in sections) {
-                                  final sectionTopics =
-                                      topicsBySection[section.code] ?? const [];
-                                  if (sectionTopics.isNotEmpty) {
-                                    fallbackTopic = sectionTopics.first;
-                                    break;
+                              return StreamBuilder<List<HandbookTopicDoc>>(
+                                stream: _allTopicsStream(versionId),
+                                builder: (context, topicSnap) {
+                                  if (topicSnap.hasError) {
+                                    return _CenterMsg(
+                                      text:
+                                          "Failed to load topics:\n${topicSnap.error}",
+                                    );
                                   }
-                                }
-                                WidgetsBinding.instance.addPostFrameCallback((
-                                  _,
-                                ) {
-                                  if (!mounted) return;
-                                  setState(() {
-                                    _selectedSection = activeSection;
-                                    _selectedTopic = hasSelectedTopic
-                                        ? _selectedTopic
-                                        : fallbackTopic;
-                                  });
-                                });
-                              }
+                                  if (!topicSnap.hasData) {
+                                    return const Center(
+                                      child: CircularProgressIndicator(),
+                                    );
+                                  }
 
-                              return Row(
-                                children: [
-                                  SizedBox(
-                                    width: 430,
-                                    child: ListView.separated(
-                                      itemCount: sections.length,
-                                      separatorBuilder: (_, _) =>
-                                          const SizedBox(height: 10),
-                                      itemBuilder: (context, i) {
-                                        final section = sections[i];
-                                        final isSectionSelected =
-                                            _selectedSection?.id == section.id;
-                                        final sectionTopics =
-                                            topicsBySection[section.code] ??
-                                            const [];
+                                  final allTopics = topicSnap.data!;
+                                  final topicsBySection =
+                                      <String, List<HandbookTopicDoc>>{};
+                                  for (final topic in allTopics) {
+                                    topicsBySection.putIfAbsent(
+                                      topic.sectionCode,
+                                      () => [],
+                                    );
+                                    topicsBySection[topic.sectionCode]!.add(
+                                      topic,
+                                    );
+                                  }
 
-                                        return Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            _SectionNavTile(
-                                              code: section.code,
-                                              title: section.title,
-                                              selected: isSectionSelected,
-                                              onTap: () {
-                                                setState(() {
-                                                  _selectedSection = section;
-                                                  if (sectionTopics.isEmpty) {
-                                                    return;
-                                                  }
-                                                  _selectedTopic =
-                                                      sectionTopics.first;
-                                                });
-                                              },
-                                            ),
-                                            if (sectionTopics.isNotEmpty) ...[
-                                              const SizedBox(height: 6),
-                                              ...sectionTopics.map(
-                                                (topic) => Padding(
-                                                  padding:
-                                                      const EdgeInsets.only(
-                                                        bottom: 6,
+                                  final hasSelectedSection =
+                                      _selectedSection != null &&
+                                      sections.any(
+                                        (s) => s.id == _selectedSection!.id,
+                                      );
+                                  final activeSection = hasSelectedSection
+                                      ? _selectedSection!
+                                      : sections.first;
+
+                                  final hasSelectedTopic =
+                                      _selectedTopic != null &&
+                                      allTopics.any(
+                                        (t) => t.id == _selectedTopic!.id,
+                                      );
+
+                                  if (!hasSelectedSection ||
+                                      !hasSelectedTopic) {
+                                    HandbookTopicDoc? fallbackTopic;
+                                    for (final section in sections) {
+                                      final sectionTopics =
+                                          topicsBySection[section.code] ??
+                                          const [];
+                                      if (sectionTopics.isNotEmpty) {
+                                        fallbackTopic = sectionTopics.first;
+                                        break;
+                                      }
+                                    }
+                                    WidgetsBinding.instance
+                                        .addPostFrameCallback((_) {
+                                          if (!mounted) return;
+                                          setState(() {
+                                            _selectedSection = activeSection;
+                                            _selectedTopic = hasSelectedTopic
+                                                ? _selectedTopic
+                                                : fallbackTopic;
+                                          });
+                                        });
+                                  }
+
+                                  return Row(
+                                    children: [
+                                      SizedBox(
+                                        width: 430,
+                                        child: ListView.separated(
+                                          itemCount: sections.length,
+                                          separatorBuilder: (_, _) =>
+                                              const SizedBox(height: 10),
+                                          itemBuilder: (context, i) {
+                                            final section = sections[i];
+                                            final isSectionSelected =
+                                                _selectedSection?.id ==
+                                                section.id;
+                                            final sectionTopics =
+                                                topicsBySection[section.code] ??
+                                                const [];
+
+                                            return Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              children: [
+                                                _SectionNavTile(
+                                                  code: section.code,
+                                                  title: section.title,
+                                                  selected: isSectionSelected,
+                                                  onTap: () {
+                                                    setState(() {
+                                                      _selectedSection =
+                                                          section;
+                                                      if (sectionTopics
+                                                          .isEmpty) {
+                                                        return;
+                                                      }
+                                                      _selectedTopic =
+                                                          sectionTopics.first;
+                                                    });
+                                                  },
+                                                ),
+                                                if (sectionTopics
+                                                    .isNotEmpty) ...[
+                                                  const SizedBox(height: 6),
+                                                  ...sectionTopics.map(
+                                                    (topic) => Padding(
+                                                      padding:
+                                                          const EdgeInsets.only(
+                                                            bottom: 6,
+                                                          ),
+                                                      child: _TopicNavTile(
+                                                        code: topic.code,
+                                                        title: topic.title,
+                                                        selected:
+                                                            _selectedTopic
+                                                                ?.id ==
+                                                            topic.id,
+                                                        onTap: () {
+                                                          setState(() {
+                                                            _selectedSection =
+                                                                section;
+                                                            _selectedTopic =
+                                                                topic;
+                                                          });
+                                                        },
                                                       ),
-                                                  child: _TopicNavTile(
-                                                    code: topic.code,
-                                                    title: topic.title,
-                                                    selected:
-                                                        _selectedTopic?.id ==
-                                                        topic.id,
-                                                    onTap: () {
-                                                      setState(() {
-                                                        _selectedSection =
-                                                            section;
-                                                        _selectedTopic = topic;
-                                                      });
-                                                    },
+                                                    ),
                                                   ),
-                                                ),
-                                              ),
-                                            ] else
-                                              const Padding(
-                                                padding: EdgeInsets.only(
-                                                  top: 4,
-                                                  bottom: 2,
-                                                ),
-                                                child: Text(
-                                                  'No topics yet',
-                                                  style: TextStyle(
-                                                    color: Color(0xFF8B9489),
-                                                    fontWeight: FontWeight.w700,
-                                                    fontSize: 12,
+                                                ] else
+                                                  const Padding(
+                                                    padding: EdgeInsets.only(
+                                                      top: 4,
+                                                      bottom: 2,
+                                                    ),
+                                                    child: Text(
+                                                      'No topics yet',
+                                                      style: TextStyle(
+                                                        color: Color(
+                                                          0xFF8B9489,
+                                                        ),
+                                                        fontWeight:
+                                                            FontWeight.w700,
+                                                        fontSize: 12,
+                                                      ),
+                                                    ),
                                                   ),
-                                                ),
-                                              ),
-                                          ],
-                                        );
-                                      },
-                                    ),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  Expanded(
-                                    child: Container(
-                                      decoration: BoxDecoration(
-                                        color: Colors.white,
-                                        borderRadius: BorderRadius.circular(14),
-                                        border: Border.all(
-                                          color: Colors.black.withValues(
-                                            alpha: 0.08,
-                                          ),
+                                              ],
+                                            );
+                                          },
                                         ),
                                       ),
-                                      child: _selectedTopic == null
-                                          ? const _CenterMsg(
-                                              text:
-                                                  'Select a topic from the left sidebar.',
-                                            )
-                                          : HandbookTopicContentScreen(
-                                              key: ValueKey(
-                                                'shared_desktop_topic_${_selectedTopic!.id}',
-                                              ),
-                                              topic: _selectedTopic!,
-                                              embedded: true,
-                                              onBack: () {
-                                                if (!mounted) return;
-                                                setState(
-                                                  () => _selectedTopic = null,
-                                                );
-                                              },
+                                      const SizedBox(width: 12),
+                                      Expanded(
+                                        child: Container(
+                                          decoration: BoxDecoration(
+                                            color: Colors.white,
+                                            borderRadius: BorderRadius.circular(
+                                              14,
                                             ),
-                                    ),
-                                  ),
-                                ],
+                                            border: Border.all(
+                                              color: Colors.black.withValues(
+                                                alpha: 0.08,
+                                              ),
+                                            ),
+                                          ),
+                                          child: _selectedTopic == null
+                                              ? const _CenterMsg(
+                                                  text:
+                                                      'Select a topic from the left sidebar.',
+                                                )
+                                              : HandbookTopicContentScreen(
+                                                  key: ValueKey(
+                                                    'shared_desktop_topic_${_selectedTopic!.id}',
+                                                  ),
+                                                  topic: _selectedTopic!,
+                                                  embedded: true,
+                                                  onBack: () {
+                                                    if (!mounted) return;
+                                                    setState(
+                                                      () =>
+                                                          _selectedTopic = null,
+                                                    );
+                                                  },
+                                                ),
+                                        ),
+                                      ),
+                                    ],
+                                  );
+                                },
                               );
                             },
                           );
                         },
-                      );
-                    },
-                  ),
+                      ),
+                    ),
+                  ],
                 ),
-              ],
+              ),
             ),
           ),
-        ),
+          Positioned(
+            right: 24,
+            bottom: 24,
+            child: _buildHandbookAiFab(heroTag: 'handbook_sections_ai_fab'),
+          ),
+        ],
       );
     }
 
-    return Container(
-      color: bg,
-      child: SafeArea(
-        child: Center(
-          child: ConstrainedBox(
-            constraints: BoxConstraints(maxWidth: maxContentWidth),
-            child: Padding(
-              padding: EdgeInsets.fromLTRB(
-                horizontalPadding,
-                verticalPadding,
-                horizontalPadding,
-                16,
-              ),
-              child: Column(
-                children: [
-                  // Header with title (desktop only)
-                  if (isDesktop) ...[
-                    Text(
-                      'College Student Handbook',
-                      style: TextStyle(
-                        fontSize: 32,
-                        fontWeight: FontWeight.w900,
-                        color: const Color(0xFF2B332B),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Browse sections and topics',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                        color: const Color(0xFF8B9489),
-                      ),
-                    ),
-                    const SizedBox(height: 32),
-                  ],
-
-                  // Search bar (centered on desktop)
-                  Center(
-                    child: ConstrainedBox(
-                      constraints: BoxConstraints(maxWidth: searchBarMaxWidth),
-                      child: _SearchBar(
-                        controller: _search,
-                        hintText: "Search sections...",
-                        isDesktop: isDesktop,
-                        onChanged: (v) => setState(() => _query = v),
-                      ),
-                    ),
+    return Stack(
+      children: [
+        Container(
+          color: bg,
+          child: SafeArea(
+            child: Center(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(maxWidth: maxContentWidth),
+                child: Padding(
+                  padding: EdgeInsets.fromLTRB(
+                    horizontalPadding,
+                    verticalPadding,
+                    horizontalPadding,
+                    16,
                   ),
-                  SizedBox(height: isDesktop ? 12 : 8),
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: FilledButton.icon(
-                      onPressed: () => showHandbookAiAssistantSheet(context),
-                      style: FilledButton.styleFrom(
-                        backgroundColor: const Color(0xFF2F6C44),
-                        foregroundColor: Colors.white,
+                  child: Column(
+                    children: [
+                      // Header with title (desktop only)
+                      if (isDesktop) ...[
+                        Text(
+                          'College Student Handbook',
+                          style: TextStyle(
+                            fontSize: 32,
+                            fontWeight: FontWeight.w900,
+                            color: const Color(0xFF2B332B),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Browse sections and topics',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                            color: const Color(0xFF8B9489),
+                          ),
+                        ),
+                        const SizedBox(height: 32),
+                      ],
+
+                      // Search bar (centered on desktop)
+                      Center(
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            maxWidth: searchBarMaxWidth,
+                          ),
+                          child: _SearchBar(
+                            controller: _search,
+                            hintText: "Search sections...",
+                            isDesktop: isDesktop,
+                            onChanged: (v) => setState(() => _query = v),
+                          ),
+                        ),
                       ),
-                      icon: const Icon(Icons.smart_toy_rounded, size: 18),
-                      label: const Text(
-                        'Ask Handbook AI',
-                        style: TextStyle(fontWeight: FontWeight.w800),
-                      ),
-                    ),
-                  ),
-                  SizedBox(height: isDesktop ? 32 : (isTablet ? 20 : 12)),
+                      SizedBox(height: isDesktop ? 32 : (isTablet ? 20 : 12)),
 
-                  // Load active version, then stream sections
-                  Expanded(
-                    child: FutureBuilder<String>(
-                      future: _getActiveVersionId(),
-                      builder: (context, metaSnap) {
-                        if (metaSnap.hasError) {
-                          return _CenterMsg(text: "Error: ${metaSnap.error}");
-                        }
-                        if (!metaSnap.hasData) {
-                          return const Center(
-                            child: CircularProgressIndicator(),
-                          );
-                        }
-
-                        final versionId = metaSnap.data!;
-
-                        return StreamBuilder<List<HandbookSectionDoc>>(
-                          stream: _sectionsStream(versionId),
-                          builder: (context, snap) {
-                            if (snap.hasError) {
+                      // Load active version, then stream sections
+                      Expanded(
+                        child: FutureBuilder<String>(
+                          future: _getActiveVersionId(),
+                          builder: (context, metaSnap) {
+                            if (metaSnap.hasError) {
                               return _CenterMsg(
-                                text: "Firestore error:\n${snap.error}",
+                                text: "Error: ${metaSnap.error}",
                               );
                             }
-                            if (!snap.hasData) {
+                            if (!metaSnap.hasData) {
                               return const Center(
                                 child: CircularProgressIndicator(),
                               );
                             }
 
-                            final all = snap.data!;
-                            final filtered = all
-                                .where((s) => _matches(s.title))
-                                .toList();
+                            final versionId = metaSnap.data!;
 
-                            if (filtered.isEmpty) {
-                              return const _CenterMsg(
-                                text: "No matching sections.",
-                              );
-                            }
+                            return StreamBuilder<List<HandbookSectionDoc>>(
+                              stream: _sectionsStream(versionId),
+                              builder: (context, snap) {
+                                if (snap.hasError) {
+                                  return _CenterMsg(
+                                    text: "Firestore error:\n${snap.error}",
+                                  );
+                                }
+                                if (!snap.hasData) {
+                                  return const Center(
+                                    child: CircularProgressIndicator(),
+                                  );
+                                }
 
-                            // Use GridView for tablet and desktop, ListView for mobile
-                            if (crossAxisCount > 1) {
-                              return GridView.builder(
-                                gridDelegate:
-                                    SliverGridDelegateWithFixedCrossAxisCount(
-                                      crossAxisCount: crossAxisCount,
-                                      childAspectRatio: childAspectRatio,
-                                      mainAxisSpacing: mainAxisSpacing,
-                                      crossAxisSpacing: crossAxisSpacing,
-                                    ),
-                                itemCount: filtered.length,
-                                itemBuilder: (context, i) {
-                                  final s = filtered[i];
-                                  return _SectionTile(
-                                    number: s.code,
-                                    title: s.title,
-                                    isDesktop: isDesktop,
-                                    isTablet: isTablet,
-                                    onTap: () {
-                                      if (widget.useSidebarDesktop) {
-                                        setState(() => _selectedSection = s);
-                                        return;
-                                      }
-                                      Navigator.push(
-                                        context,
-                                        MaterialPageRoute(
-                                          builder: (_) =>
-                                              HandbookTopicsScreen(section: s),
+                                final all = snap.data!;
+                                final filtered = all
+                                    .where((s) => _matches(s.title))
+                                    .toList();
+
+                                if (filtered.isEmpty) {
+                                  return const _CenterMsg(
+                                    text: "No matching sections.",
+                                  );
+                                }
+
+                                // Use GridView for tablet and desktop, ListView for mobile
+                                if (crossAxisCount > 1) {
+                                  return GridView.builder(
+                                    gridDelegate:
+                                        SliverGridDelegateWithFixedCrossAxisCount(
+                                          crossAxisCount: crossAxisCount,
+                                          childAspectRatio: childAspectRatio,
+                                          mainAxisSpacing: mainAxisSpacing,
+                                          crossAxisSpacing: crossAxisSpacing,
                                         ),
+                                    itemCount: filtered.length,
+                                    itemBuilder: (context, i) {
+                                      final s = filtered[i];
+                                      return _SectionTile(
+                                        number: s.code,
+                                        title: s.title,
+                                        isDesktop: isDesktop,
+                                        isTablet: isTablet,
+                                        onTap: () {
+                                          if (widget.useSidebarDesktop) {
+                                            setState(
+                                              () => _selectedSection = s,
+                                            );
+                                            return;
+                                          }
+                                          Navigator.push(
+                                            context,
+                                            MaterialPageRoute(
+                                              builder: (_) =>
+                                                  HandbookTopicsScreen(
+                                                    section: s,
+                                                  ),
+                                            ),
+                                          );
+                                        },
                                       );
                                     },
                                   );
-                                },
-                              );
-                            } else {
-                              return ListView.separated(
-                                itemCount: filtered.length,
-                                separatorBuilder: (_, index) =>
-                                    SizedBox(height: mainAxisSpacing),
-                                itemBuilder: (context, i) {
-                                  final s = filtered[i];
-                                  return _SectionTile(
-                                    number: s.code,
-                                    title: s.title,
-                                    isDesktop: isDesktop,
-                                    isTablet: isTablet,
-                                    onTap: () {
-                                      if (widget.useSidebarDesktop) {
-                                        setState(() => _selectedSection = s);
-                                        return;
-                                      }
-                                      Navigator.push(
-                                        context,
-                                        MaterialPageRoute(
-                                          builder: (_) =>
-                                              HandbookTopicsScreen(section: s),
-                                        ),
+                                } else {
+                                  return ListView.separated(
+                                    itemCount: filtered.length,
+                                    separatorBuilder: (_, index) =>
+                                        SizedBox(height: mainAxisSpacing),
+                                    itemBuilder: (context, i) {
+                                      final s = filtered[i];
+                                      return _SectionTile(
+                                        number: s.code,
+                                        title: s.title,
+                                        isDesktop: isDesktop,
+                                        isTablet: isTablet,
+                                        onTap: () {
+                                          if (widget.useSidebarDesktop) {
+                                            setState(
+                                              () => _selectedSection = s,
+                                            );
+                                            return;
+                                          }
+                                          Navigator.push(
+                                            context,
+                                            MaterialPageRoute(
+                                              builder: (_) =>
+                                                  HandbookTopicsScreen(
+                                                    section: s,
+                                                  ),
+                                            ),
+                                          );
+                                        },
                                       );
                                     },
                                   );
-                                },
-                              );
-                            }
+                                }
+                              },
+                            );
                           },
-                        );
-                      },
-                    ),
+                        ),
+                      ),
+                    ],
                   ),
-                ],
+                ),
               ),
             ),
           ),
         ),
-      ),
+        Positioned(
+          right: 16,
+          bottom: 16,
+          child: _buildHandbookAiFab(heroTag: 'handbook_sections_list_ai_fab'),
+        ),
+      ],
     );
   }
 }

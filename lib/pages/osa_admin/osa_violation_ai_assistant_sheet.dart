@@ -2,16 +2,46 @@ import 'package:apps/services/osa_violation_ai_service.dart';
 import 'package:flutter/material.dart';
 
 Future<void> showOsaViolationAiAssistantSheet(BuildContext context) async {
+  final media = MediaQuery.of(context);
+  final isDesktop = media.size.width >= 1024;
+
+  if (isDesktop) {
+    await showGeneralDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'Close OSA AI',
+      barrierColor: Colors.black.withValues(alpha: 0.24),
+      transitionDuration: const Duration(milliseconds: 220),
+      pageBuilder: (context, animation, secondaryAnimation) =>
+          const _OsaViolationAiAssistantSheet(desktopSidePanel: true),
+      transitionBuilder: (context, animation, secondaryAnimation, child) {
+        final slide = Tween<Offset>(begin: const Offset(1, 0), end: Offset.zero)
+            .animate(
+              CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
+            );
+        final fade = CurvedAnimation(parent: animation, curve: Curves.easeOut);
+        return FadeTransition(
+          opacity: fade,
+          child: SlideTransition(position: slide, child: child),
+        );
+      },
+    );
+    return;
+  }
+
   await showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
     backgroundColor: Colors.transparent,
-    builder: (_) => const _OsaViolationAiAssistantSheet(),
+    builder: (_) =>
+        const _OsaViolationAiAssistantSheet(desktopSidePanel: false),
   );
 }
 
 class _OsaViolationAiAssistantSheet extends StatefulWidget {
-  const _OsaViolationAiAssistantSheet();
+  final bool desktopSidePanel;
+
+  const _OsaViolationAiAssistantSheet({required this.desktopSidePanel});
 
   @override
   State<_OsaViolationAiAssistantSheet> createState() =>
@@ -133,149 +163,168 @@ class _OsaViolationAiAssistantSheetState
     _ask();
   }
 
-  @override
-  Widget build(BuildContext context) {
+  Widget _buildPanel({required bool desktop}) {
     final media = MediaQuery.of(context);
-    final isDesktop = media.size.width >= 900;
 
-    return SafeArea(
-      child: Padding(
-        padding: EdgeInsets.only(
-          left: isDesktop ? 24 : 0,
-          right: isDesktop ? 24 : 0,
-          top: isDesktop ? 24 : 0,
-          bottom: media.viewInsets.bottom,
-        ),
-        child: Align(
-          alignment: isDesktop ? Alignment.bottomRight : Alignment.bottomCenter,
-          child: ConstrainedBox(
-            constraints: BoxConstraints(
-              maxWidth: isDesktop ? 560 : double.infinity,
-              maxHeight: media.size.height * (isDesktop ? 0.86 : 0.92),
-            ),
-            child: Material(
-              color: const Color(0xFFF6FAF6),
-              borderRadius: BorderRadius.circular(isDesktop ? 18 : 16),
-              clipBehavior: Clip.antiAlias,
-              child: Column(
+    return ConstrainedBox(
+      constraints: BoxConstraints(
+        maxWidth: desktop ? 520 : double.infinity,
+        maxHeight: desktop ? media.size.height - 24 : media.size.height * 0.92,
+      ),
+      child: Material(
+        color: const Color(0xFFF6FAF6),
+        borderRadius: BorderRadius.circular(desktop ? 18 : 16),
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          children: [
+            Container(
+              color: const Color(0xFF1B5E20),
+              padding: const EdgeInsets.fromLTRB(16, 12, 10, 12),
+              child: Row(
                 children: [
-                  Container(
-                    color: const Color(0xFF1B5E20),
-                    padding: const EdgeInsets.fromLTRB(16, 12, 10, 12),
-                    child: Row(
-                      children: [
-                        const Icon(
-                          Icons.analytics_rounded,
-                          color: Colors.white,
-                        ),
-                        const SizedBox(width: 10),
-                        const Expanded(
-                          child: Text(
-                            'OSA Violation AI',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.w900,
-                              fontSize: 15.5,
-                            ),
-                          ),
-                        ),
-                        IconButton(
-                          onPressed: () => Navigator.of(context).pop(),
-                          icon: const Icon(Icons.close_rounded),
-                          color: Colors.white,
-                          tooltip: 'Close',
-                        ),
-                      ],
+                  const Icon(Icons.analytics_rounded, color: Colors.white),
+                  const SizedBox(width: 10),
+                  const Expanded(
+                    child: Text(
+                      'OSA Violation AI',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w900,
+                        fontSize: 15.5,
+                      ),
                     ),
                   ),
-                  Expanded(
-                    child: ListView.builder(
-                      controller: _scrollController,
-                      padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
-                      itemCount:
-                          _messages.length +
-                          (_loading ? 1 : 0) +
-                          (_messages.length == 1 ? 1 : 0),
-                      itemBuilder: (context, index) {
-                        final hasQuickPrompts = _messages.length == 1;
-                        final promptOffset = hasQuickPrompts ? 1 : 0;
-                        final typingIndex = promptOffset + _messages.length;
-                        if (hasQuickPrompts && index == 0) {
-                          return Padding(
-                            padding: const EdgeInsets.only(bottom: 10),
-                            child: Wrap(
-                              spacing: 8,
-                              runSpacing: 8,
-                              children: _quickPrompts
-                                  .map(
-                                    (prompt) => ActionChip(
-                                      onPressed: () => _askQuickPrompt(prompt),
-                                      label: Text(
-                                        prompt,
-                                        style: const TextStyle(
-                                          fontWeight: FontWeight.w700,
-                                        ),
-                                      ),
-                                    ),
-                                  )
-                                  .toList(),
-                            ),
-                          );
-                        }
-                        if (_loading && index == typingIndex) {
-                          return const _TypingBubble();
-                        }
-                        final msg = _messages[index - promptOffset];
-                        return _MessageBubble(message: msg);
-                      },
-                    ),
-                  ),
-                  Container(
-                    decoration: const BoxDecoration(
-                      color: Colors.white,
-                      border: Border(top: BorderSide(color: Color(0x1F000000))),
-                    ),
-                    padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: _input,
-                            textInputAction: TextInputAction.send,
-                            onSubmitted: (_) => _ask(),
-                            minLines: 1,
-                            maxLines: 4,
-                            decoration: InputDecoration(
-                              hintText:
-                                  'Ask about trends, unresolved cases, missed meetings...',
-                              filled: true,
-                              fillColor: const Color(0xFFF4F7F4),
-                              contentPadding: const EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 12,
-                              ),
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(12),
-                                borderSide: BorderSide.none,
-                              ),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        FilledButton(
-                          onPressed: _loading ? null : _ask,
-                          style: FilledButton.styleFrom(
-                            backgroundColor: const Color(0xFF1B5E20),
-                          ),
-                          child: const Icon(Icons.send_rounded),
-                        ),
-                      ],
-                    ),
+                  IconButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close_rounded),
+                    color: Colors.white,
+                    tooltip: 'Close',
                   ),
                 ],
               ),
             ),
+            Expanded(
+              child: ListView.builder(
+                controller: _scrollController,
+                padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+                itemCount: _messages.length + (_loading ? 1 : 0),
+                itemBuilder: (context, index) {
+                  if (_loading && index == _messages.length) {
+                    return const _TypingBubble();
+                  }
+                  final msg = _messages[index];
+                  return _MessageBubble(message: msg);
+                },
+              ),
+            ),
+            Container(
+              decoration: const BoxDecoration(
+                color: Colors.white,
+                border: Border(top: BorderSide(color: Color(0x1F000000))),
+              ),
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SizedBox(
+                    height: 34,
+                    child: ListView.separated(
+                      scrollDirection: Axis.horizontal,
+                      itemCount: _quickPrompts.length,
+                      separatorBuilder: (_, _) => const SizedBox(width: 8),
+                      itemBuilder: (context, index) {
+                        final prompt = _quickPrompts[index];
+                        return ActionChip(
+                          onPressed: () => _askQuickPrompt(prompt),
+                          label: Text(
+                            prompt,
+                            style: const TextStyle(fontWeight: FontWeight.w700),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _input,
+                          textInputAction: TextInputAction.send,
+                          onSubmitted: (_) => _ask(),
+                          minLines: 1,
+                          maxLines: 4,
+                          decoration: InputDecoration(
+                            hintText:
+                                'Ask about trends, unresolved cases, missed meetings...',
+                            filled: true,
+                            fillColor: const Color(0xFFF4F7F4),
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 12,
+                            ),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: BorderSide.none,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      FilledButton(
+                        onPressed: _loading ? null : _ask,
+                        style: FilledButton.styleFrom(
+                          backgroundColor: const Color(0xFF1B5E20),
+                        ),
+                        child: _loading
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.white,
+                                ),
+                              )
+                            : const Icon(Icons.send_rounded),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final media = MediaQuery.of(context);
+
+    if (widget.desktopSidePanel) {
+      return SafeArea(
+        child: AnimatedPadding(
+          duration: const Duration(milliseconds: 120),
+          padding: EdgeInsets.only(bottom: media.viewInsets.bottom),
+          child: Align(
+            alignment: Alignment.centerRight,
+            child: Padding(
+              padding: EdgeInsets.fromLTRB(12, 12, 12, 12),
+              child: _buildPanel(desktop: true),
+            ),
           ),
+        ),
+      );
+    }
+
+    return SafeArea(
+      child: AnimatedPadding(
+        duration: const Duration(milliseconds: 120),
+        padding: EdgeInsets.only(bottom: media.viewInsets.bottom),
+        child: Align(
+          alignment: Alignment.bottomCenter,
+          child: _buildPanel(desktop: false),
         ),
       ),
     );

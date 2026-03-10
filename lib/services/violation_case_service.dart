@@ -194,6 +194,10 @@ class ViolationCaseService {
     final studentCollegeId = (studentProfile['collegeId'] ?? '')
         .toString()
         .trim();
+    final studentProgramId =
+        (studentProfile['programId'] ?? studentData['programId'] ?? '')
+            .toString()
+            .trim();
 
     await ref.set({
       'caseId': ref.id,
@@ -212,6 +216,8 @@ class ViolationCaseService {
       'studentNo': (studentProfile['studentNo'] ?? studentNo).toString().trim(),
       'studentName': studentName.trim(),
       'studentCollegeId': studentCollegeId.isEmpty ? null : studentCollegeId,
+      'programId': studentProgramId.isEmpty ? null : studentProgramId,
+      'studentProgramId': studentProgramId.isEmpty ? null : studentProgramId,
       'gradeSection': (gradeSection == null || gradeSection.trim().isEmpty)
           ? null
           : gradeSection.trim(),

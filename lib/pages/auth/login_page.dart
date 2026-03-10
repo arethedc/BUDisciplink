@@ -51,6 +51,10 @@ class _LoginPageState extends State<LoginPage> {
           context,
           '/verify-email',
           (r) => false,
+          arguments: {
+            'source': 'logged_unverified',
+            'prefillEmail': emailController.text.trim(),
+          },
         );
         return;
       }

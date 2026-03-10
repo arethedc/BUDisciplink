@@ -199,8 +199,27 @@ ${body}
     prompt: `You are the official student handbook assistant.
 Answer ONLY from the handbook context.
 If not in context, explicitly say it is not stated.
-Keep response concise, clear, and student-friendly.
-Finish with: Source: <topic names>
+Be clear, practical, and student-friendly.
+
+Output rules:
+1) Plain text only.
+2) Do NOT use markdown symbols like *, #, _, -, or backticks as formatting.
+3) Use this exact structure:
+Short Answer
+<direct explanation>
+
+Key Details
+• <important rules>
+• <conditions>
+• <consequences>
+
+What You Should Do
+<helpful advice>
+
+Source
+<handbook section reference>
+4) In "Key Details", use 2 to 4 bullet points, each starting with "• ".
+5) Keep response concise and readable.
 
 Question:
 ${question}
@@ -209,6 +228,50 @@ Handbook context:
 ${context.trim()}`,
     sources: [...new Set(used)],
   };
+}
+
+function toPlainAiText(value) {
+  let text = normalizeString(value);
+  if (!text) return '';
+
+  text = text.replace(/\r\n/g, '\n');
+  text = text.replace(/^\s*#{1,6}\s*/gm, '');
+  text = text.replace(/\*\*(.*?)\*\*/g, '$1');
+  text = text.replace(/__(.*?)__/g, '$1');
+  text = text.replace(/`([^`]+)`/g, '$1');
+  text = text.replace(/^\s*[*-]\s+/gm, '\u2022 ');
+  text = text.replace(/\n{3,}/g, '\n\n');
+
+  return text.trim();
+}
+
+function normalizeHandbookAiText(value) {
+  let text = toPlainAiText(value);
+  if (!text) return '';
+
+  const aliases = [
+    ['Short Answer', 'Short Answer'],
+    ['Answer', 'Short Answer'],
+    ['Direct Answer', 'Short Answer'],
+    ['Key Details', 'Key Details'],
+    ['Details', 'Key Details'],
+    ['Important Details', 'Key Details'],
+    ['What You Should Do', 'What You Should Do'],
+    ['Recommended Action', 'What You Should Do'],
+    ['Action', 'What You Should Do'],
+    ['Source', 'Source'],
+  ];
+
+  for (const [alias, canonical] of aliases) {
+    const inlineRegex = new RegExp(`^\\s*${alias}\\s*:\\s*`, 'gmi');
+    const headingRegex = new RegExp(`^\\s*${alias}\\s*$`, 'gmi');
+    text = text.replace(inlineRegex, `${canonical}\n`);
+    text = text.replace(headingRegex, canonical);
+  }
+
+  text = text.replace(/^\s*[•*-]\s*/gm, '\u2022 ');
+  text = text.replace(/\n{3,}/g, '\n\n');
+  return text.trim();
 }
 
 async function ensureOsaAdmin(context) {
@@ -287,6 +350,19 @@ function extractOobCode(link) {
   } catch (_) {
     return '';
   }
+}
+
+function buildInAppVerifyLink(continueUrl, verifyLink, prefillEmail = '') {
+  const safeContinueUrl = normalizeString(continueUrl);
+  const oobCode = extractOobCode(verifyLink);
+  if (!safeContinueUrl || !oobCode) {
+    return '';
+  }
+  return appendRouteAwareParams(safeContinueUrl, {
+    mode: 'verifyEmail',
+    oobCode,
+    prefillEmail,
+  });
 }
 
 function escapeHtml(value) {
@@ -572,12 +648,18 @@ function buildOsaPrompt(question, history, snapshot) {
   return `You are an internal OSA analytics assistant.
 Use only the provided violation snapshot and conversation context. Do not invent data.
 If data is insufficient, say exactly what is missing.
-Prioritize direct answers with numbers first.
-When presenting metrics, cite where they came from:
-- "Summary counts" for aggregate stats
-- "Case rows" for case-level references
+Prioritize direct answers with numbers first and practical next steps.
 Keep answer concise and operational.
 If user asks a follow-up, use Conversation context.
+
+Output rules:
+1) Plain text only.
+2) Do NOT use markdown symbols like *, #, _, -, or backticks as formatting.
+3) Use this exact structure:
+Summary: <1-2 sentences>
+Key numbers: <single paragraph with the most important counts>
+Recommended actions: <single paragraph with practical admin actions>
+Data source: Summary counts and/or Case rows
 
 Question:
 ${question}
@@ -703,6 +785,402 @@ exports.createCustomSetPasswordLink = onCall(
   },
 );
 
+exports.requestAdminActivationLink = onCall(
+  { region: 'asia-east1', timeoutSeconds: 60 },
+  async (request) => {
+    try {
+      const email = normalizeString(request.data?.email).toLowerCase();
+      if (!email || !email.includes('@')) {
+        throw new HttpsError('invalid-argument', 'Valid email is required.');
+      }
+
+      const continueUrl = normalizeString(request.data?.continueUrl);
+      if (!continueUrl) {
+        throw new HttpsError(
+          'invalid-argument',
+          'continueUrl is required.',
+        );
+      }
+      const verifyContinueUrl = normalizeString(request.data?.verifyContinueUrl) || continueUrl;
+
+      let authUser = null;
+      try {
+        authUser = await getAuth().getUserByEmail(email);
+      } catch (_) {
+        return { sent: true };
+      }
+
+      const userDoc = await db.collection('users').doc(authUser.uid).get();
+      const userData = userDoc.data() || {};
+      if (userData.createdByAdmin !== true) {
+        return { sent: true };
+      }
+
+      const resetLink = await getAuth().generatePasswordResetLink(
+        email,
+        {
+          url: continueUrl,
+          handleCodeInApp: true,
+        },
+      );
+      const oobCode = extractOobCode(resetLink);
+      if (!oobCode) {
+        throw new HttpsError(
+          'internal',
+          'Could not generate reset action code.',
+        );
+      }
+
+      let verifyOobCode = '';
+      try {
+        const verifyLink = await getAuth().generateEmailVerificationLink(
+          email,
+          {
+            url: verifyContinueUrl,
+            handleCodeInApp: true,
+          },
+        );
+        verifyOobCode = extractOobCode(verifyLink);
+      } catch (_) {}
+
+      const customLink = appendRouteAwareParams(continueUrl, {
+        mode: 'resetPassword',
+        oobCode,
+        verifyOobCode,
+        prefillEmail: email,
+        source: 'signup',
+      });
+
+      await db.collection('mail').add({
+        to: [email],
+        message: {
+          subject: 'Baliuag University: Disciplink | Activation Link',
+          text:
+            `Baliuag University: Disciplink\n\n` +
+            `Please activate your account and set your password using this link:\n${customLink}\n\n` +
+            `Login Email: ${email}\n\n` +
+            `If you did not request this, you can ignore this message.`,
+          html: buildBrandedEmailHtml({
+            title: 'Activation Link',
+            subtitle:
+              'Please verify your email and set your password to activate your account.',
+            buttonLabel: 'Activate Account',
+            buttonUrl: customLink,
+            details: [
+              { label: 'Login Email', value: email },
+            ],
+            note:
+              'If you did not request this email, you can ignore it.',
+          }),
+        },
+        meta: {
+          kind: 'activation_link_resend',
+        },
+        createdAt: new Date().toISOString(),
+      });
+
+      return { sent: true };
+    } catch (error) {
+      if (error instanceof HttpsError) throw error;
+      console.error('requestAdminActivationLink failed', error);
+      throw new HttpsError(
+        'internal',
+        'Failed to send activation link.',
+      );
+    }
+  },
+);
+
+exports.resolveForgotPasswordFlow = onCall(
+  { region: 'asia-east1', timeoutSeconds: 60 },
+  async (request) => {
+    try {
+      const email = normalizeString(request.data?.email).toLowerCase();
+      if (!email || !email.includes('@')) {
+        throw new HttpsError('invalid-argument', 'Valid email is required.');
+      }
+
+      let authUser = null;
+      try {
+        authUser = await getAuth().getUserByEmail(email);
+      } catch (_) {
+        return { action: 'reset_password' };
+      }
+
+      if (authUser.emailVerified === true) {
+        return { action: 'reset_password' };
+      }
+
+      let createdByAdmin = false;
+      try {
+        const userDoc = await db.collection('users').doc(authUser.uid).get();
+        const data = userDoc.data() || {};
+        createdByAdmin = data.createdByAdmin === true;
+      } catch (_) {}
+
+      if (createdByAdmin) {
+        return { action: 'needs_activation' };
+      }
+      return { action: 'needs_email_verification' };
+    } catch (error) {
+      if (error instanceof HttpsError) throw error;
+      console.error('resolveForgotPasswordFlow failed', error);
+      throw new HttpsError(
+        'internal',
+        'Failed to resolve forgot-password flow.',
+      );
+    }
+  },
+);
+
+exports.sendForgotPasswordAssistanceEmail = onCall(
+  { region: 'asia-east1', timeoutSeconds: 60 },
+  async (request) => {
+    try {
+      const email = normalizeString(request.data?.email).toLowerCase();
+      if (!email || !email.includes('@')) {
+        throw new HttpsError('invalid-argument', 'Valid email is required.');
+      }
+
+      const intent = normalizeLower(request.data?.intent);
+      const continueUrl = normalizeString(request.data?.continueUrl);
+      const verifyContinueUrl = normalizeString(request.data?.verifyContinueUrl) || continueUrl;
+
+      let authUser = null;
+      try {
+        authUser = await getAuth().getUserByEmail(email);
+      } catch (_) {
+        return { sent: true };
+      }
+
+      if (authUser.emailVerified === true) {
+        return { sent: true };
+      }
+
+      const userDoc = await db.collection('users').doc(authUser.uid).get();
+      const userData = userDoc.data() || {};
+      const createdByAdmin = userData.createdByAdmin === true;
+
+      if (intent === 'activation' && createdByAdmin) {
+        if (!continueUrl) {
+          throw new HttpsError(
+            'invalid-argument',
+            'continueUrl is required.',
+          );
+        }
+
+        const resetLink = await getAuth().generatePasswordResetLink(
+          email,
+          {
+            url: continueUrl,
+            handleCodeInApp: true,
+          },
+        );
+        const oobCode = extractOobCode(resetLink);
+        if (!oobCode) {
+          throw new HttpsError(
+            'internal',
+            'Could not generate reset action code.',
+          );
+        }
+
+        let verifyOobCode = '';
+        try {
+          const verifyLink = await getAuth().generateEmailVerificationLink(
+            email,
+            {
+              url: verifyContinueUrl,
+              handleCodeInApp: true,
+            },
+          );
+          verifyOobCode = extractOobCode(verifyLink);
+        } catch (_) {}
+
+        const customLink = appendRouteAwareParams(continueUrl, {
+          mode: 'resetPassword',
+          oobCode,
+          verifyOobCode,
+          prefillEmail: email,
+          source: 'signup',
+        });
+
+        await db.collection('mail').add({
+          to: [email],
+          message: {
+            subject: 'Baliuag University: Disciplink | Activation Link',
+            text:
+              `Baliuag University: Disciplink\n\n` +
+              `Please activate your account and set your password using this link:\n${customLink}\n\n` +
+              `Login Email: ${email}\n\n` +
+              `If you did not request this, you can ignore this message.`,
+            html: buildBrandedEmailHtml({
+              title: 'Activation Link',
+              subtitle:
+                'Please verify your email and set your password to activate your account.',
+              buttonLabel: 'Activate Account',
+              buttonUrl: customLink,
+              details: [
+                { label: 'Login Email', value: email },
+              ],
+              note:
+                'If you did not request this email, you can ignore it.',
+            }),
+          },
+          meta: {
+            kind: 'activation_link_resend',
+          },
+          createdAt: new Date().toISOString(),
+        });
+        return { sent: true, type: 'activation' };
+      }
+
+      if (intent === 'verify' && !createdByAdmin) {
+        if (!continueUrl) {
+          throw new HttpsError(
+            'invalid-argument',
+            'continueUrl is required.',
+          );
+        }
+
+        const verifyLink = await getAuth().generateEmailVerificationLink(
+          email,
+          {
+            url: continueUrl,
+            handleCodeInApp: true,
+          },
+        );
+        const appVerifyLink =
+          buildInAppVerifyLink(continueUrl, verifyLink, email) || verifyLink;
+
+        await db.collection('mail').add({
+          to: [email],
+          message: {
+            subject: 'Baliuag University: Disciplink | Verify Email',
+            text:
+              `Baliuag University: Disciplink\n\n` +
+              `Please verify your email using this link:\n${appVerifyLink}\n\n` +
+              `Login Email: ${email}\n\n` +
+              `If you did not request this, you can ignore this message.`,
+            html: buildBrandedEmailHtml({
+              title: 'Verify Your Email',
+              subtitle:
+                'Please verify your email before resetting your password.',
+              buttonLabel: 'Verify Email',
+              buttonUrl: appVerifyLink,
+              details: [
+                { label: 'Login Email', value: email },
+              ],
+              note:
+                'If you did not request this email, you can ignore it.',
+            }),
+          },
+          meta: {
+            kind: 'verify_email_recovery',
+          },
+          createdAt: new Date().toISOString(),
+        });
+        return { sent: true, type: 'verify' };
+      }
+
+      return { sent: true };
+    } catch (error) {
+      if (error instanceof HttpsError) throw error;
+      console.error('sendForgotPasswordAssistanceEmail failed', error);
+      throw new HttpsError(
+        'internal',
+        'Failed to send assistance email.',
+      );
+    }
+  },
+);
+
+exports.sendPublicPasswordResetLink = onCall(
+  { region: 'asia-east1', timeoutSeconds: 60 },
+  async (request) => {
+    try {
+      const email = normalizeString(request.data?.email).toLowerCase();
+      if (!email || !email.includes('@')) {
+        throw new HttpsError('invalid-argument', 'Valid email is required.');
+      }
+
+      const continueUrl = normalizeString(request.data?.continueUrl);
+
+      let authUser = null;
+      try {
+        authUser = await getAuth().getUserByEmail(email);
+      } catch (_) {
+        return { sent: true };
+      }
+
+      let resetLink = '';
+      if (continueUrl) {
+        try {
+          resetLink = await getAuth().generatePasswordResetLink(
+            email,
+            {
+              url: continueUrl,
+              handleCodeInApp: true,
+            },
+          );
+        } catch (_) {
+          resetLink = await getAuth().generatePasswordResetLink(email);
+        }
+      } else {
+        resetLink = await getAuth().generatePasswordResetLink(email);
+      }
+
+      const oobCode = extractOobCode(resetLink);
+      const appResetLink =
+        continueUrl && oobCode
+          ? appendRouteAwareParams(continueUrl, {
+              mode: 'resetPassword',
+              oobCode,
+              prefillEmail: email,
+              source: 'forgot_password',
+            })
+          : resetLink;
+
+      await db.collection('mail').add({
+        to: [email],
+        message: {
+          subject: 'Baliuag University: Disciplink | Reset Password',
+          text:
+            `Baliuag University: Disciplink\n\n` +
+            `Reset your password using this link:\n${appResetLink}\n\n` +
+            `Login Email: ${email}\n\n` +
+            `If you did not request this, you can ignore this message.`,
+          html: buildBrandedEmailHtml({
+            title: 'Reset Your Password',
+            subtitle:
+              'Use the button below to set a new password for your account.',
+            buttonLabel: 'Reset Password',
+            buttonUrl: appResetLink,
+            details: [
+              { label: 'Login Email', value: email },
+            ],
+            note:
+              'If you did not request this email, you can ignore it.',
+          }),
+        },
+        meta: {
+          kind: 'password_reset_public',
+          uid: authUser.uid,
+        },
+        createdAt: new Date().toISOString(),
+      });
+
+      return { sent: true };
+    } catch (error) {
+      if (error instanceof HttpsError) throw error;
+      console.error('sendPublicPasswordResetLink failed', error);
+      throw new HttpsError(
+        'internal',
+        'Failed to send password reset link.',
+      );
+    }
+  },
+);
+
 exports.createCustomVerifyEmailLink = onCall(
   { region: 'asia-east1', timeoutSeconds: 60 },
   async (request) => {
@@ -730,6 +1208,8 @@ exports.createCustomVerifyEmailLink = onCall(
           handleCodeInApp: true,
         },
       );
+      const appVerifyLink =
+        buildInAppVerifyLink(continueUrl, verifyLink, email) || verifyLink;
 
       let mailQueued = false;
       try {
@@ -740,7 +1220,7 @@ exports.createCustomVerifyEmailLink = onCall(
             text:
               `Baliuag University: Disciplink\n\n` +
               `Your account was created by the administrator.\n` +
-              `Please verify your email using this link:\n${verifyLink}\n\n` +
+              `Please verify your email using this link:\n${appVerifyLink}\n\n` +
               `Login Email: ${email}\n` +
               (temporaryPassword
                 ? `Password: ${temporaryPassword}\n`
@@ -751,7 +1231,7 @@ exports.createCustomVerifyEmailLink = onCall(
               subtitle:
                 'Your account is ready. Verify your email before logging in.',
               buttonLabel: 'Verify Email',
-              buttonUrl: verifyLink,
+              buttonUrl: appVerifyLink,
               details: [
                 { label: 'Login Email', value: email },
                 ...(temporaryPassword
@@ -774,6 +1254,7 @@ exports.createCustomVerifyEmailLink = onCall(
 
       return {
         verifyLink,
+        appVerifyLink,
         mailQueued,
       };
     } catch (error) {
@@ -828,6 +1309,8 @@ exports.sendCurrentUserVerifyEmailLink = onCall(
           handleCodeInApp: true,
         },
       );
+      const appVerifyLink =
+        buildInAppVerifyLink(continueUrl, verifyLink, email) || verifyLink;
 
       let mailQueued = false;
       try {
@@ -837,7 +1320,7 @@ exports.sendCurrentUserVerifyEmailLink = onCall(
             subject: 'Baliuag University: Disciplink | Verify Email',
             text:
               `Baliuag University: Disciplink\n\n` +
-              `Please verify your email using this link:\n${verifyLink}\n\n` +
+              `Please verify your email using this link:\n${appVerifyLink}\n\n` +
               `Login Email: ${email}\n\n` +
               `If you did not request this, you can ignore this message.`,
             html: buildBrandedEmailHtml({
@@ -845,7 +1328,7 @@ exports.sendCurrentUserVerifyEmailLink = onCall(
               subtitle:
                 'Please verify your email before continuing to your account.',
               buttonLabel: 'Verify Email',
-              buttonUrl: verifyLink,
+              buttonUrl: appVerifyLink,
               details: [
                 { label: 'Login Email', value: email },
               ],
@@ -865,6 +1348,7 @@ exports.sendCurrentUserVerifyEmailLink = onCall(
 
       return {
         verifyLink,
+        appVerifyLink,
         mailQueued,
       };
     } catch (error) {
@@ -896,7 +1380,9 @@ exports.askHandbookAi = onCall(
       }
 
       const { prompt, sources } = buildHandbookPrompt(question, entries);
-      const answer = await generateText(HANDBOOK_MODEL, prompt);
+      const answer = normalizeHandbookAiText(
+        await generateText(HANDBOOK_MODEL, prompt),
+      );
       return {
         answer: answer || 'I could not generate a handbook answer right now.',
         sources,
@@ -923,7 +1409,7 @@ exports.askOsaViolationAi = onCall(
       const history = parseOsaHistory(request.data?.history);
       const snapshot = await loadViolationSnapshot({ question, history });
       const prompt = buildOsaPrompt(question, history, snapshot);
-      const answer = await generateText(OSA_MODEL, prompt);
+      const answer = toPlainAiText(await generateText(OSA_MODEL, prompt));
       return {
         answer: answer || 'I could not generate a violation analytics answer right now.',
         sources: [

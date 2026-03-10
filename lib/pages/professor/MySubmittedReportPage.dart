@@ -27,6 +27,8 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
   final ScrollController _listScrollController = ScrollController();
   String? _streamUid;
   Stream<QuerySnapshot<Map<String, dynamic>>>? _reportsStream;
+  final Map<String, Future<String>> _studentProgramFutureCache =
+      <String, Future<String>>{};
 
   @override
   void dispose() {
@@ -116,6 +118,39 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
           .toList();
     }
     return const <String>[];
+  }
+
+  Future<String> _resolveStudentProgram({
+    required String studentUid,
+    required String fallbackProgram,
+  }) {
+    final fallback = _str(fallbackProgram);
+    if (fallback.isNotEmpty && fallback != '—' && fallback != '--') {
+      return Future<String>.value(fallback);
+    }
+
+    final uid = _str(studentUid);
+    if (uid.isEmpty) {
+      return Future<String>.value('—');
+    }
+
+    return _studentProgramFutureCache.putIfAbsent(uid, () async {
+      final userDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid)
+          .get();
+      final userData = userDoc.data() ?? const <String, dynamic>{};
+      final studentProfile =
+          userData['studentProfile'] as Map<String, dynamic>? ??
+          const <String, dynamic>{};
+      final fromProfile = _str(
+        studentProfile['programId'] ??
+            studentProfile['program'] ??
+            userData['programId'] ??
+            userData['program'],
+      );
+      return fromProfile.isEmpty ? '—' : fromProfile;
+    });
   }
 
   String _prettyConcern(String? concern) {
@@ -282,13 +317,20 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
           final reporterName = _str(d['reportedByName']);
           final reporterRole = _toTitleCaseText(_str(d['reportedByRole']));
           final evidenceUrls = _stringList(d['evidenceUrls']);
+          final program = _str(
+            d['programId'] ??
+                d['studentProgramId'] ??
+                d['studentProgram'] ??
+                d['program'],
+          );
 
           return _SubmittedReport(
             id: doc.id,
             caseCode: caseCode,
+            studentUid: _str(d['studentUid']),
             studentName: _str(d['studentName']),
             studentId: _str(d['studentNo']),
-            program: _str(d['programId']).isEmpty ? '—' : _str(d['programId']),
+            program: program.isEmpty ? '—' : program,
             concern: concern.isEmpty ? '—' : concern,
             category: category.isEmpty ? '—' : category,
             violation: violation.isEmpty ? 'Violation' : violation,
@@ -649,6 +691,8 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
                 _readOnlyKv('Student', report.studentName),
                 const SizedBox(height: 8),
                 _readOnlyKv('Student No', report.studentId),
+                const SizedBox(height: 8),
+                _readOnlyProgramKv(report),
               ],
             ),
           ),
@@ -716,6 +760,8 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
               _readOnlyKv('Student', report.studentName),
               const SizedBox(height: 8),
               _readOnlyKv('Student No', report.studentId),
+              const SizedBox(height: 8),
+              _readOnlyProgramKv(report),
             ],
           ),
         ),
@@ -902,6 +948,20 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
           ),
         ),
       ],
+    );
+  }
+
+  Widget _readOnlyProgramKv(_SubmittedReport report) {
+    return FutureBuilder<String>(
+      future: _resolveStudentProgram(
+        studentUid: report.studentUid,
+        fallbackProgram: report.program,
+      ),
+      initialData: report.program,
+      builder: (context, snapshot) {
+        final program = _str(snapshot.data);
+        return _readOnlyKv('Program', program.isEmpty ? '—' : program);
+      },
     );
   }
 
@@ -2025,6 +2085,7 @@ extension _ReportStatusX on _ReportStatus {
 class _SubmittedReport {
   final String id;
   final String caseCode;
+  final String studentUid;
   final String studentName;
   final String studentId;
   final String program;
@@ -2052,6 +2113,7 @@ class _SubmittedReport {
   const _SubmittedReport({
     required this.id,
     required this.caseCode,
+    required this.studentUid,
     required this.studentName,
     required this.studentId,
     required this.program,

@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'handbook_topic_content_screen.dart';
+import 'handbook_ai_assistant_sheet.dart';
 import 'package:apps/models/handbook_section_doc.dart';
 import 'package:apps/models/handbook_topic_doc.dart';
 
@@ -68,17 +69,17 @@ class _HandbookTopicsScreenState extends State<HandbookTopicsScreen> {
   @override
   Widget build(BuildContext context) {
     final screenWidth = MediaQuery.of(context).size.width;
-    
+
     // Determine screen type
     final isDesktop = screenWidth >= 1024;
     final isTablet = screenWidth >= 600 && screenWidth < 1024;
-    
+
     // Responsive values
     final maxContentWidth = isDesktop ? 1200.0 : double.infinity;
     final horizontalPadding = isDesktop ? 48.0 : (isTablet ? 32.0 : 16.0);
     final verticalPadding = isDesktop ? 32.0 : (isTablet ? 24.0 : 14.0);
     final searchBarMaxWidth = isDesktop ? 600.0 : double.infinity;
-    
+
     // Grid configuration
     final crossAxisCount = isDesktop ? 2 : (isTablet ? 2 : 1);
     final childAspectRatio = isDesktop ? 4.0 : (isTablet ? 3.5 : 5.0);
@@ -86,263 +87,278 @@ class _HandbookTopicsScreenState extends State<HandbookTopicsScreen> {
     final crossAxisSpacing = isDesktop ? 20.0 : (isTablet ? 16.0 : 0.0);
 
     final body = Column(
-          children: [
-            if (!widget.embedded)
-              Container(
-                color: topBarGreen,
-                padding: EdgeInsets.fromLTRB(
-                  isDesktop ? 16 : 8,
-                  isDesktop ? 16 : 10,
-                  isDesktop ? 16 : 8,
-                  isDesktop ? 16 : 10,
-                ),
-                child: Center(
-                  child: ConstrainedBox(
-                    constraints: BoxConstraints(maxWidth: maxContentWidth),
-                    child: Row(
-                      children: [
-                        IconButton(
-                          onPressed: widget.onBack ?? () => Navigator.pop(context),
-                          icon: Icon(
-                            Icons.arrow_back,
-                            color: Colors.white,
-                            size: isDesktop ? 26 : 24,
-                          ),
-                          tooltip: 'Back to sections',
-                        ),
-                        SizedBox(width: isDesktop ? 12 : 6),
-                        Expanded(
-                          child: Text(
-                            "${widget.section.code}. ${widget.section.title}",
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: isDesktop ? 22 : (isTablet ? 20 : 18),
-                              fontWeight: FontWeight.w900,
-                            ),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            if (widget.embedded)
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  border: Border(
-                    bottom: BorderSide(
-                      color: Colors.black.withValues(alpha: 0.08),
-                    ),
-                  ),
-                ),
+      children: [
+        if (!widget.embedded)
+          Container(
+            color: topBarGreen,
+            padding: EdgeInsets.fromLTRB(
+              isDesktop ? 16 : 8,
+              isDesktop ? 16 : 10,
+              isDesktop ? 16 : 8,
+              isDesktop ? 16 : 10,
+            ),
+            child: Center(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(maxWidth: maxContentWidth),
                 child: Row(
                   children: [
                     IconButton(
-                      onPressed: widget.onBack ?? () => Navigator.maybePop(context),
-                      icon: const Icon(Icons.arrow_back_rounded, size: 20),
+                      onPressed: widget.onBack ?? () => Navigator.pop(context),
+                      icon: Icon(
+                        Icons.arrow_back,
+                        color: Colors.white,
+                        size: isDesktop ? 26 : 24,
+                      ),
                       tooltip: 'Back to sections',
                     ),
-                    const SizedBox(width: 4),
+                    SizedBox(width: isDesktop ? 12 : 6),
                     Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            'Handbook / Section',
-                            style: TextStyle(
-                              color: Color(0xFF6D7F62),
-                              fontWeight: FontWeight.w700,
-                              fontSize: 11,
-                            ),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            "${widget.section.code}. ${widget.section.title}",
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: Color(0xFF1F2A1F),
-                              fontWeight: FontWeight.w900,
-                              fontSize: 14.5,
-                            ),
-                          ),
-                        ],
+                      child: Text(
+                        "${widget.section.code}. ${widget.section.title}",
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: isDesktop ? 22 : (isTablet ? 20 : 18),
+                          fontWeight: FontWeight.w900,
+                        ),
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
                   ],
                 ),
               ),
-
-            Expanded(
-              child: Center(
-                child: ConstrainedBox(
-                  constraints: BoxConstraints(maxWidth: maxContentWidth),
-                  child: Padding(
-                    padding: EdgeInsets.fromLTRB(
-                      horizontalPadding,
-                      verticalPadding,
-                      horizontalPadding,
-                      16,
-                    ),
-                    child: Column(
-                      children: [
-                        // Subtitle on desktop
-                        if (isDesktop) ...[
-                          Text(
-                            'Browse topics in this section',
-                            style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w600,
-                              color: const Color(0xFF8B9489),
-                            ),
-                          ),
-                          const SizedBox(height: 24),
-                        ],
-                        
-                        // Search bar
-                        Center(
-                          child: ConstrainedBox(
-                            constraints: BoxConstraints(maxWidth: searchBarMaxWidth),
-                            child: _SearchBar(
-                              controller: _search,
-                              hintText: "Search topics...",
-                              isDesktop: isDesktop,
-                              onChanged: (v) => setState(() => _query = v),
-                            ),
-                          ),
+            ),
+          ),
+        if (widget.embedded)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              border: Border(
+                bottom: BorderSide(color: Colors.black.withValues(alpha: 0.08)),
+              ),
+            ),
+            child: Row(
+              children: [
+                IconButton(
+                  onPressed: widget.onBack ?? () => Navigator.maybePop(context),
+                  icon: const Icon(Icons.arrow_back_rounded, size: 20),
+                  tooltip: 'Back to sections',
+                ),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Handbook / Section',
+                        style: TextStyle(
+                          color: Color(0xFF6D7F62),
+                          fontWeight: FontWeight.w700,
+                          fontSize: 11,
                         ),
-                        SizedBox(height: isDesktop ? 32 : (isTablet ? 20 : 12)),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        "${widget.section.code}. ${widget.section.title}",
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Color(0xFF1F2A1F),
+                          fontWeight: FontWeight.w900,
+                          fontSize: 14.5,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
 
-                        Expanded(
-                          child: FutureBuilder<String>(
-                            future: _getActiveVersionId(),
-                            builder: (context, metaSnap) {
-                              if (metaSnap.hasError) {
+        Expanded(
+          child: Center(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(maxWidth: maxContentWidth),
+              child: Padding(
+                padding: EdgeInsets.fromLTRB(
+                  horizontalPadding,
+                  verticalPadding,
+                  horizontalPadding,
+                  16,
+                ),
+                child: Column(
+                  children: [
+                    // Subtitle on desktop
+                    if (isDesktop) ...[
+                      Text(
+                        'Browse topics in this section',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                          color: const Color(0xFF8B9489),
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+                    ],
+
+                    // Search bar
+                    Center(
+                      child: ConstrainedBox(
+                        constraints: BoxConstraints(
+                          maxWidth: searchBarMaxWidth,
+                        ),
+                        child: _SearchBar(
+                          controller: _search,
+                          hintText: "Search topics...",
+                          isDesktop: isDesktop,
+                          onChanged: (v) => setState(() => _query = v),
+                        ),
+                      ),
+                    ),
+                    SizedBox(height: isDesktop ? 32 : (isTablet ? 20 : 12)),
+
+                    Expanded(
+                      child: FutureBuilder<String>(
+                        future: _getActiveVersionId(),
+                        builder: (context, metaSnap) {
+                          if (metaSnap.hasError) {
+                            return Center(
+                              child: Text(
+                                "Error:\n${metaSnap.error}",
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            );
+                          }
+                          if (!metaSnap.hasData) {
+                            return const Center(
+                              child: CircularProgressIndicator(),
+                            );
+                          }
+
+                          final versionId = metaSnap.data!;
+
+                          return StreamBuilder<List<HandbookTopicDoc>>(
+                            stream: _topicsStream(versionId),
+                            builder: (context, snap) {
+                              if (snap.hasError) {
                                 return Center(
                                   child: Text(
-                                    "Error:\n${metaSnap.error}",
+                                    "Firestore error:\n${snap.error}",
                                     textAlign: TextAlign.center,
-                                    style: const TextStyle(fontWeight: FontWeight.w700),
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w700,
+                                    ),
                                   ),
                                 );
                               }
-                              if (!metaSnap.hasData) {
-                                return const Center(child: CircularProgressIndicator());
+                              if (!snap.hasData) {
+                                return const Center(
+                                  child: CircularProgressIndicator(),
+                                );
                               }
 
-                              final versionId = metaSnap.data!;
+                              final all = snap.data!;
+                              final filtered = all
+                                  .where((t) => _matches(t.title, t.code))
+                                  .toList();
 
-                              return StreamBuilder<List<HandbookTopicDoc>>(
-                                stream: _topicsStream(versionId),
-                                builder: (context, snap) {
-                                  if (snap.hasError) {
-                                    return Center(
-                                      child: Text(
-                                        "Firestore error:\n${snap.error}",
-                                        textAlign: TextAlign.center,
-                                        style: const TextStyle(fontWeight: FontWeight.w700),
-                                      ),
-                                    );
-                                  }
-                                  if (!snap.hasData) {
-                                    return const Center(child: CircularProgressIndicator());
-                                  }
+                              if (filtered.isEmpty) {
+                                return const Center(
+                                  child: Text(
+                                    "No topics found.",
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                );
+                              }
 
-                                  final all = snap.data!;
-                                  final filtered = all
-                                      .where((t) => _matches(t.title, t.code))
-                                      .toList();
-
-                                  if (filtered.isEmpty) {
-                                    return const Center(
-                                      child: Text(
-                                        "No topics found.",
-                                        style: TextStyle(fontWeight: FontWeight.w700),
-                                      ),
-                                    );
-                                  }
-
-                                  // Grid for tablet/desktop, list for mobile
-                                  if (crossAxisCount > 1) {
-                                    return GridView.builder(
-                                      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                              // Grid for tablet/desktop, list for mobile
+                              if (crossAxisCount > 1) {
+                                return GridView.builder(
+                                  gridDelegate:
+                                      SliverGridDelegateWithFixedCrossAxisCount(
                                         crossAxisCount: crossAxisCount,
                                         childAspectRatio: childAspectRatio,
                                         mainAxisSpacing: mainAxisSpacing,
                                         crossAxisSpacing: crossAxisSpacing,
                                       ),
-                                      itemCount: filtered.length,
-                                      itemBuilder: (context, i) {
-                                        final t = filtered[i];
-                                        return _TopicTile(
-                                          code: t.code,
-                                          title: t.title,
-                                          isDesktop: isDesktop,
-                                          isTablet: isTablet,
-                                          onTap: () {
-                                            final callback = widget.onTopicTap;
-                                            if (callback != null) {
-                                              callback(t);
-                                              return;
-                                            }
-                                            Navigator.push(
-                                              context,
-                                              MaterialPageRoute(
-                                                builder: (_) =>
-                                                    HandbookTopicContentScreen(topic: t),
-                                              ),
-                                            );
-                                          },
+                                  itemCount: filtered.length,
+                                  itemBuilder: (context, i) {
+                                    final t = filtered[i];
+                                    return _TopicTile(
+                                      code: t.code,
+                                      title: t.title,
+                                      isDesktop: isDesktop,
+                                      isTablet: isTablet,
+                                      onTap: () {
+                                        final callback = widget.onTopicTap;
+                                        if (callback != null) {
+                                          callback(t);
+                                          return;
+                                        }
+                                        Navigator.push(
+                                          context,
+                                          MaterialPageRoute(
+                                            builder: (_) =>
+                                                HandbookTopicContentScreen(
+                                                  topic: t,
+                                                ),
+                                          ),
                                         );
                                       },
                                     );
-                                  } else {
-                                    return ListView.separated(
-                                      itemCount: filtered.length,
-                                      separatorBuilder: (_, index) =>
-                                          SizedBox(height: mainAxisSpacing),
-                                      itemBuilder: (context, i) {
-                                        final t = filtered[i];
-                                        return _TopicTile(
-                                        code: t.code,
-                                        title: t.title,
-                                        isDesktop: isDesktop,
-                                        isTablet: isTablet,
-                                        onTap: () {
-                                          final callback = widget.onTopicTap;
-                                          if (callback != null) {
-                                            callback(t);
-                                            return;
-                                          }
-                                          Navigator.push(
-                                            context,
-                                            MaterialPageRoute(
-                                              builder: (_) =>
-                                                  HandbookTopicContentScreen(topic: t),
-                                            ),
-                                          );
-                                        },
-                                      );
-                                    },
-                                  );
-                                  }
-                                },
-                              );
+                                  },
+                                );
+                              } else {
+                                return ListView.separated(
+                                  itemCount: filtered.length,
+                                  separatorBuilder: (_, index) =>
+                                      SizedBox(height: mainAxisSpacing),
+                                  itemBuilder: (context, i) {
+                                    final t = filtered[i];
+                                    return _TopicTile(
+                                      code: t.code,
+                                      title: t.title,
+                                      isDesktop: isDesktop,
+                                      isTablet: isTablet,
+                                      onTap: () {
+                                        final callback = widget.onTopicTap;
+                                        if (callback != null) {
+                                          callback(t);
+                                          return;
+                                        }
+                                        Navigator.push(
+                                          context,
+                                          MaterialPageRoute(
+                                            builder: (_) =>
+                                                HandbookTopicContentScreen(
+                                                  topic: t,
+                                                ),
+                                          ),
+                                        );
+                                      },
+                                    );
+                                  },
+                                );
+                              }
                             },
-                          ),
-                        ),
-                      ],
+                          );
+                        },
+                      ),
                     ),
-                  ),
+                  ],
                 ),
               ),
             ),
-          ],
-        );
+          ),
+        ),
+      ],
+    );
 
     if (widget.embedded) {
       return Container(color: bg, child: body);
@@ -350,6 +366,15 @@ class _HandbookTopicsScreenState extends State<HandbookTopicsScreen> {
     return Scaffold(
       backgroundColor: bg,
       body: SafeArea(child: body),
+      floatingActionButton: FloatingActionButton(
+        heroTag: 'handbook_topics_ai_fab',
+        onPressed: () => showHandbookAiAssistantSheet(context),
+        backgroundColor: topBarGreen,
+        foregroundColor: Colors.white,
+        tooltip: 'Open Handbook AI',
+        child: const Icon(Icons.menu_book_rounded),
+      ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
     );
   }
 }
@@ -395,17 +420,17 @@ class _SearchBar extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Icon(Icons.search_rounded,
-              color: const Color(0xFF8B9489), size: iconSize),
+          Icon(
+            Icons.search_rounded,
+            color: const Color(0xFF8B9489),
+            size: iconSize,
+          ),
           SizedBox(width: isDesktop ? 12 : 8),
           Expanded(
             child: TextField(
               controller: controller,
               onChanged: onChanged,
-              style: TextStyle(
-                fontSize: fontSize,
-                fontWeight: FontWeight.w600,
-              ),
+              style: TextStyle(fontSize: fontSize, fontWeight: FontWeight.w600),
               decoration: InputDecoration(
                 hintText: hintText,
                 border: InputBorder.none,
@@ -453,10 +478,18 @@ class _TopicTileState extends State<_TopicTile> {
   Widget build(BuildContext context) {
     final height = widget.isDesktop ? 70.0 : (widget.isTablet ? 66.0 : 64.0);
     final borderRadius = widget.isDesktop ? 16.0 : 18.0;
-    final codeBadgeWidth = widget.isDesktop ? 70.0 : (widget.isTablet ? 66.0 : 62.0);
-    final codeBadgeHeight = widget.isDesktop ? 46.0 : (widget.isTablet ? 44.0 : 42.0);
-    final codeFontSize = widget.isDesktop ? 15.0 : (widget.isTablet ? 14.5 : 14.0);
-    final titleFontSize = widget.isDesktop ? 16.5 : (widget.isTablet ? 16.0 : 15.5);
+    final codeBadgeWidth = widget.isDesktop
+        ? 70.0
+        : (widget.isTablet ? 66.0 : 62.0);
+    final codeBadgeHeight = widget.isDesktop
+        ? 46.0
+        : (widget.isTablet ? 44.0 : 42.0);
+    final codeFontSize = widget.isDesktop
+        ? 15.0
+        : (widget.isTablet ? 14.5 : 14.0);
+    final titleFontSize = widget.isDesktop
+        ? 16.5
+        : (widget.isTablet ? 16.0 : 15.5);
     final iconSize = widget.isDesktop ? 30.0 : (widget.isTablet ? 29.0 : 28.0);
 
     return MouseRegion(

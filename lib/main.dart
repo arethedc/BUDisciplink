@@ -1,12 +1,15 @@
 import 'package:apps/pages/auth/complete_profile_page.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_quill/flutter_quill.dart'
+    show FlutterQuillLocalizations;
 
 import 'pages/auth/firebase_options.dart';
 import 'pages/auth/login_page.dart';
 import 'pages/auth/set_password_page.dart';
 import 'pages/auth/sign_up_page.dart';
 import 'pages/auth/verify_email_page.dart';
+import 'pages/auth/forgot_password_assistance_page.dart';
 import 'pages/shared/landing_page.dart';
 import 'pages/shared/splash_screen_page.dart';
 import 'pages/shared/temp_login_page.dart';
@@ -26,10 +29,25 @@ class _RootGate extends StatelessWidget {
     return hasResetMode || hasSetPasswordRoute;
   }
 
+  bool _isVerifyEmailDeepLink() {
+    final base = Uri.base;
+    final hasVerifyMode =
+        (base.queryParameters['mode'] ?? '').trim() == 'verifyEmail';
+    final fragment = base.fragment;
+    final hasVerifyRoute =
+        fragment.startsWith('/verify-email') ||
+        fragment.startsWith('verify-email');
+    final hasVerifyModeInFragment = fragment.contains('mode=verifyEmail');
+    return hasVerifyMode || hasVerifyRoute || hasVerifyModeInFragment;
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isSetPasswordDeepLink()) {
       return const SetPasswordPage();
+    }
+    if (_isVerifyEmailDeepLink()) {
+      return const VerifyEmailPage();
     }
     return const SplashScreen();
   }
@@ -37,9 +55,7 @@ class _RootGate extends StatelessWidget {
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
-  );
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   runApp(const MyApp());
 }
 
@@ -56,6 +72,8 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'Student Handbook',
+      localizationsDelegates: FlutterQuillLocalizations.localizationsDelegates,
+      supportedLocales: FlutterQuillLocalizations.supportedLocales,
       theme: ThemeData(
         useMaterial3: true,
         colorSchemeSeed: brandGreen,
@@ -125,6 +143,8 @@ class MyApp extends StatelessWidget {
         '/complete-profile': (context) => const CompleteProfilePage(),
         '/landing': (context) => const LandingPage(),
         '/verify-email': (context) => const VerifyEmailPage(),
+        '/forgot-password-assist': (context) =>
+            const ForgotPasswordAssistancePage(),
         '/temp-login': (context) => const TempLoginPage(),
       },
     );
