@@ -76,9 +76,9 @@ class _HandbookSectionsScreenState extends State<HandbookSectionsScreen> {
         });
   }
 
-  Widget _buildHandbookAiFab({required String heroTag}) {
+  Widget _buildHandbookAiFab() {
     return FloatingActionButton(
-      heroTag: heroTag,
+      heroTag: null,
       onPressed: () => showHandbookAiAssistantSheet(context),
       backgroundColor: _primary,
       foregroundColor: Colors.white,
@@ -418,11 +418,7 @@ class _HandbookSectionsScreenState extends State<HandbookSectionsScreen> {
               ),
             ),
           ),
-          Positioned(
-            right: 24,
-            bottom: 24,
-            child: _buildHandbookAiFab(heroTag: 'handbook_sections_ai_fab'),
-          ),
+          Positioned(right: 24, bottom: 24, child: _buildHandbookAiFab()),
         ],
       );
     }
@@ -608,11 +604,7 @@ class _HandbookSectionsScreenState extends State<HandbookSectionsScreen> {
             ),
           ),
         ),
-        Positioned(
-          right: 16,
-          bottom: 16,
-          child: _buildHandbookAiFab(heroTag: 'handbook_sections_list_ai_fab'),
-        ),
+        Positioned(right: 16, bottom: 16, child: _buildHandbookAiFab()),
       ],
     );
   }

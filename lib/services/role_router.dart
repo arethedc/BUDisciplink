@@ -13,7 +13,10 @@ import '../pages/shared/pending_approval_page.dart';
 import '../pages/super_admin/super_admin_dashboard.dart';
 
 class RoleRouter {
-  static Future<void> route(BuildContext context) async {
+  static Future<void> route(
+    BuildContext context, {
+    bool fastPathForSplash = false,
+  }) async {
     // ✅ Prevent crashes if currentUser is null
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
@@ -22,8 +25,15 @@ class RoleRouter {
       return;
     }
 
-    // Reload auth user (keep existing email verification behavior)
-    await user.reload();
+    // Fast path is used by splash to reduce visible holding on startup.
+    if (fastPathForSplash) {
+      try {
+        await user.reload().timeout(const Duration(milliseconds: 700));
+      } catch (_) {}
+    } else {
+      // Reload auth user (keep existing email verification behavior)
+      await user.reload();
+    }
     if (!context.mounted) return;
     final freshUser = FirebaseAuth.instance.currentUser;
 
@@ -31,10 +41,21 @@ class RoleRouter {
     final uid = user.uid;
 
     // ✅ Handle missing Firestore user doc safely
-    final doc = await FirebaseFirestore.instance
-        .collection('users')
-        .doc(uid)
-        .get();
+    final usersRef = FirebaseFirestore.instance.collection('users').doc(uid);
+    DocumentSnapshot<Map<String, dynamic>> doc;
+    if (fastPathForSplash) {
+      // Try cache first for faster startup; fall back to server when needed.
+      try {
+        doc = await usersRef.get(const GetOptions(source: Source.cache));
+      } catch (_) {
+        doc = await usersRef.get();
+      }
+      if (!doc.exists) {
+        doc = await usersRef.get();
+      }
+    } else {
+      doc = await usersRef.get();
+    }
     if (!context.mounted) return;
     if (!doc.exists) {
       // No doc means app logic didn't create it yet (or deleted); force safe exit
@@ -53,7 +74,7 @@ class RoleRouter {
         .trim()
         .toLowerCase();
     final legacyStatus = (data['status'] ?? '').toString().trim().toLowerCase();
-    final effectiveAccountStatus = accountStatus.isEmpty
+    var effectiveAccountStatus = accountStatus.isEmpty
         ? (legacyStatus == 'inactive' ? 'inactive' : 'active')
         : accountStatus;
     final studentVerificationStatus = (data['studentVerificationStatus'] ?? '')
@@ -66,6 +87,7 @@ class RoleRouter {
         case 'pending_profile':
         case 'pending_approval':
         case 'verified':
+        case 'rejected':
           return raw;
         case 'pending_verification':
           return 'pending_approval';
@@ -86,6 +108,20 @@ class RoleRouter {
             ? 'verified'
             : 'pending_profile';
       }
+    }
+
+    // Rejected students should still be able to sign in and correct profile info.
+    if (role == 'student' &&
+        effectiveStudentVerification == 'rejected' &&
+        effectiveAccountStatus != 'active') {
+      effectiveAccountStatus = 'active';
+      try {
+        await doc.reference.update({
+          'accountStatus': 'active',
+          'status': 'rejected',
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+      } catch (_) {}
     }
 
     Future<void> syncStudentVerification(String status) async {
@@ -134,6 +170,15 @@ class RoleRouter {
       }
 
       if (effectiveStudentVerification == 'pending_profile') {
+        if (!context.mounted) return;
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => const CompleteProfilePage()),
+        );
+        return;
+      }
+
+      if (effectiveStudentVerification == 'rejected') {
         if (!context.mounted) return;
         Navigator.pushReplacement(
           context,

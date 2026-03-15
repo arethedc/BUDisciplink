@@ -1,6 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:apps/services/academic_settings_service.dart';
+import '../../shared/widgets/app_layout_tokens.dart';
+import '../../shared/widgets/modern_table_layout.dart';
 
 /// ============================================================
 /// ACADEMIC SETTINGS (ADMIN) — UI TEMPLATE ONLY
@@ -26,7 +28,12 @@ class AcademicSettingsPage extends StatefulWidget {
 class _AcademicSettingsPageState extends State<AcademicSettingsPage> {
   // UI state only
   String _search = '';
-  int? _selectedIndex;
+  String? _selectedSyId;
+  final ValueNotifier<List<QueryDocumentSnapshot<Map<String, dynamic>>>>
+  _visibleSyDocs =
+      ValueNotifier<List<QueryDocumentSnapshot<Map<String, dynamic>>>>(
+        const [],
+      );
 
   // Create SY modal state
   final _syLabelCtrl = TextEditingController();
@@ -36,133 +43,156 @@ class _AcademicSettingsPageState extends State<AcademicSettingsPage> {
   @override
   void dispose() {
     _syLabelCtrl.dispose();
+    _visibleSyDocs.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    const detailsPaneWidth = 460.0;
 
     return Container(
       color: cs.surface,
       child: SafeArea(
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final w = constraints.maxWidth;
-            final desktop = w >= 1100;
-
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
+        child: ModernTableLayout(
+          detailsWidth: detailsPaneWidth,
+          header: ModernTableHeader(
+            title: 'Academic Settings',
+            subtitle:
+                'Create school years, configure 3 semesters, and set the active term.',
+            action: Row(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(24, 24, 24, 0),
-                  child: _Header(
-                    title: 'Academic Settings',
-                    subtitle:
-                        'Create school years, configure 3 semesters, and set the active term.',
-                    onCreateSY: () => _openCreateSYModal(context),
-                  ),
+                IconButton.filledTonal(
+                  onPressed: () => setState(() {}),
+                  icon: const Icon(Icons.refresh_rounded),
+                  tooltip: 'Refresh',
                 ),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(24, 16, 24, 16),
-                  child: _Toolbar(
-                    onSearchChanged: (v) => setState(() => _search = v),
-                    onRefresh: () => setState(() {}),
+                const SizedBox(width: 8),
+                FilledButton.icon(
+                  onPressed: () => _openCreateSYModal(context),
+                  style: FilledButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 20,
+                      vertical: 16,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(AppRadii.md),
+                    ),
                   ),
-                ),
-
-                Expanded(
-                  child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                    stream: _academicService.streamYears(),
-                    builder: (context, snap) {
-                      if (snap.connectionState == ConnectionState.waiting) {
-                        return const Center(child: CircularProgressIndicator());
-                      }
-                      if (snap.hasError) {
-                        return Center(child: Text('Error: ${snap.error}'));
-                      }
-                      if (!snap.hasData || snap.data!.docs.isEmpty) {
-                        return const _EmptyState(
-                          text: 'No school years found.',
-                        );
-                      }
-
-                      final raw = snap.data!.docs;
-
-                      final docs = raw.where((d) {
-                        if (_search.trim().isEmpty) return true;
-                        final q = _search.toLowerCase().trim();
-                        final label = _safeStr(d.data()['label']).toLowerCase();
-                        final status = _safeStr(
-                          d.data()['status'],
-                        ).toLowerCase();
-                        return label.contains(q) || status.contains(q);
-                      }).toList();
-
-                      if (_selectedIndex != null &&
-                          (_selectedIndex! < 0 ||
-                              _selectedIndex! >= docs.length)) {
-                        _selectedIndex = null;
-                      }
-
-                      final selected = (_selectedIndex != null)
-                          ? docs[_selectedIndex!]
-                          : null;
-
-                      final showTableOnly = desktop && selected == null;
-                      final showTableAndPanel = desktop && selected != null;
-
-                      if (!desktop) {
-                        // Mobile fallback: list + open modal for manage
-                        return Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 24),
-                          child: _MobileList(
-                            docs: docs,
-                            onOpenManage: (doc) =>
-                                _openManageTermsModal(context, doc),
-                          ),
-                        );
-                      }
-
-                      return Padding(
-                        padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Expanded(
-                              flex: showTableAndPanel ? 3 : 1,
-                              child: _SYTablePanel(
-                                docs: docs,
-                                selectedIndex: _selectedIndex,
-                                onSelect: (i) => setState(
-                                  () => _selectedIndex = (_selectedIndex == i
-                                      ? null
-                                      : i),
-                                ),
-                              ),
-                            ),
-                            if (selected != null) ...[
-                              const SizedBox(width: 24),
-                              Expanded(
-                                flex: 2,
-                                child: _ManageTermsPanel(
-                                  syDoc: selected,
-                                  onClose: () =>
-                                      setState(() => _selectedIndex = null),
-                                ),
-                              ),
-                            ],
-                          ],
-                        ),
-                      );
-                    },
+                  icon: const Icon(Icons.add_rounded),
+                  label: const Text(
+                    'New School Year',
+                    style: TextStyle(fontWeight: FontWeight.bold),
                   ),
                 ),
               ],
-            );
-          },
+            ),
+            searchBar: TextField(
+              onChanged: (v) => setState(() => _search = v),
+              decoration: InputDecoration(
+                hintText: 'Search school years...',
+                prefixIcon: const Icon(Icons.search_rounded),
+                filled: true,
+                fillColor: cs.surfaceContainerLowest,
+                contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(AppRadii.md),
+                  borderSide: BorderSide(color: cs.outlineVariant),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(AppRadii.md),
+                  borderSide: BorderSide(color: cs.outlineVariant),
+                ),
+              ),
+            ),
+          ),
+          body: _buildAcademicYearsContent(isDesktop: false),
+          desktopBody: _buildAcademicYearsContent(isDesktop: true),
+          showDetails: _selectedSyId != null,
+          details: _selectedSyId != null
+              ? ValueListenableBuilder<
+                  List<QueryDocumentSnapshot<Map<String, dynamic>>>
+                >(
+                  valueListenable: _visibleSyDocs,
+                  builder: (context, docs, _) {
+                    QueryDocumentSnapshot<Map<String, dynamic>>? selected;
+                    for (final doc in docs) {
+                      if (doc.id == _selectedSyId) {
+                        selected = doc;
+                        break;
+                      }
+                    }
+                    if (selected == null) {
+                      return const SizedBox();
+                    }
+                    return _ManageTermsPanel(
+                      syDoc: selected,
+                      onClose: () => setState(() => _selectedSyId = null),
+                    );
+                  },
+                )
+              : null,
         ),
       ),
+    );
+  }
+
+  Widget _buildAcademicYearsContent({required bool isDesktop}) {
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: _academicService.streamYears(),
+      builder: (context, snap) {
+        if (snap.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        if (snap.hasError) {
+          return Center(child: Text('Error: ${snap.error}'));
+        }
+        if (!snap.hasData || snap.data!.docs.isEmpty) {
+          return const _EmptyState(text: 'No school years found.');
+        }
+
+        final raw = snap.data!.docs;
+        final docs = raw.where((d) {
+          if (_search.trim().isEmpty) return true;
+          final q = _search.toLowerCase().trim();
+          final label = _safeStr(d.data()['label']).toLowerCase();
+          final status = _safeStr(d.data()['status']).toLowerCase();
+          return label.contains(q) || status.contains(q);
+        }).toList();
+        _visibleSyDocs.value = docs;
+
+        if (_selectedSyId != null &&
+            !docs.any((doc) => doc.id == _selectedSyId)) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted || _selectedSyId == null) return;
+            setState(() => _selectedSyId = null);
+          });
+        }
+
+        if (docs.isEmpty) {
+          return const _EmptyState(text: 'No school years found.');
+        }
+
+        if (!isDesktop) {
+          return Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            child: _MobileList(
+              docs: docs,
+              onOpenManage: (doc) => _openManageTermsModal(context, doc),
+            ),
+          );
+        }
+
+        return _SYTablePanel(
+          docs: docs,
+          selectedSyId: _selectedSyId,
+          onSelect: (syId) => setState(
+            () => _selectedSyId = _selectedSyId == syId ? null : syId,
+          ),
+        );
+      },
     );
   }
 
@@ -181,7 +211,7 @@ class _AcademicSettingsPageState extends State<AcademicSettingsPage> {
           backgroundColor: cs.surface,
           surfaceTintColor: cs.surface,
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
+            borderRadius: BorderRadius.circular(AppRadii.xxl),
           ),
           title: const Text(
             'New School Year',
@@ -207,16 +237,16 @@ class _AcademicSettingsPageState extends State<AcademicSettingsPage> {
                     filled: true,
                     fillColor: cs.surfaceContainerLowest,
                     border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
+                      borderRadius: BorderRadius.circular(AppRadii.md),
                     ),
                   ),
                 ),
                 const SizedBox(height: 12),
                 Container(
-                  padding: const EdgeInsets.all(12),
+                  padding: const EdgeInsets.all(AppSpacing.sm),
                   decoration: BoxDecoration(
                     color: cs.secondaryContainer.withValues(alpha: 0.4),
-                    borderRadius: BorderRadius.circular(12),
+                    borderRadius: BorderRadius.circular(AppRadii.md),
                   ),
                   child: Row(
                     children: [
@@ -303,7 +333,7 @@ class _AcademicSettingsPageState extends State<AcademicSettingsPage> {
           initialChildSize: 0.92,
           minChildSize: 0.60,
           maxChildSize: 0.96,
-          builder: (context, scrollCtrl) {
+          builder: (context, _) {
             return Container(
               decoration: BoxDecoration(
                 color: cs.surface,
@@ -311,14 +341,11 @@ class _AcademicSettingsPageState extends State<AcademicSettingsPage> {
                   top: Radius.circular(22),
                 ),
               ),
-              child: SingleChildScrollView(
-                controller: scrollCtrl,
-                padding: const EdgeInsets.all(16),
-                child: _ManageTermsPanel(
-                  syDoc: syDoc,
-                  isModal: true,
-                  onClose: () => Navigator.of(context).pop(),
-                ),
+              padding: const EdgeInsets.all(AppSpacing.md),
+              child: _ManageTermsPanel(
+                syDoc: syDoc,
+                isModal: true,
+                onClose: () => Navigator.of(context).pop(),
               ),
             );
           },
@@ -329,147 +356,17 @@ class _AcademicSettingsPageState extends State<AcademicSettingsPage> {
 }
 
 // ======================================================================
-// HEADER + TOOLBAR
-// ======================================================================
-
-class _Header extends StatelessWidget {
-  final String title;
-  final String subtitle;
-  final VoidCallback onCreateSY;
-
-  const _Header({
-    required this.title,
-    required this.subtitle,
-    required this.onCreateSY,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final isNarrow = constraints.maxWidth < 450;
-
-        return Row(
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: TextStyle(
-                      color: cs.onSurface,
-                      fontWeight: FontWeight.bold,
-                      fontSize: isNarrow ? 22 : 28,
-                      letterSpacing: -0.5,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    subtitle,
-                    style: TextStyle(
-                      color: cs.onSurfaceVariant,
-                      fontSize: isNarrow ? 12 : 14,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(width: 12),
-            if (isNarrow)
-              IconButton.filled(
-                onPressed: onCreateSY,
-                icon: const Icon(Icons.add_rounded),
-                tooltip: 'New School Year',
-              )
-            else
-              FilledButton.icon(
-                onPressed: onCreateSY,
-                style: FilledButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 24,
-                    vertical: 16,
-                  ),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                ),
-                icon: const Icon(Icons.add_rounded),
-                label: const Text(
-                  'New School Year',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-              ),
-          ],
-        );
-      },
-    );
-  }
-}
-
-class _Toolbar extends StatelessWidget {
-  final ValueChanged<String> onSearchChanged;
-  final VoidCallback onRefresh;
-
-  const _Toolbar({required this.onSearchChanged, required this.onRefresh});
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-
-    return Row(
-      children: [
-        Expanded(
-          child: TextField(
-            onChanged: onSearchChanged,
-            decoration: InputDecoration(
-              hintText: 'Search school years...',
-              prefixIcon: const Icon(Icons.search_rounded),
-              filled: true,
-              fillColor: cs.surfaceContainerLowest,
-              contentPadding: const EdgeInsets.symmetric(horizontal: 16),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide(color: cs.outlineVariant),
-              ),
-              enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide(color: cs.outlineVariant),
-              ),
-            ),
-          ),
-        ),
-        const SizedBox(width: 12),
-        IconButton.filledTonal(
-          onPressed: onRefresh,
-          style: IconButton.styleFrom(
-            padding: const EdgeInsets.all(12),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-          ),
-          icon: const Icon(Icons.refresh_rounded),
-          tooltip: 'Refresh',
-        ),
-      ],
-    );
-  }
-}
-
-// ======================================================================
 // LEFT: SY TABLE PANEL (DESKTOP)
 // ======================================================================
 
 class _SYTablePanel extends StatelessWidget {
   final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs;
-  final int? selectedIndex;
-  final ValueChanged<int> onSelect;
+  final String? selectedSyId;
+  final ValueChanged<String> onSelect;
 
   const _SYTablePanel({
     required this.docs,
-    required this.selectedIndex,
+    required this.selectedSyId,
     required this.onSelect,
   });
 
@@ -477,194 +374,210 @@ class _SYTablePanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
 
-    return Card(
-      elevation: 0,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: BorderSide(color: cs.outlineVariant.withValues(alpha: 0.5)),
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          _PanelTitle(
-            icon: Icons.calendar_month_rounded,
-            title: 'School Years',
-            subtitle: 'Select a school year to manage terms.',
-          ),
-          const Divider(height: 1),
-          const _SYHeaderRow(),
-          const Divider(height: 1),
-          Expanded(
-            child: docs.isEmpty
-                ? const _EmptyState(text: 'No school years found.')
-                : ListView.builder(
-                    itemCount: docs.length,
-                    itemBuilder: (context, i) {
-                      return _SYRow(
-                        doc: docs[i],
-                        selected: selectedIndex == i,
-                        onTap: () => onSelect(i),
-                        isLast: i == docs.length - 1,
-                      );
-                    },
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+      child: Container(
+        width: double.infinity,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(AppRadii.xl),
+          border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+        ),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final tableWidth = constraints.maxWidth;
+            const totalWeight = 8.3;
+            double colWidth(double weight, double minWidth) {
+              final value = tableWidth * (weight / totalWeight);
+              return value < minWidth ? minWidth : value;
+            }
+
+            final schoolYearColWidth = colWidth(3.8, 220);
+            final statusColWidth = colWidth(1.6, 140);
+            final termColWidth = colWidth(2.1, 150);
+            final detailsColWidth = colWidth(0.8, 90);
+
+            return SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(minWidth: constraints.maxWidth),
+                child: DataTable(
+                  showCheckboxColumn: false,
+                  headingRowColor: WidgetStateProperty.all(
+                    cs.surfaceContainerLowest,
                   ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _SYHeaderRow extends StatelessWidget {
-  const _SYHeaderRow();
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final style = TextStyle(
-      color: cs.onSurfaceVariant,
-      fontWeight: FontWeight.bold,
-      fontSize: 12,
-    );
-
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final hideTerm = constraints.maxWidth < 500;
-
-        return Container(
-          color: cs.surfaceContainerLowest,
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-          child: Row(
-            children: [
-              Expanded(flex: 3, child: Text('SCHOOL YEAR', style: style)),
-              Expanded(flex: 2, child: Text('STATUS', style: style)),
-              if (!hideTerm)
-                Expanded(flex: 2, child: Text('ACTIVE TERM', style: style)),
-              const SizedBox(width: 48), // Space for action/chevron
-            ],
-          ),
-        );
-      },
-    );
-  }
-}
-
-class _SYRow extends StatelessWidget {
-  final QueryDocumentSnapshot<Map<String, dynamic>> doc;
-  final bool selected;
-  final VoidCallback onTap;
-  final bool isLast;
-
-  const _SYRow({
-    required this.doc,
-    required this.selected,
-    required this.onTap,
-    this.isLast = false,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final d = doc.data();
-
-    final label = _safeStr(d['label']).isEmpty ? doc.id : _safeStr(d['label']);
-    final status = _safeStr(d['status']).isEmpty
-        ? 'archived'
-        : _safeStr(d['status']);
-    final activeTermId = _safeStr(d['activeTermId']).isEmpty
-        ? 'term1'
-        : _safeStr(d['activeTermId']);
-
-    final isActive = status.toLowerCase() == 'active';
-
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final hideTerm = constraints.maxWidth < 500;
-
-        return Column(
-          children: [
-            InkWell(
-              onTap: onTap,
-              child: Container(
-                color: selected
-                    ? cs.primaryContainer.withValues(alpha: 0.3)
-                    : null,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 24,
-                  vertical: 16,
-                ),
-                child: Row(
-                  children: [
-                    Expanded(
-                      flex: 3,
-                      child: Text(
-                        label,
-                        style: TextStyle(
-                          color: cs.onSurface,
-                          fontWeight: selected
-                              ? FontWeight.bold
-                              : FontWeight.normal,
-                          fontSize: 15,
+                  columnSpacing: 24,
+                  dataRowMinHeight: 56,
+                  dataRowMaxHeight: 56,
+                  columns: [
+                    DataColumn(
+                      label: SizedBox(
+                        width: schoolYearColWidth,
+                        child: Text(
+                          'SCHOOL YEAR',
+                          style: TextStyle(
+                            color: cs.onSurfaceVariant,
+                            fontWeight: FontWeight.w900,
+                            fontSize: 12,
+                            letterSpacing: 0.5,
+                          ),
                         ),
                       ),
                     ),
-                    Expanded(
-                      flex: 2,
-                      child: Row(
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 8,
-                              vertical: 4,
-                            ),
-                            decoration: BoxDecoration(
-                              color: isActive
-                                  ? cs.primaryContainer
-                                  : cs.surfaceContainerHighest,
-                              borderRadius: BorderRadius.circular(6),
-                            ),
+                    DataColumn(
+                      label: SizedBox(
+                        width: statusColWidth,
+                        child: Text(
+                          'STATUS',
+                          style: TextStyle(
+                            color: cs.onSurfaceVariant,
+                            fontWeight: FontWeight.w900,
+                            fontSize: 12,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                      ),
+                    ),
+                    DataColumn(
+                      label: SizedBox(
+                        width: termColWidth,
+                        child: Text(
+                          'ACTIVE TERM',
+                          style: TextStyle(
+                            color: cs.onSurfaceVariant,
+                            fontWeight: FontWeight.w900,
+                            fontSize: 12,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                      ),
+                    ),
+                    DataColumn(
+                      label: SizedBox(
+                        width: detailsColWidth,
+                        child: Text(
+                          'DETAILS',
+                          style: TextStyle(
+                            color: cs.onSurfaceVariant,
+                            fontWeight: FontWeight.w900,
+                            fontSize: 12,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                  rows: docs.map((doc) {
+                    final d = doc.data();
+                    final label = _safeStr(d['label']).isEmpty
+                        ? doc.id
+                        : _safeStr(d['label']);
+                    final status = _safeStr(d['status']).isEmpty
+                        ? 'archived'
+                        : _safeStr(d['status']);
+                    final activeTermId = _safeStr(d['activeTermId']).isEmpty
+                        ? 'term1'
+                        : _safeStr(d['activeTermId']);
+                    final isActive = status.toLowerCase() == 'active';
+                    final isSelected = selectedSyId == doc.id;
+
+                    return DataRow(
+                      selected: isSelected,
+                      color: WidgetStateProperty.resolveWith<Color?>((_) {
+                        if (isSelected) {
+                          return cs.primary.withValues(alpha: 0.08);
+                        }
+                        return null;
+                      }),
+                      onSelectChanged: (selected) {
+                        if (selected == null || !selected) return;
+                        onSelect(doc.id);
+                      },
+                      cells: [
+                        DataCell(
+                          SizedBox(
+                            width: schoolYearColWidth,
                             child: Text(
-                              status.toUpperCase(),
+                              label,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
                               style: TextStyle(
-                                color: isActive
-                                    ? cs.onPrimaryContainer
-                                    : cs.onSurfaceVariant,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 10,
+                                color: cs.onSurface,
+                                fontWeight: FontWeight.w700,
                               ),
                             ),
                           ),
-                        ],
-                      ),
-                    ),
-                    if (!hideTerm)
-                      Expanded(
-                        flex: 2,
-                        child: Text(
-                          _termIdToLabel(activeTermId),
-                          style: TextStyle(
-                            color: cs.onSurfaceVariant,
-                            fontSize: 14,
+                        ),
+                        DataCell(
+                          SizedBox(
+                            width: statusColWidth,
+                            child: Align(
+                              alignment: Alignment.centerLeft,
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 4,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: isActive
+                                      ? cs.primaryContainer
+                                      : cs.surfaceContainerHighest,
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: Text(
+                                  status.toUpperCase(),
+                                  style: TextStyle(
+                                    color: isActive
+                                        ? cs.onPrimaryContainer
+                                        : cs.onSurfaceVariant,
+                                    fontWeight: FontWeight.w800,
+                                    fontSize: 10,
+                                    letterSpacing: 0.4,
+                                  ),
+                                ),
+                              ),
+                            ),
                           ),
                         ),
-                      ),
-                    Icon(
-                      selected
-                          ? Icons.chevron_right_rounded
-                          : Icons.chevron_right_rounded,
-                      color: selected
-                          ? cs.primary
-                          : cs.onSurfaceVariant.withValues(alpha: 0.5),
-                    ),
-                  ],
+                        DataCell(
+                          SizedBox(
+                            width: termColWidth,
+                            child: Text(
+                              _termIdToLabel(activeTermId),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: cs.onSurfaceVariant,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ),
+                        DataCell(
+                          SizedBox(
+                            width: detailsColWidth,
+                            child: Align(
+                              alignment: Alignment.centerLeft,
+                              child: Icon(
+                                Icons.chevron_right_rounded,
+                                color: isSelected
+                                    ? cs.primary
+                                    : cs.onSurfaceVariant.withValues(
+                                        alpha: 0.7,
+                                      ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    );
+                  }).toList(),
                 ),
               ),
-            ),
-            if (!isLast) const Divider(height: 1, indent: 24, endIndent: 24),
-          ],
-        );
-      },
+            );
+          },
+        ),
+      ),
     );
   }
 }
@@ -806,274 +719,262 @@ class _ManageTermsPanelState extends State<_ManageTermsPanel> {
     final status = _safeStr(d['status']).toLowerCase();
     final isActive = status == 'active';
 
-    return Card(
-      elevation: 0,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: BorderSide(color: cs.outlineVariant.withValues(alpha: 0.5)),
-      ),
-      clipBehavior: Clip.antiAlias,
+    final formBody = SingleChildScrollView(
+      padding: const EdgeInsets.all(AppSpacing.md),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Container(
-            padding: const EdgeInsets.all(16),
-            color: cs.surfaceContainerLowest,
-            child: Row(
+          _TermSection(
+            title: '1st Semester',
+            start: _t1Start,
+            end: _t1End,
+            onPickStart: () => _pickDate(context, true, 'term1'),
+            onPickEnd: () => _pickDate(context, false, 'term1'),
+          ),
+          const SizedBox(height: 16),
+          _TermSection(
+            title: '2nd Semester',
+            start: _t2Start,
+            end: _t2End,
+            onPickStart: () => _pickDate(context, true, 'term2'),
+            onPickEnd: () => _pickDate(context, false, 'term2'),
+          ),
+          const SizedBox(height: 16),
+          _TermSection(
+            title: '3rd Semester',
+            start: _t3Start,
+            end: _t3End,
+            onPickStart: () => _pickDate(context, true, 'term3'),
+            onPickEnd: () => _pickDate(context, false, 'term3'),
+          ),
+          const SizedBox(height: 24),
+          Text(
+            'Active Semester',
+            style: TextStyle(
+              color: cs.onSurface,
+              fontWeight: FontWeight.bold,
+              fontSize: 14,
+            ),
+          ),
+          const SizedBox(height: 8),
+          DropdownButtonFormField<String>(
+            initialValue: _activeTermId,
+            items: const [
+              DropdownMenuItem(value: 'term1', child: Text('1st Semester')),
+              DropdownMenuItem(value: 'term2', child: Text('2nd Semester')),
+              DropdownMenuItem(value: 'term3', child: Text('3rd Semester')),
+            ],
+            onChanged: (v) => setState(() => _activeTermId = v ?? 'term1'),
+            decoration: InputDecoration(
+              filled: true,
+              fillColor: cs.surfaceContainerLowest,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(AppRadii.md),
+                borderSide: BorderSide(color: cs.outlineVariant),
+              ),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+            ),
+          ),
+          const SizedBox(height: 24),
+          if (_saving)
+            const LinearProgressIndicator()
+          else
+            Column(
               children: [
-                Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: cs.primary.withValues(alpha: 0.1),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Icon(Icons.tune_rounded, color: cs.primary, size: 20),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Manage SY $label',
-                        style: const TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 16,
-                        ),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton(
+                    onPressed: () async {
+                      final err = _validateDates();
+                      if (err != null) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Cannot activate: $err')),
+                        );
+                        return;
+                      }
+
+                      setState(() => _saving = true);
+                      try {
+                        await _academicService.saveTermsAndActiveTerm(
+                          syId: widget.syDoc.id,
+                          activeTermId: _activeTermId,
+                          termDates: {
+                            'term1': TermDates(
+                              startAt: Timestamp.fromDate(_t1Start!),
+                              endAt: Timestamp.fromDate(_t1End!),
+                            ),
+                            'term2': TermDates(
+                              startAt: Timestamp.fromDate(_t2Start!),
+                              endAt: Timestamp.fromDate(_t2End!),
+                            ),
+                            'term3': TermDates(
+                              startAt: Timestamp.fromDate(_t3Start!),
+                              endAt: Timestamp.fromDate(_t3End!),
+                            ),
+                          },
+                        );
+                        await _academicService.setActiveSchoolYear(
+                          widget.syDoc.id,
+                        );
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('School Year set as active.'),
+                            ),
+                          );
+                        }
+                      } catch (e) {
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(
+                            context,
+                          ).showSnackBar(SnackBar(content: Text('Error: $e')));
+                        }
+                      } finally {
+                        if (mounted) setState(() => _saving = false);
+                      }
+                    },
+                    style: FilledButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(AppRadii.md),
                       ),
-                      Text(
-                        isActive ? 'Currently Active' : 'Archived School Year',
-                        style: TextStyle(
-                          color: cs.onSurfaceVariant,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                if (widget.onClose != null)
-                  IconButton(
-                    onPressed: widget.onClose,
-                    icon: const Icon(Icons.close_rounded),
-                    style: IconButton.styleFrom(
-                      backgroundColor: cs.surfaceContainerHighest,
                     ),
+                    child: const Text('Set as Active School Year'),
                   ),
+                ),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton(
+                    onPressed: () async {
+                      setState(() => _saving = true);
+                      try {
+                        await _academicService.saveTermsAndActiveTerm(
+                          syId: widget.syDoc.id,
+                          activeTermId: _activeTermId,
+                          termDates: {
+                            'term1': TermDates(
+                              startAt: _t1Start != null
+                                  ? Timestamp.fromDate(_t1Start!)
+                                  : null,
+                              endAt: _t1End != null
+                                  ? Timestamp.fromDate(_t1End!)
+                                  : null,
+                            ),
+                            'term2': TermDates(
+                              startAt: _t2Start != null
+                                  ? Timestamp.fromDate(_t2Start!)
+                                  : null,
+                              endAt: _t2End != null
+                                  ? Timestamp.fromDate(_t2End!)
+                                  : null,
+                            ),
+                            'term3': TermDates(
+                              startAt: _t3Start != null
+                                  ? Timestamp.fromDate(_t3Start!)
+                                  : null,
+                              endAt: _t3End != null
+                                  ? Timestamp.fromDate(_t3End!)
+                                  : null,
+                            ),
+                          },
+                        );
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Changes saved.')),
+                          );
+                        }
+                      } catch (e) {
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(
+                            context,
+                          ).showSnackBar(SnackBar(content: Text('Error: $e')));
+                        }
+                      } finally {
+                        if (mounted) setState(() => _saving = false);
+                      }
+                    },
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(AppRadii.md),
+                      ),
+                    ),
+                    child: const Text('Save Draft'),
+                  ),
+                ),
               ],
             ),
-          ),
-          const Divider(height: 1),
-          Expanded(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  _TermSection(
-                    title: '1st Semester',
-                    start: _t1Start,
-                    end: _t1End,
-                    onPickStart: () => _pickDate(context, true, 'term1'),
-                    onPickEnd: () => _pickDate(context, false, 'term1'),
-                  ),
-                  const SizedBox(height: 16),
-                  _TermSection(
-                    title: '2nd Semester',
-                    start: _t2Start,
-                    end: _t2End,
-                    onPickStart: () => _pickDate(context, true, 'term2'),
-                    onPickEnd: () => _pickDate(context, false, 'term2'),
-                  ),
-                  const SizedBox(height: 16),
-                  _TermSection(
-                    title: '3rd Semester',
-                    start: _t3Start,
-                    end: _t3End,
-                    onPickStart: () => _pickDate(context, true, 'term3'),
-                    onPickEnd: () => _pickDate(context, false, 'term3'),
-                  ),
-                  const SizedBox(height: 24),
-                  Text(
-                    'Active Semester',
-                    style: TextStyle(
-                      color: cs.onSurface,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 14,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  DropdownButtonFormField<String>(
-                    initialValue: _activeTermId,
-                    items: const [
-                      DropdownMenuItem(
-                        value: 'term1',
-                        child: Text('1st Semester'),
-                      ),
-                      DropdownMenuItem(
-                        value: 'term2',
-                        child: Text('2nd Semester'),
-                      ),
-                      DropdownMenuItem(
-                        value: 'term3',
-                        child: Text('3rd Semester'),
-                      ),
-                    ],
-                    onChanged: (v) =>
-                        setState(() => _activeTermId = v ?? 'term1'),
-                    decoration: InputDecoration(
-                      filled: true,
-                      fillColor: cs.surfaceContainerLowest,
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide(color: cs.outlineVariant),
-                      ),
-                      contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-                  if (_saving)
-                    const LinearProgressIndicator()
-                  else
-                    Column(
-                      children: [
-                        SizedBox(
-                          width: double.infinity,
-                          child: FilledButton(
-                            onPressed: () async {
-                              final err = _validateDates();
-                              if (err != null) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text('Cannot activate: $err'),
-                                  ),
-                                );
-                                return;
-                              }
-
-                              setState(() => _saving = true);
-                              try {
-                                await _academicService.saveTermsAndActiveTerm(
-                                  syId: widget.syDoc.id,
-                                  activeTermId: _activeTermId,
-                                  termDates: {
-                                    'term1': TermDates(
-                                      startAt: Timestamp.fromDate(_t1Start!),
-                                      endAt: Timestamp.fromDate(_t1End!),
-                                    ),
-                                    'term2': TermDates(
-                                      startAt: Timestamp.fromDate(_t2Start!),
-                                      endAt: Timestamp.fromDate(_t2End!),
-                                    ),
-                                    'term3': TermDates(
-                                      startAt: Timestamp.fromDate(_t3Start!),
-                                      endAt: Timestamp.fromDate(_t3End!),
-                                    ),
-                                  },
-                                );
-                                await _academicService.setActiveSchoolYear(
-                                  widget.syDoc.id,
-                                );
-                                if (context.mounted) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(
-                                      content: Text(
-                                        'School Year set as active.',
-                                      ),
-                                    ),
-                                  );
-                                }
-                              } catch (e) {
-                                if (context.mounted) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(content: Text('Error: $e')),
-                                  );
-                                }
-                              } finally {
-                                if (mounted) setState(() => _saving = false);
-                              }
-                            },
-                            style: FilledButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(vertical: 16),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                            ),
-                            child: const Text('Set as Active School Year'),
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        SizedBox(
-                          width: double.infinity,
-                          child: OutlinedButton(
-                            onPressed: () async {
-                              setState(() => _saving = true);
-                              try {
-                                await _academicService.saveTermsAndActiveTerm(
-                                  syId: widget.syDoc.id,
-                                  activeTermId: _activeTermId,
-                                  termDates: {
-                                    'term1': TermDates(
-                                      startAt: _t1Start != null
-                                          ? Timestamp.fromDate(_t1Start!)
-                                          : null,
-                                      endAt: _t1End != null
-                                          ? Timestamp.fromDate(_t1End!)
-                                          : null,
-                                    ),
-                                    'term2': TermDates(
-                                      startAt: _t2Start != null
-                                          ? Timestamp.fromDate(_t2Start!)
-                                          : null,
-                                      endAt: _t2End != null
-                                          ? Timestamp.fromDate(_t2End!)
-                                          : null,
-                                    ),
-                                    'term3': TermDates(
-                                      startAt: _t3Start != null
-                                          ? Timestamp.fromDate(_t3Start!)
-                                          : null,
-                                      endAt: _t3End != null
-                                          ? Timestamp.fromDate(_t3End!)
-                                          : null,
-                                    ),
-                                  },
-                                );
-                                if (context.mounted) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(
-                                      content: Text('Changes saved.'),
-                                    ),
-                                  );
-                                }
-                              } catch (e) {
-                                if (context.mounted) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(content: Text('Error: $e')),
-                                  );
-                                }
-                              } finally {
-                                if (mounted) setState(() => _saving = false);
-                              }
-                            },
-                            style: OutlinedButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(vertical: 16),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                            ),
-                            child: const Text('Save Draft'),
-                          ),
-                        ),
-                      ],
-                    ),
-                ],
-              ),
-            ),
-          ),
         ],
       ),
     );
+
+    final panelBody = Column(
+      children: [
+        Container(
+          padding: const EdgeInsets.all(AppSpacing.md),
+          color: cs.surfaceContainerLowest,
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: cs.primary.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(Icons.tune_rounded, color: cs.primary, size: 20),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Manage SY $label',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                      ),
+                    ),
+                    Text(
+                      isActive ? 'Currently Active' : 'Archived School Year',
+                      style: TextStyle(
+                        color: cs.onSurfaceVariant,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (widget.onClose != null)
+                IconButton(
+                  onPressed: widget.onClose,
+                  icon: const Icon(Icons.close_rounded),
+                  style: IconButton.styleFrom(
+                    backgroundColor: cs.surfaceContainerHighest,
+                  ),
+                ),
+            ],
+          ),
+        ),
+        const Divider(height: 1),
+        if (widget.isModal) formBody else Expanded(child: formBody),
+      ],
+    );
+
+    if (widget.isModal) {
+      return Container(
+        decoration: BoxDecoration(
+          color: cs.surface,
+          borderRadius: BorderRadius.circular(AppRadii.xl),
+          border: Border.all(color: cs.outlineVariant.withValues(alpha: 0.5)),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: panelBody,
+      );
+    }
+
+    return Container(color: const Color(0xFFF9FBF9), child: panelBody);
   }
 }
 
@@ -1094,8 +995,6 @@ class _TermSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-
     return LayoutBuilder(
       builder: (context, constraints) {
         final useVertical = constraints.maxWidth < 340;
@@ -1152,12 +1051,12 @@ class _DateButton extends StatelessWidget {
 
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
+      borderRadius: BorderRadius.circular(AppRadii.md),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
         decoration: BoxDecoration(
           color: cs.surfaceContainerLowest,
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(AppRadii.md),
           border: Border.all(color: cs.outlineVariant),
         ),
         child: Column(
@@ -1227,14 +1126,14 @@ class _MobileList extends StatelessWidget {
           elevation: 0,
           margin: const EdgeInsets.only(bottom: 12),
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
+            borderRadius: BorderRadius.circular(AppRadii.xl),
             side: BorderSide(color: cs.outlineVariant.withValues(alpha: 0.5)),
           ),
           clipBehavior: Clip.antiAlias,
           child: InkWell(
             onTap: () => onOpenManage(docs[i]),
             child: Padding(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.all(AppSpacing.md),
               child: Row(
                 children: [
                   Container(
@@ -1242,7 +1141,7 @@ class _MobileList extends StatelessWidget {
                     height: 48,
                     decoration: BoxDecoration(
                       color: cs.primary.withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(12),
+                      borderRadius: BorderRadius.circular(AppRadii.md),
                     ),
                     child: Icon(
                       Icons.calendar_today_rounded,
@@ -1314,239 +1213,6 @@ class _MobileList extends StatelessWidget {
 }
 
 // ======================================================================
-// REUSABLE UI PIECES
-// ======================================================================
-
-class _PanelTitle extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final String subtitle;
-
-  const _PanelTitle({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
-      child: Row(
-        children: [
-          Icon(icon, color: cs.primary),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w900,
-                    fontSize: 15.4,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  subtitle,
-                  style: TextStyle(
-                    color: cs.onSurfaceVariant,
-                    fontWeight: FontWeight.w600,
-                    fontSize: 12.4,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _SectionCard extends StatelessWidget {
-  final String title;
-  final Widget child;
-
-  const _SectionCard({required this.title, required this.child});
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: cs.surface,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: cs.outlineVariant.withValues(alpha: 0.8)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
-          const SizedBox(height: 10),
-          child,
-        ],
-      ),
-    );
-  }
-}
-
-class _TermCard extends StatelessWidget {
-  final String title;
-  final DateTime? start;
-  final DateTime? end;
-  final VoidCallback onPickStart;
-  final VoidCallback onPickEnd;
-
-  const _TermCard({
-    required this.title,
-    required this.start,
-    required this.end,
-    required this.onPickStart,
-    required this.onPickEnd,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-
-    String fmt(DateTime? d) => d == null
-        ? 'Not set'
-        : '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
-
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: cs.surface,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: cs.outlineVariant.withValues(alpha: 0.8)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
-          const SizedBox(height: 10),
-          Row(
-            children: [
-              Expanded(
-                child: _DateBox(
-                  label: 'Start Date',
-                  value: fmt(start),
-                  onTap: onPickStart,
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: _DateBox(
-                  label: 'End Date',
-                  value: fmt(end),
-                  onTap: onPickEnd,
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _DateBox extends StatelessWidget {
-  final String label;
-  final String value;
-  final VoidCallback onTap;
-
-  const _DateBox({
-    required this.label,
-    required this.value,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(14),
-      child: Container(
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: cs.surfaceContainerHigh,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: cs.outlineVariant.withValues(alpha: 0.8)),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              label,
-              style: TextStyle(
-                color: cs.onSurfaceVariant,
-                fontWeight: FontWeight.w800,
-                fontSize: 12.2,
-              ),
-            ),
-            const SizedBox(height: 6),
-            Text(value, style: const TextStyle(fontWeight: FontWeight.w900)),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _Pill extends StatelessWidget {
-  final String text;
-  final _Tone tone;
-
-  const _Pill({required this.text, required this.tone});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: tone.fill,
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: tone.border),
-      ),
-      child: Text(
-        text,
-        style: TextStyle(
-          color: tone.text,
-          fontWeight: FontWeight.w900,
-          fontSize: 12.0,
-        ),
-      ),
-    );
-  }
-}
-
-class _HintText extends StatelessWidget {
-  final String text;
-  const _HintText(this.text);
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Text(
-      text,
-      style: TextStyle(
-        color: cs.onSurfaceVariant,
-        fontWeight: FontWeight.w600,
-        fontSize: 12.2,
-      ),
-    );
-  }
-}
-
-// ======================================================================
 // STATES
 // ======================================================================
 
@@ -1573,51 +1239,11 @@ class _EmptyState extends StatelessWidget {
   }
 }
 
-class _ErrorState extends StatelessWidget {
-  final String error;
-  const _ErrorState({required this.error});
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(18),
-        child: Text(
-          "Error:\n$error",
-          textAlign: TextAlign.center,
-          style: TextStyle(color: cs.error, fontWeight: FontWeight.w900),
-        ),
-      ),
-    );
-  }
-}
-
 // ======================================================================
 // HELPERS
 // ======================================================================
 
-class _Tone {
-  final Color fill;
-  final Color border;
-  final Color text;
-
-  const _Tone({required this.fill, required this.border, required this.text});
-}
-
 String _safeStr(dynamic v) => (v ?? '').toString().trim();
-
-String _titleCase(String s) {
-  final t = s.trim();
-  if (t.isEmpty) return t;
-  final parts = t.replaceAll('_', ' ').split(RegExp(r'\s+'));
-  return parts
-      .map(
-        (p) =>
-            p.isEmpty ? p : p[0].toUpperCase() + p.substring(1).toLowerCase(),
-      )
-      .join(' ');
-}
 
 String _termIdToLabel(String termId) {
   switch (termId) {

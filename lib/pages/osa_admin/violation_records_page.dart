@@ -7,6 +7,7 @@ import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../shared/widgets/modern_table_layout.dart';
+import '../shared/widgets/app_layout_tokens.dart';
 import '../shared/widgets/responsive_layout_tokens.dart';
 
 class ViolationRecordsFilterPreset {
@@ -39,8 +40,13 @@ class ViolationRecordsFilterPreset {
 
 class ViolationRecordsPage extends StatefulWidget {
   final ViolationRecordsFilterPreset? initialFilterPreset;
+  final String? initialSelectedCaseId;
 
-  const ViolationRecordsPage({super.key, this.initialFilterPreset});
+  const ViolationRecordsPage({
+    super.key,
+    this.initialFilterPreset,
+    this.initialSelectedCaseId,
+  });
 
   @override
   State<ViolationRecordsPage> createState() => _ViolationRecordsPageState();
@@ -79,11 +85,17 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
   final LayerLink _advancedFiltersLink = LayerLink();
   OverlayEntry? _advancedFiltersEntry;
   String? _selectedCaseId;
+  final ValueNotifier<List<QueryDocumentSnapshot<Map<String, dynamic>>>>
+  _visibleRecordDocs =
+      ValueNotifier<List<QueryDocumentSnapshot<Map<String, dynamic>>>>(
+        const [],
+      );
 
   @override
   void initState() {
     super.initState();
     _applyInitialPreset(widget.initialFilterPreset);
+    _applyInitialSelectedCase(widget.initialSelectedCaseId, updateState: false);
   }
 
   @override
@@ -92,6 +104,11 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
     if (!identical(oldWidget.initialFilterPreset, widget.initialFilterPreset)) {
       _applyInitialPreset(widget.initialFilterPreset);
     }
+    final oldCaseId = (oldWidget.initialSelectedCaseId ?? '').trim();
+    final newCaseId = (widget.initialSelectedCaseId ?? '').trim();
+    if (oldCaseId != newCaseId) {
+      _applyInitialSelectedCase(newCaseId, updateState: true);
+    }
   }
 
   @override
@@ -99,6 +116,7 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
     _searchDebounce?.cancel();
     _advancedFiltersEntry?.remove();
     _advancedFiltersEntry = null;
+    _visibleRecordDocs.dispose();
     _searchCtrl.dispose();
     super.dispose();
   }
@@ -156,6 +174,21 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
     if (preset.term != null && preset.term!.trim().isNotEmpty) {
       _termFilter = preset.term!.trim();
     }
+  }
+
+  void _applyInitialSelectedCase(
+    String? rawCaseId, {
+    required bool updateState,
+  }) {
+    final caseId = (rawCaseId ?? '').trim();
+    if (updateState) {
+      setState(() {
+        _selectedCaseId = caseId.isEmpty ? null : caseId;
+      });
+      return;
+    }
+    if (caseId.isEmpty) return;
+    _selectedCaseId = caseId;
   }
 
   void _onSearchChanged(String value) {
@@ -292,128 +325,88 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: _bg,
-      body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-        stream: FirebaseFirestore.instance
-            .collection('violation_cases')
-            .snapshots(),
-        builder: (context, snap) {
-          if (snap.hasError) {
-            return Center(child: Text('Error: ${snap.error}'));
-          }
-          if (!snap.hasData) {
-            return const Center(child: CircularProgressIndicator());
-          }
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final screenWidth = constraints.maxWidth;
+        final compactFilters = screenWidth < 920;
+        final preferDesktopTable = screenWidth >= 900;
+        final pageHorizontalPadding =
+            ResponsiveLayoutTokens.pageHorizontalPadding(screenWidth);
+        final detailsWidth = (constraints.maxWidth * 0.33)
+            .clamp(320.0, 420.0)
+            .toDouble();
 
-          final allDocs = snap.data!.docs;
-          final resolvedDocs =
-              allDocs
-                  .where(
-                    (doc) => _isResolvedStatus(_value(doc.data()['status'])),
-                  )
-                  .toList()
-                ..sort((a, b) {
-                  final ad = _bestDate(a.data());
-                  final bd = _bestDate(b.data());
-                  if (ad == null && bd == null) return 0;
-                  if (ad == null) return 1;
-                  if (bd == null) return -1;
-                  return bd.compareTo(ad);
-                });
-
-          final categoryOptions = _collectOptions(resolvedDocs, _categoryValue);
-          final violationOptions = _collectOptions(
-            resolvedDocs,
-            _violationTypeValue,
-          );
-          final reporterOptions = _collectOptions(resolvedDocs, _reporterValue);
-          final departmentProgramOptions = _collectOptions(
-            resolvedDocs,
-            _departmentProgramValue,
-          );
-          final outcomeOptions = _collectOptions(resolvedDocs, _outcomeValue);
-          final schoolYearOptions = _collectOptions(
-            resolvedDocs,
-            _schoolYearValue,
-          );
-          final termOptions = _collectOptions(resolvedDocs, _termValue);
-
-          final filtered = resolvedDocs.where((doc) {
-            final data = doc.data();
-            if (!_matchesSearch(data, doc.id)) return false;
-            if (!_matchesConcern(data)) return false;
-            if (!_matchesDate(data)) return false;
-            if (!_matchesAdvancedFilters(data)) return false;
-            return true;
-          }).toList();
-
-          QueryDocumentSnapshot<Map<String, dynamic>>? selectedDoc;
-          if (_selectedCaseId != null) {
-            for (final doc in filtered) {
-              if (doc.id == _selectedCaseId) {
-                selectedDoc = doc;
-                break;
+        return Scaffold(
+          backgroundColor: _bg,
+          body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+            stream: FirebaseFirestore.instance
+                .collection('violation_cases')
+                .snapshots(),
+            builder: (context, snap) {
+              if (snap.hasError) {
+                return Center(child: Text('Error: ${snap.error}'));
               }
-            }
-          }
+              if (!snap.hasData) {
+                return const Center(child: CircularProgressIndicator());
+              }
 
-          final screenWidth = MediaQuery.sizeOf(context).width;
-          final compactFilters = screenWidth < 920;
-          final pageHorizontalPadding =
-              ResponsiveLayoutTokens.pageHorizontalPadding(screenWidth);
-          final pageMaxWidth = ResponsiveLayoutTokens.contentMaxWidth(
-            screenWidth,
-          );
-          final detailsWidth = screenWidth >= 1720 ? 500.0 : 460.0;
-          final headerFilters = <Widget>[
-            if (compactFilters)
-              _buildCompactFiltersButton(
-                onTap: () => _openCompactFiltersSheet(
-                  categoryOptions: categoryOptions,
-                  violationOptions: violationOptions,
-                  reporterOptions: reporterOptions,
-                  departmentProgramOptions: departmentProgramOptions,
-                  outcomeOptions: outcomeOptions,
-                  schoolYearOptions: schoolYearOptions,
-                  termOptions: termOptions,
-                ),
-              ),
-            ..._buildHeaderFilterChipWidgets(),
-          ];
+              final allDocs = snap.data!.docs;
+              final resolvedDocs =
+                  allDocs
+                      .where(
+                        (doc) =>
+                            _isResolvedStatus(_value(doc.data()['status'])),
+                      )
+                      .toList()
+                    ..sort((a, b) {
+                      final ad = _bestDate(a.data());
+                      final bd = _bestDate(b.data());
+                      if (ad == null && bd == null) return 0;
+                      if (ad == null) return 1;
+                      if (bd == null) return -1;
+                      return bd.compareTo(ad);
+                    });
 
-          return ModernTableLayout(
-            showDetails: selectedDoc != null,
-            detailsWidth: detailsWidth,
-            details: selectedDoc == null
-                ? null
-                : _RecordDetailsPanel(
-                    doc: selectedDoc,
-                    onClose: () {
-                      setState(() => _selectedCaseId = null);
-                    },
-                  ),
-            header: ModernTableHeader(
-              title: 'Violation Records',
-              subtitle: 'Resolved cases only',
-              searchBar: TextField(
-                controller: _searchCtrl,
-                onChanged: _onSearchChanged,
-                decoration: InputDecoration(
-                  hintText: 'Search case ID, student name, or violation',
-                  prefixIcon: const Icon(Icons.search, color: _primary),
-                  filled: true,
-                  fillColor: _bg,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide.none,
-                  ),
-                  contentPadding: EdgeInsets.zero,
-                ),
-              ),
-              tabs: compactFilters
-                  ? null
-                  : _buildDesktopFilterToolbar(
+              final categoryOptions = _collectOptions(
+                resolvedDocs,
+                _categoryValue,
+              );
+              final violationOptions = _collectOptions(
+                resolvedDocs,
+                _violationTypeValue,
+              );
+              final reporterOptions = _collectOptions(
+                resolvedDocs,
+                _reporterValue,
+              );
+              final departmentProgramOptions = _collectOptions(
+                resolvedDocs,
+                _departmentProgramValue,
+              );
+              final outcomeOptions = _collectOptions(
+                resolvedDocs,
+                _outcomeValue,
+              );
+              final schoolYearOptions = _collectOptions(
+                resolvedDocs,
+                _schoolYearValue,
+              );
+              final termOptions = _collectOptions(resolvedDocs, _termValue);
+
+              final filtered = resolvedDocs.where((doc) {
+                final data = doc.data();
+                if (!_matchesSearch(data, doc.id)) return false;
+                if (!_matchesConcern(data)) return false;
+                if (!_matchesDate(data)) return false;
+                if (!_matchesAdvancedFilters(data)) return false;
+                return true;
+              }).toList();
+              _visibleRecordDocs.value = filtered;
+
+              final headerFilters = <Widget>[
+                if (compactFilters)
+                  _buildCompactFiltersButton(
+                    onTap: () => _openCompactFiltersSheet(
                       categoryOptions: categoryOptions,
                       violationOptions: violationOptions,
                       reporterOptions: reporterOptions,
@@ -422,12 +415,72 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
                       schoolYearOptions: schoolYearOptions,
                       termOptions: termOptions,
                     ),
-              filters: headerFilters.isEmpty ? null : headerFilters,
-            ),
-            body: Center(
-              child: ConstrainedBox(
-                constraints: BoxConstraints(maxWidth: pageMaxWidth),
-                child: Column(
+                  ),
+                ..._buildHeaderFilterChipWidgets(),
+              ];
+
+              return ModernTableLayout(
+                detailsWidth: detailsWidth,
+                detailsIncludeHeader: true,
+                showDetails: _selectedCaseId != null,
+                details: _selectedCaseId != null
+                    ? ValueListenableBuilder<
+                        List<QueryDocumentSnapshot<Map<String, dynamic>>>
+                      >(
+                        valueListenable: _visibleRecordDocs,
+                        builder: (context, docs, _) {
+                          QueryDocumentSnapshot<Map<String, dynamic>>?
+                          selectedDoc;
+                          for (final doc in docs) {
+                            if (doc.id == _selectedCaseId) {
+                              selectedDoc = doc;
+                              break;
+                            }
+                          }
+                          if (selectedDoc == null) {
+                            return const SizedBox();
+                          }
+                          return _RecordDetailsPanel(
+                            doc: selectedDoc,
+                            onClose: () {
+                              setState(() => _selectedCaseId = null);
+                            },
+                          );
+                        },
+                      )
+                    : null,
+                header: ModernTableHeader(
+                  title: 'Violation Records',
+                  subtitle: 'Resolved cases only',
+                  searchBar: TextField(
+                    controller: _searchCtrl,
+                    onChanged: _onSearchChanged,
+                    decoration: InputDecoration(
+                      hintText: 'Search case ID, student name, or violation',
+                      prefixIcon: const Icon(Icons.search, color: _primary),
+                      filled: true,
+                      fillColor: _bg,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(AppRadii.md),
+                        borderSide: BorderSide.none,
+                      ),
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                  ),
+                  tabs: compactFilters
+                      ? null
+                      : _buildDesktopFilterToolbar(
+                          categoryOptions: categoryOptions,
+                          violationOptions: violationOptions,
+                          reporterOptions: reporterOptions,
+                          departmentProgramOptions: departmentProgramOptions,
+                          outcomeOptions: outcomeOptions,
+                          schoolYearOptions: schoolYearOptions,
+                          termOptions: termOptions,
+                        ),
+                  filters: headerFilters.isEmpty ? null : headerFilters,
+                ),
+                body: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     const SizedBox(height: 8),
@@ -437,31 +490,25 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
                     ),
                     const SizedBox(height: 10),
                     Expanded(
-                      child: LayoutBuilder(
-                        builder: (context, constraints) {
-                          if (filtered.isEmpty) {
-                            return _buildEmptyState();
-                          }
-                          if (constraints.maxWidth >= 900) {
-                            return _buildDesktopTable(
+                      child: filtered.isEmpty
+                          ? _buildEmptyState()
+                          : preferDesktopTable
+                          ? _buildDesktopTable(
                               filtered,
                               horizontalPadding: pageHorizontalPadding,
-                            );
-                          }
-                          return _buildMobileList(
-                            filtered,
-                            horizontalPadding: pageHorizontalPadding,
-                          );
-                        },
-                      ),
+                            )
+                          : _buildMobileList(
+                              filtered,
+                              horizontalPadding: pageHorizontalPadding,
+                            ),
                     ),
                   ],
                 ),
-              ),
-            ),
-          );
-        },
-      ),
+              );
+            },
+          ),
+        );
+      },
     );
   }
 
@@ -504,7 +551,7 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
         padding: const EdgeInsets.all(18),
         decoration: BoxDecoration(
           color: Colors.white,
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(AppRadii.lg),
           border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
         ),
         child: Column(
@@ -664,7 +711,7 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
                     padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
                     decoration: BoxDecoration(
                       color: Colors.white,
-                      borderRadius: BorderRadius.circular(14),
+                      borderRadius: BorderRadius.circular(AppRadii.lg),
                       border: Border.all(
                         color: Colors.black.withValues(alpha: 0.08),
                       ),
@@ -1124,7 +1171,7 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
                       width: double.infinity,
                       decoration: BoxDecoration(
                         color: Colors.white,
-                        borderRadius: BorderRadius.circular(12),
+                        borderRadius: BorderRadius.circular(AppRadii.md),
                         border: Border.all(
                           color: Colors.black.withValues(alpha: 0.08),
                         ),
@@ -1497,7 +1544,7 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
       padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(AppRadii.lg),
         border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
         boxShadow: floating
             ? [
@@ -1866,160 +1913,216 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
         width: double.infinity,
         decoration: BoxDecoration(
           color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(AppRadii.xl),
           border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
         ),
-        child: DataTable(
-          showCheckboxColumn: false,
-          headingRowColor: WidgetStateProperty.all(_bg),
-          columnSpacing: 20,
-          columns: const [
-            DataColumn(
-              label: Text(
-                'CODE',
-                style: TextStyle(
-                  fontWeight: FontWeight.w900,
-                  color: _hint,
-                  fontSize: 12,
-                  letterSpacing: 0.5,
-                ),
-              ),
-            ),
-            DataColumn(
-              label: Text(
-                'STUDENT',
-                style: TextStyle(
-                  fontWeight: FontWeight.w900,
-                  color: _hint,
-                  fontSize: 12,
-                  letterSpacing: 0.5,
-                ),
-              ),
-            ),
-            DataColumn(
-              label: Text(
-                'CONCERN',
-                style: TextStyle(
-                  fontWeight: FontWeight.w900,
-                  color: _hint,
-                  fontSize: 12,
-                  letterSpacing: 0.5,
-                ),
-              ),
-            ),
-            DataColumn(
-              label: Text(
-                'VIOLATION',
-                style: TextStyle(
-                  fontWeight: FontWeight.w900,
-                  color: _hint,
-                  fontSize: 12,
-                  letterSpacing: 0.5,
-                ),
-              ),
-            ),
-            DataColumn(
-              label: Text(
-                'DATE',
-                style: TextStyle(
-                  fontWeight: FontWeight.w900,
-                  color: _hint,
-                  fontSize: 12,
-                  letterSpacing: 0.5,
-                ),
-              ),
-            ),
-          ],
-          rows: docs.map((doc) {
-            final data = doc.data();
-            final isSelected = _selectedCaseId == doc.id;
-            final code = _caseCode(data, doc.id);
-            final studentName = _studentName(data);
-            final studentNo = _studentNo(data);
-            final concern = _concernValue(data);
-            final violation = _violationTypeValue(data);
-            final date = _bestDate(data);
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final tableWidth = constraints.maxWidth;
+            const totalWeight = 8.6;
+            double colWidth(double weight, double minWidth, double maxWidth) {
+              final value = tableWidth * (weight / totalWeight);
+              if (value < minWidth) return minWidth;
+              if (value > maxWidth) return maxWidth;
+              return value;
+            }
 
-            return DataRow(
-              selected: isSelected,
-              color: WidgetStateProperty.resolveWith<Color?>((_) {
-                if (isSelected) return _primary.withValues(alpha: 0.08);
-                return null;
-              }),
-              onSelectChanged: (_) {
-                setState(() {
-                  _selectedCaseId = isSelected ? null : doc.id;
-                });
-              },
-              cells: [
-                DataCell(
-                  Text(
-                    code,
-                    style: const TextStyle(
-                      color: _primary,
-                      fontWeight: FontWeight.w900,
-                      fontSize: 12,
-                    ),
-                  ),
-                ),
-                DataCell(
-                  SizedBox(
-                    width: 220,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Text(
-                          studentName,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: _textDark,
-                            fontWeight: FontWeight.w700,
+            final codeCellWidth = colWidth(1.10, 98, 120);
+            final studentCellWidth = colWidth(2.40, 210, 230);
+            final concernCellWidth = colWidth(1.60, 138, 152);
+            final violationCellWidth = colWidth(2.50, 220, 250);
+            final dateCellWidth = colWidth(1.00, 126, 136);
+
+            return SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(minWidth: constraints.maxWidth),
+                child: DataTable(
+                  showCheckboxColumn: false,
+                  headingRowColor: WidgetStateProperty.all(_bg),
+                  columnSpacing: 20,
+                  columns: [
+                    DataColumn(
+                      label: SizedBox(
+                        width: codeCellWidth,
+                        child: const Text(
+                          'CODE',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w900,
+                            color: _hint,
+                            fontSize: 12,
+                            letterSpacing: 0.5,
                           ),
                         ),
-                        if (studentNo != '--')
-                          Text(
-                            studentNo,
-                            style: const TextStyle(
-                              color: _hint,
-                              fontWeight: FontWeight.w600,
-                              fontSize: 11.5,
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
-                ),
-                DataCell(_ConcernPill(concern: concern)),
-                DataCell(
-                  SizedBox(
-                    width: 240,
-                    child: Text(
-                      violation,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: _textDark,
-                        fontWeight: FontWeight.w500,
                       ),
                     ),
-                  ),
-                ),
-                DataCell(
-                  Text(
-                    date == null
-                        ? '--'
-                        : DateFormat('MMM d, yyyy').format(date),
-                    style: const TextStyle(
-                      color: _hint,
-                      fontWeight: FontWeight.w600,
+                    DataColumn(
+                      label: SizedBox(
+                        width: studentCellWidth,
+                        child: const Text(
+                          'STUDENT',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w900,
+                            color: _hint,
+                            fontSize: 12,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                      ),
                     ),
-                  ),
+                    DataColumn(
+                      label: SizedBox(
+                        width: concernCellWidth,
+                        child: const Text(
+                          'CONCERN',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w900,
+                            color: _hint,
+                            fontSize: 12,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                      ),
+                    ),
+                    DataColumn(
+                      label: SizedBox(
+                        width: violationCellWidth,
+                        child: const Text(
+                          'VIOLATION',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w900,
+                            color: _hint,
+                            fontSize: 12,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                      ),
+                    ),
+                    DataColumn(
+                      label: SizedBox(
+                        width: dateCellWidth,
+                        child: const Text(
+                          'DATE',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w900,
+                            color: _hint,
+                            fontSize: 12,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                  rows: docs.map((doc) {
+                    final data = doc.data();
+                    final isSelected = _selectedCaseId == doc.id;
+                    final code = _caseCode(data, doc.id);
+                    final studentName = _studentName(data);
+                    final studentNo = _studentNo(data);
+                    final concern = _concernValue(data);
+                    final violation = _violationTypeValue(data);
+                    final date = _bestDate(data);
+
+                    return DataRow(
+                      selected: isSelected,
+                      color: WidgetStateProperty.resolveWith<Color?>((_) {
+                        if (isSelected) return _primary.withValues(alpha: 0.08);
+                        return null;
+                      }),
+                      onSelectChanged: (_) {
+                        setState(() {
+                          _selectedCaseId = isSelected ? null : doc.id;
+                        });
+                      },
+                      cells: [
+                        DataCell(
+                          SizedBox(
+                            width: codeCellWidth,
+                            child: Text(
+                              code,
+                              style: const TextStyle(
+                                color: _primary,
+                                fontWeight: FontWeight.w900,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ),
+                        ),
+                        DataCell(
+                          SizedBox(
+                            width: studentCellWidth,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Text(
+                                  studentName,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: _textDark,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                if (studentNo != '--')
+                                  Text(
+                                    studentNo,
+                                    style: const TextStyle(
+                                      color: _hint,
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 11.5,
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        DataCell(
+                          SizedBox(
+                            width: concernCellWidth,
+                            child: Align(
+                              alignment: Alignment.centerLeft,
+                              child: _ConcernPill(concern: concern),
+                            ),
+                          ),
+                        ),
+                        DataCell(
+                          SizedBox(
+                            width: violationCellWidth,
+                            child: Text(
+                              violation,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: _textDark,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                        ),
+                        DataCell(
+                          SizedBox(
+                            width: dateCellWidth,
+                            child: Text(
+                              date == null
+                                  ? '--'
+                                  : DateFormat('MMM d, yyyy').format(date),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: _hint,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    );
+                  }).toList(),
                 ),
-              ],
+              ),
             );
-          }).toList(),
+          },
         ),
       ),
     );
@@ -2361,7 +2464,7 @@ class _ConcernPill extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(
         color: const Color(0xFF1B5E20).withValues(alpha: 0.10),
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(AppRadii.xxl),
         border: Border.all(
           color: const Color(0xFF1B5E20).withValues(alpha: 0.25),
         ),
@@ -2452,7 +2555,7 @@ class _RecordDetailsContent extends StatelessWidget {
     final reportedAt = _ViolationRecordsPageState._bestDate(data);
     final dateText = reportedAt == null
         ? '--'
-        : DateFormat('MMM d, yyyy â€¢ h:mm a').format(reportedAt);
+        : DateFormat('MMM d, yyyy - h:mm a').format(reportedAt);
     final studentUid = _ViolationRecordsPageState._value(
       data['studentUid'] ?? data['studentId'] ?? data['reportedStudentUid'],
     );
@@ -2470,7 +2573,7 @@ class _RecordDetailsContent extends StatelessWidget {
                 height: 46,
                 decoration: BoxDecoration(
                   color: const Color(0xFF1B5E20).withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(12),
+                  borderRadius: BorderRadius.circular(AppRadii.md),
                   border: Border.all(
                     color: const Color(0xFF1B5E20).withValues(alpha: 0.25),
                   ),
@@ -2694,7 +2797,7 @@ class _StudentCaseHistoryCard extends StatelessWidget {
               'Most recent prior case',
               lastDate == null
                   ? '--'
-                  : DateFormat('MMM d, yyyy â€¢ h:mm a').format(lastDate),
+                  : DateFormat('MMM d, yyyy - h:mm a').format(lastDate),
             ),
           ],
         );
@@ -2739,10 +2842,10 @@ class _DetailCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(AppSpacing.sm),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(AppRadii.md),
         border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
       ),
       child: Column(
@@ -2951,7 +3054,9 @@ class _EvidenceImageDialog extends StatelessWidget {
   Widget build(BuildContext context) {
     return Dialog(
       insetPadding: const EdgeInsets.all(22),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(AppRadii.lg),
+      ),
       child: Container(
         padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
         constraints: const BoxConstraints(maxWidth: 900, maxHeight: 680),

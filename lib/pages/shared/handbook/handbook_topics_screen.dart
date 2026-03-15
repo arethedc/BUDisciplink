@@ -367,7 +367,7 @@ class _HandbookTopicsScreenState extends State<HandbookTopicsScreen> {
       backgroundColor: bg,
       body: SafeArea(child: body),
       floatingActionButton: FloatingActionButton(
-        heroTag: 'handbook_topics_ai_fab',
+        heroTag: null,
         onPressed: () => showHandbookAiAssistantSheet(context),
         backgroundColor: topBarGreen,
         foregroundColor: Colors.white,

@@ -390,18 +390,34 @@ class OsaMeetingScheduleService {
     return out;
   }
 
-  Stream<QuerySnapshot<Map<String, dynamic>>> streamOpenSlots({
+  Stream<List<QueryDocumentSnapshot<Map<String, dynamic>>>> streamOpenSlots({
     required String schoolYearId,
     required String termId,
     int limit = 200,
   }) {
-    return _slots
-        .where('schoolYearId', isEqualTo: schoolYearId.trim())
-        .where('termId', isEqualTo: termId.trim())
-        .where('status', isEqualTo: OsaMeetingSlotStatus.open)
-        .orderBy('startAt')
-        .limit(limit)
-        .snapshots();
+    final sy = schoolYearId.trim();
+    final t = termId.trim();
+    return _slots.where('schoolYearId', isEqualTo: sy).snapshots().map((snap) {
+      final docs =
+          snap.docs.where((doc) {
+            final data = doc.data();
+            return (data['termId'] ?? '').toString().trim() == t &&
+                (data['status'] ?? '').toString().trim() ==
+                    OsaMeetingSlotStatus.open;
+          }).toList()..sort((a, b) {
+            final aStart =
+                (a.data()['startAt'] as Timestamp?)?.toDate() ??
+                DateTime.fromMillisecondsSinceEpoch(0);
+            final bStart =
+                (b.data()['startAt'] as Timestamp?)?.toDate() ??
+                DateTime.fromMillisecondsSinceEpoch(0);
+            return aStart.compareTo(bStart);
+          });
+      if (limit > 0 && docs.length > limit) {
+        return docs.sublist(0, limit);
+      }
+      return docs;
+    });
   }
 
   Future<int> countOpenSlotsInRange({

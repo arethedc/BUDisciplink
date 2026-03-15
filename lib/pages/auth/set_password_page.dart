@@ -2,6 +2,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import '../shared/widgets/app_branding.dart';
 
 class SetPasswordPage extends StatefulWidget {
   const SetPasswordPage({super.key});
@@ -29,6 +30,8 @@ class _SetPasswordPageState extends State<SetPasswordPage> {
   bool _resendingActivation = false;
   bool _isForgotResetFlow = false;
   String? _error;
+  String? _passwordError;
+  String? _confirmPasswordError;
   String? _oobCode;
 
   @override
@@ -43,6 +46,11 @@ class _SetPasswordPageState extends State<SetPasswordPage> {
     _confirmPasswordCtrl.dispose();
     _emailCtrl.dispose();
     super.dispose();
+  }
+
+  void _submitSetPasswordFromKeyboard() {
+    if (_saving) return;
+    _setPassword();
   }
 
   Map<String, String> _extractParams() {
@@ -261,26 +269,38 @@ class _SetPasswordPageState extends State<SetPasswordPage> {
 
   bool _isStrongPassword(String value) => _score(value) >= 5;
 
+  bool _validatePasswordFields() {
+    final password = _newPasswordCtrl.text.trim();
+    final confirm = _confirmPasswordCtrl.text.trim();
+
+    String? nextPasswordError;
+    String? nextConfirmError;
+
+    if (password.isEmpty) {
+      nextPasswordError = 'Password is required';
+    } else if (!_isStrongPassword(password)) {
+      nextPasswordError = 'Password is weak. Follow all requirements.';
+    }
+
+    if (confirm.isEmpty) {
+      nextConfirmError = 'Please confirm password';
+    } else if (password != confirm) {
+      nextConfirmError = 'Passwords do not match';
+    }
+
+    setState(() {
+      _passwordError = nextPasswordError;
+      _confirmPasswordError = nextConfirmError;
+    });
+    return nextPasswordError == null && nextConfirmError == null;
+  }
+
   Future<void> _setPassword() async {
     if (_saving) return;
     final code = _oobCode;
     if (code == null || code.isEmpty) return;
-
+    if (!_validatePasswordFields()) return;
     final password = _newPasswordCtrl.text.trim();
-    final confirm = _confirmPasswordCtrl.text.trim();
-
-    if (password.isEmpty || confirm.isEmpty) {
-      setState(() => _error = 'Please fill out both password fields.');
-      return;
-    }
-    if (!_isStrongPassword(password)) {
-      setState(() => _error = 'Password is weak. Follow all requirements.');
-      return;
-    }
-    if (password != confirm) {
-      setState(() => _error = 'Passwords do not match.');
-      return;
-    }
 
     setState(() {
       _saving = true;
@@ -327,12 +347,14 @@ class _SetPasswordPageState extends State<SetPasswordPage> {
     required IconData icon,
     Widget? suffixIcon,
     bool enabled = true,
+    String? errorText,
   }) {
     return InputDecoration(
       labelText: label,
       labelStyle: const TextStyle(color: hint, fontWeight: FontWeight.w700),
       prefixIcon: Icon(icon, color: primary.withValues(alpha: 0.85)),
       suffixIcon: suffixIcon,
+      errorText: errorText,
       filled: true,
       fillColor: enabled ? Colors.white : const Color(0xFFF1F4F1),
       border: OutlineInputBorder(
@@ -374,9 +396,38 @@ class _SetPasswordPageState extends State<SetPasswordPage> {
     );
   }
 
+  Widget _brandingHeader() {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SizedBox(
+            width: 40,
+            height: 40,
+            child: AppBranding.logo(fit: BoxFit.contain),
+          ),
+          const Text(
+            "BUDiscipLink",
+            style: TextStyle(
+              color: primary,
+              fontWeight: FontWeight.w900,
+              fontSize: 14,
+              letterSpacing: 0.2,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final password = _newPasswordCtrl.text;
+    final confirmPassword = _confirmPasswordCtrl.text;
+    final showPasswordValidation = password.trim().isNotEmpty;
+    final showConfirmValidation = confirmPassword.trim().isNotEmpty;
+    final passwordsMatch = showConfirmValidation && confirmPassword == password;
     final strengthLabel = _strengthLabel(password);
     final strengthColor = _strengthColor(password);
     final canSetPassword = _oobCode != null && _oobCode!.isNotEmpty;
@@ -387,6 +438,7 @@ class _SetPasswordPageState extends State<SetPasswordPage> {
         ? 'Create a new password to continue.'
         : 'Create your account password to continue.';
     final submitLabel = _isForgotResetFlow ? 'RESET PASSWORD' : 'SET PASSWORD';
+    final passwordLabel = _isForgotResetFlow ? 'New Password' : 'Password';
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -406,7 +458,7 @@ class _SetPasswordPageState extends State<SetPasswordPage> {
                   margin: const EdgeInsets.all(14),
                   padding: const EdgeInsets.fromLTRB(22, 18, 22, 18),
                   decoration: BoxDecoration(
-                    color: bg,
+                    color: Colors.white,
                     borderRadius: BorderRadius.circular(16),
                     border: Border.all(color: primary.withValues(alpha: 0.15)),
                     boxShadow: [
@@ -428,14 +480,16 @@ class _SetPasswordPageState extends State<SetPasswordPage> {
                       ? Column(
                           mainAxisSize: MainAxisSize.min,
                           crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: const [
-                            Icon(
+                          children: [
+                            _brandingHeader(),
+                            const SizedBox(height: 12),
+                            const Icon(
                               Icons.verified_rounded,
                               size: 86,
                               color: Colors.green,
                             ),
-                            SizedBox(height: 14),
-                            Text(
+                            const SizedBox(height: 14),
+                            const Text(
                               'Email verified successfully',
                               textAlign: TextAlign.center,
                               style: TextStyle(
@@ -444,8 +498,8 @@ class _SetPasswordPageState extends State<SetPasswordPage> {
                                 fontSize: 20,
                               ),
                             ),
-                            SizedBox(height: 8),
-                            Text(
+                            const SizedBox(height: 8),
+                            const Text(
                               'Redirecting to set password...',
                               textAlign: TextAlign.center,
                               style: TextStyle(
@@ -460,6 +514,8 @@ class _SetPasswordPageState extends State<SetPasswordPage> {
                           mainAxisSize: MainAxisSize.min,
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
+                            _brandingHeader(),
+                            const SizedBox(height: 12),
                             const Icon(
                               Icons.link_off_rounded,
                               size: 82,
@@ -523,6 +579,7 @@ class _SetPasswordPageState extends State<SetPasswordPage> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
+                              _brandingHeader(),
                               const SizedBox(height: 8),
                               Text(
                                 pageTitle,
@@ -547,30 +604,26 @@ class _SetPasswordPageState extends State<SetPasswordPage> {
                               ),
                               const SizedBox(height: 20),
                               if (_error != null) ...[
-                                Container(
-                                  padding: const EdgeInsets.all(12),
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFFFFEBEE),
-                                    borderRadius: BorderRadius.circular(10),
-                                  ),
-                                  child: Text(
-                                    _error!,
-                                    style: const TextStyle(
-                                      color: Colors.red,
-                                      fontWeight: FontWeight.w700,
-                                    ),
+                                Text(
+                                  _error!,
+                                  style: const TextStyle(
+                                    color: Colors.red,
+                                    fontWeight: FontWeight.w700,
                                   ),
                                 ),
                                 const SizedBox(height: 12),
                               ],
                               TextField(
                                 controller: _emailCtrl,
-                                readOnly: true,
-                                enabled: false,
+                                keyboardType: TextInputType.emailAddress,
+                                style: const TextStyle(
+                                  color: textDark,
+                                  fontWeight: FontWeight.w700,
+                                ),
                                 decoration: _decor(
                                   label: 'Email Address',
-                                  icon: Icons.email_outlined,
-                                  enabled: false,
+                                  icon: Icons.email,
+                                  enabled: true,
                                 ),
                               ),
                               if (!canSetPassword) ...[
@@ -610,10 +663,34 @@ class _SetPasswordPageState extends State<SetPasswordPage> {
                                 TextField(
                                   controller: _newPasswordCtrl,
                                   obscureText: !_showNew,
-                                  onChanged: (_) => setState(() {}),
+                                  onChanged: (_) {
+                                    if (_passwordError != null ||
+                                        _confirmPasswordError != null ||
+                                        _error != null) {
+                                      setState(() {
+                                        _passwordError = null;
+                                        if (_confirmPasswordCtrl.text
+                                            .trim()
+                                            .isNotEmpty) {
+                                          _confirmPasswordError = null;
+                                        }
+                                        _error = null;
+                                      });
+                                    } else {
+                                      setState(() {});
+                                    }
+                                  },
+                                  textInputAction: TextInputAction.done,
+                                  onSubmitted: (_) =>
+                                      _submitSetPasswordFromKeyboard(),
+                                  style: const TextStyle(
+                                    color: textDark,
+                                    fontWeight: FontWeight.w700,
+                                  ),
                                   decoration: _decor(
-                                    label: 'New Password',
-                                    icon: Icons.lock_outline,
+                                    label: passwordLabel,
+                                    icon: Icons.lock,
+                                    errorText: _passwordError,
                                     suffixIcon: IconButton(
                                       onPressed: () =>
                                           setState(() => _showNew = !_showNew),
@@ -626,55 +703,76 @@ class _SetPasswordPageState extends State<SetPasswordPage> {
                                     ),
                                   ),
                                 ),
-                                const SizedBox(height: 10),
-                                Row(
-                                  children: [
-                                    const Text(
-                                      'Strength: ',
-                                      style: TextStyle(
-                                        color: hint,
-                                        fontWeight: FontWeight.w700,
-                                        fontSize: 12,
+                                if (showPasswordValidation) ...[
+                                  const SizedBox(height: 10),
+                                  Row(
+                                    children: [
+                                      const Text(
+                                        'Strength: ',
+                                        style: TextStyle(
+                                          color: hint,
+                                          fontWeight: FontWeight.w700,
+                                          fontSize: 12,
+                                        ),
                                       ),
-                                    ),
-                                    Text(
-                                      strengthLabel,
-                                      style: TextStyle(
-                                        color: strengthColor,
-                                        fontWeight: FontWeight.w900,
-                                        fontSize: 12,
+                                      Text(
+                                        strengthLabel,
+                                        style: TextStyle(
+                                          color: strengthColor,
+                                          fontWeight: FontWeight.w900,
+                                          fontSize: 12,
+                                        ),
                                       ),
-                                    ),
-                                  ],
-                                ),
-                                const SizedBox(height: 8),
-                                _criteriaRow(
-                                  _hasMinLen(password),
-                                  'At least 8 characters',
-                                ),
-                                _criteriaRow(
-                                  _hasUpper(password),
-                                  'At least 1 uppercase letter',
-                                ),
-                                _criteriaRow(
-                                  _hasLower(password),
-                                  'At least 1 lowercase letter',
-                                ),
-                                _criteriaRow(
-                                  _hasDigit(password),
-                                  'At least 1 number',
-                                ),
-                                _criteriaRow(
-                                  _hasSpecial(password),
-                                  'At least 1 special character',
-                                ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 8),
+                                  _criteriaRow(
+                                    _hasMinLen(password),
+                                    'At least 8 characters',
+                                  ),
+                                  _criteriaRow(
+                                    _hasUpper(password),
+                                    'At least 1 uppercase letter',
+                                  ),
+                                  _criteriaRow(
+                                    _hasLower(password),
+                                    'At least 1 lowercase letter',
+                                  ),
+                                  _criteriaRow(
+                                    _hasDigit(password),
+                                    'At least 1 number',
+                                  ),
+                                  _criteriaRow(
+                                    _hasSpecial(password),
+                                    'At least 1 special character',
+                                  ),
+                                ],
                                 const SizedBox(height: 12),
                                 TextField(
                                   controller: _confirmPasswordCtrl,
                                   obscureText: !_showConfirm,
+                                  onChanged: (_) {
+                                    if (_confirmPasswordError != null ||
+                                        _error != null) {
+                                      setState(() {
+                                        _confirmPasswordError = null;
+                                        _error = null;
+                                      });
+                                    } else {
+                                      setState(() {});
+                                    }
+                                  },
+                                  textInputAction: TextInputAction.done,
+                                  onSubmitted: (_) =>
+                                      _submitSetPasswordFromKeyboard(),
+                                  style: const TextStyle(
+                                    color: textDark,
+                                    fontWeight: FontWeight.w700,
+                                  ),
                                   decoration: _decor(
                                     label: 'Confirm Password',
-                                    icon: Icons.verified_user_outlined,
+                                    icon: Icons.lock_outline_rounded,
+                                    errorText: _confirmPasswordError,
                                     suffixIcon: IconButton(
                                       onPressed: () => setState(
                                         () => _showConfirm = !_showConfirm,
@@ -688,6 +786,35 @@ class _SetPasswordPageState extends State<SetPasswordPage> {
                                     ),
                                   ),
                                 ),
+                                if (showConfirmValidation) ...[
+                                  const SizedBox(height: 8),
+                                  Row(
+                                    children: [
+                                      Icon(
+                                        passwordsMatch
+                                            ? Icons.check_circle
+                                            : Icons.cancel_rounded,
+                                        size: 16,
+                                        color: passwordsMatch
+                                            ? const Color(0xFF2E7D32)
+                                            : Colors.red,
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        passwordsMatch
+                                            ? 'Passwords match'
+                                            : 'Passwords do not match',
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w700,
+                                          color: passwordsMatch
+                                              ? const Color(0xFF2E7D32)
+                                              : Colors.red,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
                                 const SizedBox(height: 16),
                                 SizedBox(
                                   height: 50,

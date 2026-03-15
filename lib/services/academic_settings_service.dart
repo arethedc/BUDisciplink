@@ -2,7 +2,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 
 class AcademicSettingsService {
   final FirebaseFirestore _db;
-  AcademicSettingsService({FirebaseFirestore? db}) : _db = db ?? FirebaseFirestore.instance;
+  AcademicSettingsService({FirebaseFirestore? db})
+    : _db = db ?? FirebaseFirestore.instance;
 
   CollectionReference<Map<String, dynamic>> get _years =>
       _db.collection('academic_years');
@@ -72,25 +73,17 @@ class AcademicSettingsService {
     final now = FieldValue.serverTimestamp();
 
     await _db.runTransaction((tx) async {
-      tx.set(
-        yearRef,
-        {
-          'activeTermId': activeTermId,
-          'updatedAt': now,
-        },
-        SetOptions(merge: true),
-      );
+      tx.set(yearRef, {
+        'activeTermId': activeTermId,
+        'updatedAt': now,
+      }, SetOptions(merge: true));
 
       final termsRef = yearRef.collection('terms');
       for (final entry in termDates.entries) {
-        tx.set(
-          termsRef.doc(entry.key),
-          {
-            'startAt': entry.value.startAt,
-            'endAt': entry.value.endAt,
-          },
-          SetOptions(merge: true),
-        );
+        tx.set(termsRef.doc(entry.key), {
+          'startAt': entry.value.startAt,
+          'endAt': entry.value.endAt,
+        }, SetOptions(merge: true));
       }
     });
   }
@@ -109,25 +102,17 @@ class AcademicSettingsService {
       final id = doc.id;
       final isTarget = id == syId;
       if (isTarget) targetFound = true;
-      batch.set(
-        _years.doc(id),
-        {
-          'status': isTarget ? 'active' : 'inactive',
-          'updatedAt': now,
-        },
-        SetOptions(merge: true),
-      );
+      batch.set(_years.doc(id), {
+        'status': isTarget ? 'active' : 'inactive',
+        'updatedAt': now,
+      }, SetOptions(merge: true));
     }
 
     if (!targetFound) {
-      batch.set(
-        _years.doc(syId),
-        {
-          'status': 'active',
-          'updatedAt': now,
-        },
-        SetOptions(merge: true),
-      );
+      batch.set(_years.doc(syId), {
+        'status': 'active',
+        'updatedAt': now,
+      }, SetOptions(merge: true));
     }
 
     await batch.commit();
@@ -139,10 +124,10 @@ class AcademicSettingsService {
     return {'id': q.docs.first.id, ...q.docs.first.data()};
   }
 
-  /// Generate a readable case code like VC-2526-1S-001
-  /// Format: VC-[SY]-[TERM]-[NUMBER]
-  /// Example: VC-2526-1S-001 = Violation Case, SY 2025-2026, 1st Sem, #001
-  Future<String> generateCaseCode() async {
+  Future<String> _generateCaseCodeWithPrefix({
+    required String prefix,
+    required String counterField,
+  }) async {
     final activeSY = await getActiveSY();
     if (activeSY == null) {
       throw Exception('No active school year. Please set one first.');
@@ -162,26 +147,41 @@ class AcademicSettingsService {
     final termShort = '${termNum}S';
 
     // Get next counter for this SY+Term
-    final counterRef = _years.doc(syId).collection('counters').doc(activeTermId);
+    final counterRef = _years
+        .doc(syId)
+        .collection('counters')
+        .doc(activeTermId);
 
     // Use transaction to safely increment
     final newCount = await _db.runTransaction<int>((tx) async {
       final snap = await tx.get(counterRef);
-      final current = snap.exists ? (snap.data()?['caseCount'] ?? 0) : 0;
+      final current = snap.exists ? (snap.data()?[counterField] ?? 0) : 0;
       final next = current + 1;
 
-      tx.set(
-        counterRef,
-        {'caseCount': next, 'updatedAt': FieldValue.serverTimestamp()},
-        SetOptions(merge: true),
-      );
+      tx.set(counterRef, {
+        counterField: next,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
 
       return next;
     });
 
-    // Format: VC-2526-1S-001
+    // Format: PREFIX-2526-1S-001
     final caseNum = newCount.toString().padLeft(3, '0');
-    return 'VC-$syShort-$termShort-$caseNum';
+    return '$prefix-$syShort-$termShort-$caseNum';
+  }
+
+  /// Generate a readable violation case code like VC-2526-1S-001.
+  Future<String> generateCaseCode() {
+    return _generateCaseCodeWithPrefix(prefix: 'VC', counterField: 'caseCount');
+  }
+
+  /// Generate a readable counseling case code like CC-2526-1S-001.
+  Future<String> generateCounselingCaseCode() {
+    return _generateCaseCodeWithPrefix(
+      prefix: 'CC',
+      counterField: 'counselingCaseCount',
+    );
   }
 }
 

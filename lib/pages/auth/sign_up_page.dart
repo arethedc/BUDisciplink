@@ -2,6 +2,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import '../shared/widgets/app_branding.dart';
 
 import '../../services/user_service.dart';
 
@@ -31,6 +32,62 @@ class _SignUpPageState extends State<SignUpPage> {
   // show/hide password (visual only; logic unchanged)
   bool _obscurePass = true;
   bool _obscureConfirm = true;
+
+  bool _hasUpper(String value) => RegExp(r'[A-Z]').hasMatch(value);
+  bool _hasLower(String value) => RegExp(r'[a-z]').hasMatch(value);
+  bool _hasDigit(String value) => RegExp(r'\d').hasMatch(value);
+  bool _hasSpecial(String value) =>
+      RegExp(r'[!@#$%^&*(),.?":{}|<>_\-+=~`/\[\]\\;]').hasMatch(value);
+  bool _hasMinLen(String value) => value.length >= 8;
+
+  int _score(String value) {
+    var score = 0;
+    if (_hasMinLen(value)) score++;
+    if (_hasUpper(value)) score++;
+    if (_hasLower(value)) score++;
+    if (_hasDigit(value)) score++;
+    if (_hasSpecial(value)) score++;
+    return score;
+  }
+
+  String _strengthLabel(String value) {
+    final score = _score(value);
+    if (score >= 5) return 'Strong';
+    if (score >= 3) return 'Medium';
+    return 'Weak';
+  }
+
+  Color _strengthColor(String value) {
+    final score = _score(value);
+    if (score >= 5) return const Color(0xFF2E7D32);
+    if (score >= 3) return const Color(0xFFF57F17);
+    return Colors.red;
+  }
+
+  bool _isStrongPassword(String value) => _score(value) >= 5;
+
+  Widget _criteriaRow(bool ok, String label) {
+    return Row(
+      children: [
+        Icon(
+          ok ? Icons.check_circle : Icons.radio_button_unchecked,
+          size: 16,
+          color: ok ? const Color(0xFF2E7D32) : hint,
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: ok ? const Color(0xFF2E7D32) : hint,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
 
   String _resolveVerifyContinueUrl(String email) {
     if (kIsWeb) {
@@ -74,6 +131,11 @@ class _SignUpPageState extends State<SignUpPage> {
     _passCtrl.dispose();
     _confirmCtrl.dispose();
     super.dispose();
+  }
+
+  void _submitSignUpFromKeyboard() {
+    if (_loading) return;
+    _signUp();
   }
 
   Future<void> _signUp() async {
@@ -134,7 +196,7 @@ class _SignUpPageState extends State<SignUpPage> {
     return InputDecoration(
       labelText: label,
       labelStyle: const TextStyle(color: hint, fontWeight: FontWeight.w700),
-      prefixIcon: Icon(icon, color: primary.withOpacity(0.85)),
+      prefixIcon: Icon(icon, color: primary.withValues(alpha: 0.85)),
       suffixIcon: suffix,
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(12),
@@ -154,6 +216,14 @@ class _SignUpPageState extends State<SignUpPage> {
 
   @override
   Widget build(BuildContext context) {
+    final password = _passCtrl.text;
+    final confirmPassword = _confirmCtrl.text;
+    final showPasswordValidation = password.trim().isNotEmpty;
+    final showConfirmValidation = confirmPassword.trim().isNotEmpty;
+    final passwordsMatch = showConfirmValidation && confirmPassword == password;
+    final strengthLabel = _strengthLabel(password);
+    final strengthColor = _strengthColor(password);
+
     return LayoutBuilder(
       builder: (context, constraints) {
         // ✅ fixed size (no stretch), but still fits small phones
@@ -174,7 +244,7 @@ class _SignUpPageState extends State<SignUpPage> {
                 width: cardWidth,
                 child: Container(
                   decoration: BoxDecoration(
-                    color: bg,
+                    color: Colors.white,
                     borderRadius: BorderRadius.circular(16),
                     border: Border.all(
                       color: primary.withValues(alpha: 0.15),
@@ -197,6 +267,30 @@ class _SignUpPageState extends State<SignUpPage> {
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
                           const SizedBox(height: 8),
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                SizedBox(
+                                  width: 40,
+                                  height: 40,
+                                  child: AppBranding.logo(fit: BoxFit.contain),
+                                ),
+                                const Text(
+                                  "BUDiscipLink",
+                                  style: TextStyle(
+                                    color: primary,
+                                    fontWeight: FontWeight.w900,
+                                    fontSize: 14,
+                                    letterSpacing: 0.2,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+
+                          const SizedBox(height: 8),
 
                           const Text(
                             "CREATE YOUR ACCOUNT",
@@ -213,7 +307,7 @@ class _SignUpPageState extends State<SignUpPage> {
                           const SizedBox(height: 14),
 
                           Text(
-                            "Sign up using your email to continue",
+                            "Create your account to continue",
                             textAlign: TextAlign.center,
                             style: TextStyle(
                               color: hint,
@@ -238,6 +332,9 @@ class _SignUpPageState extends State<SignUpPage> {
                           TextFormField(
                             controller: _emailCtrl,
                             keyboardType: TextInputType.emailAddress,
+                            textInputAction: TextInputAction.done,
+                            onFieldSubmitted: (_) =>
+                                _submitSignUpFromKeyboard(),
                             style: const TextStyle(
                               color: textDark,
                               fontWeight: FontWeight.w700,
@@ -249,17 +346,24 @@ class _SignUpPageState extends State<SignUpPage> {
                             validator: (v) {
                               final s = (v ?? '').trim();
                               if (s.isEmpty) return 'Email is required';
-                              if (!s.contains('@'))
+                              if (!s.contains('@')) {
                                 return 'Enter a valid email';
+                              }
                               return null;
                             },
                           ),
+
+                          const SizedBox(height: 6),
 
                           const SizedBox(height: 12),
 
                           TextFormField(
                             controller: _passCtrl,
                             obscureText: _obscurePass,
+                            onChanged: (_) => setState(() {}),
+                            textInputAction: TextInputAction.done,
+                            onFieldSubmitted: (_) =>
+                                _submitSignUpFromKeyboard(),
                             style: const TextStyle(
                               color: textDark,
                               fontWeight: FontWeight.w700,
@@ -281,17 +385,69 @@ class _SignUpPageState extends State<SignUpPage> {
                             ),
                             validator: (v) {
                               final s = v ?? '';
-                              if (s.length < 6)
-                                return 'Password must be at least 6 chars';
+                              if (s.trim().isEmpty)
+                                return 'Password is required';
+                              if (!_isStrongPassword(s)) {
+                                return 'Password is weak. Follow all requirements.';
+                              }
                               return null;
                             },
                           ),
+
+                          if (showPasswordValidation) ...[
+                            const SizedBox(height: 10),
+                            Row(
+                              children: [
+                                const Text(
+                                  'Strength: ',
+                                  style: TextStyle(
+                                    color: hint,
+                                    fontWeight: FontWeight.w700,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                                Text(
+                                  strengthLabel,
+                                  style: TextStyle(
+                                    color: strengthColor,
+                                    fontWeight: FontWeight.w900,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            _criteriaRow(
+                              _hasMinLen(password),
+                              'At least 8 characters',
+                            ),
+                            _criteriaRow(
+                              _hasUpper(password),
+                              'At least 1 uppercase letter',
+                            ),
+                            _criteriaRow(
+                              _hasLower(password),
+                              'At least 1 lowercase letter',
+                            ),
+                            _criteriaRow(
+                              _hasDigit(password),
+                              'At least 1 number',
+                            ),
+                            _criteriaRow(
+                              _hasSpecial(password),
+                              'At least 1 special character',
+                            ),
+                          ],
 
                           const SizedBox(height: 12),
 
                           TextFormField(
                             controller: _confirmCtrl,
                             obscureText: _obscureConfirm,
+                            onChanged: (_) => setState(() {}),
+                            textInputAction: TextInputAction.done,
+                            onFieldSubmitted: (_) =>
+                                _submitSignUpFromKeyboard(),
                             style: const TextStyle(
                               color: textDark,
                               fontWeight: FontWeight.w700,
@@ -312,11 +468,42 @@ class _SignUpPageState extends State<SignUpPage> {
                               ),
                             ),
                             validator: (v) {
+                              final s = (v ?? '').trim();
+                              if (s.isEmpty) return 'Please confirm password';
                               if (v != _passCtrl.text)
                                 return 'Passwords do not match';
                               return null;
                             },
                           ),
+                          if (showConfirmValidation) ...[
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                Icon(
+                                  passwordsMatch
+                                      ? Icons.check_circle
+                                      : Icons.cancel_rounded,
+                                  size: 16,
+                                  color: passwordsMatch
+                                      ? const Color(0xFF2E7D32)
+                                      : Colors.red,
+                                ),
+                                const SizedBox(width: 8),
+                                Text(
+                                  passwordsMatch
+                                      ? 'Passwords match'
+                                      : 'Passwords do not match',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700,
+                                    color: passwordsMatch
+                                        ? const Color(0xFF2E7D32)
+                                        : Colors.red,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
 
                           const SizedBox(height: 20),
 
@@ -381,6 +568,40 @@ class _SignUpPageState extends State<SignUpPage> {
                             ),
                             child: const Text('Already have an account? Login'),
                           ),
+
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFE3F2E3),
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(
+                                color: primary.withValues(alpha: 0.18),
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.info_outline_rounded,
+                                  color: primary.withValues(alpha: 0.9),
+                                  size: 18,
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Text(
+                                    "Use your BU Outlook email for sign up.",
+                                    style: TextStyle(
+                                      color: textDark.withValues(alpha: 0.85),
+                                      fontWeight: FontWeight.w700,
+                                      fontSize: 12.5,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+
+                          const SizedBox(height: 8),
                         ],
                       ),
                     ),

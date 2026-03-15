@@ -1,7 +1,8 @@
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
+const { onSchedule } = require('firebase-functions/v2/scheduler');
 const { initializeApp } = require('firebase-admin/app');
 const { getAuth } = require('firebase-admin/auth');
-const { getFirestore } = require('firebase-admin/firestore');
+const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 const { genkit } = require('genkit');
 const { googleAI } = require('@genkit-ai/googleai');
 
@@ -1424,5 +1425,459 @@ exports.askOsaViolationAi = onCall(
       console.error('askOsaViolationAi failed', error);
       throw new HttpsError('internal', 'Failed to generate OSA analytics response.');
     }
+  },
+);
+
+async function queueCounselingNotification({
+  caseId,
+  studentUid,
+  title,
+  body,
+  payload = {},
+}) {
+  const safeCaseId = normalizeString(caseId);
+  const safeStudentUid = normalizeString(studentUid);
+  if (!safeCaseId || !safeStudentUid) return;
+
+  const now = FieldValue.serverTimestamp();
+  await Promise.all([
+    db
+      .collection('counseling_cases')
+      .doc(safeCaseId)
+      .collection('notification_queue')
+      .add({
+        toType: 'uid',
+        toUid: safeStudentUid,
+        title: normalizeString(title),
+        body: normalizeString(body),
+        payload,
+        createdAt: now,
+        readAt: null,
+      }),
+    db
+      .collection('users')
+      .doc(safeStudentUid)
+      .collection('notifications')
+      .add({
+        caseId: safeCaseId,
+        title: normalizeString(title),
+        body: normalizeString(body),
+        payload,
+        createdAt: now,
+        readAt: null,
+      }),
+  ]);
+}
+
+async function queueViolationNotification({
+  caseId,
+  studentUid,
+  title,
+  body,
+  payload = {},
+}) {
+  const safeCaseId = normalizeString(caseId);
+  const safeStudentUid = normalizeString(studentUid);
+  if (!safeCaseId || !safeStudentUid) return;
+
+  const now = FieldValue.serverTimestamp();
+  await Promise.all([
+    db
+      .collection('violation_cases')
+      .doc(safeCaseId)
+      .collection('notification_queue')
+      .add({
+        toType: 'uid',
+        toUid: safeStudentUid,
+        title: normalizeString(title),
+        body: normalizeString(body),
+        payload,
+        createdAt: now,
+        readAt: null,
+      }),
+    db
+      .collection('users')
+      .doc(safeStudentUid)
+      .collection('notifications')
+      .add({
+        caseId: safeCaseId,
+        title: normalizeString(title),
+        body: normalizeString(body),
+        payload,
+        createdAt: now,
+        readAt: null,
+      }),
+  ]);
+}
+
+async function appendCounselingActivity({
+  caseId,
+  event,
+  title,
+  description = '',
+  actorRole = 'system',
+  meta = {},
+}) {
+  const safeCaseId = normalizeString(caseId);
+  if (!safeCaseId) return;
+  await db
+    .collection('counseling_cases')
+    .doc(safeCaseId)
+    .collection('activity')
+    .add({
+      event: normalizeString(event),
+      title: normalizeString(title),
+      description: normalizeString(description),
+      actorUid: '',
+      actorRole: normalizeString(actorRole) || 'system',
+      meta,
+      createdAt: FieldValue.serverTimestamp(),
+      createdAtEpochMs: Date.now(),
+    });
+}
+
+exports.sweepOverdueCounselingMeetings = onSchedule(
+  {
+    region: 'asia-east1',
+    schedule: 'every 15 minutes',
+    timeZone: 'Asia/Manila',
+    retryCount: 0,
+  },
+  async () => {
+    const now = Date.now();
+    const graceMs = 60 * 60 * 1000;
+
+    const snap = await db
+      .collection('counseling_cases')
+      .where('meetingStatus', '==', 'scheduled')
+      .limit(500)
+      .get();
+
+    if (snap.empty) {
+      return { processed: 0, message: 'No scheduled counseling cases.' };
+    }
+
+    const overdueRows = [];
+    const caseBatch = db.batch();
+    const slotBatch = db.batch();
+    let hasSlotUpdates = false;
+
+    for (const doc of snap.docs) {
+      const data = doc.data() || {};
+      const scheduledAt =
+        data.scheduledAt && typeof data.scheduledAt.toDate === 'function'
+          ? data.scheduledAt.toDate()
+          : null;
+      if (!scheduledAt) continue;
+
+      const workflowStatus = normalizeLower(data.workflowStatus);
+      const bookingStatus = normalizeLower(data.bookingStatus);
+      const completedOrCancelled =
+        workflowStatus === 'completed' ||
+        workflowStatus === 'cancelled' ||
+        bookingStatus === 'completed' ||
+        bookingStatus === 'cancelled';
+      if (completedOrCancelled) continue;
+
+      const alreadyMissed =
+        workflowStatus === 'missed' ||
+        normalizeLower(data.meetingStatus).includes('missed') ||
+        bookingStatus === 'missed';
+      if (alreadyMissed) continue;
+
+      if (now <= scheduledAt.getTime() + graceMs) continue;
+
+      overdueRows.push({
+        id: doc.id,
+        studentUid: normalizeString(data.studentUid),
+        caseCode: normalizeString(data.caseCode) || doc.id,
+        slotId: normalizeString(data.bookingSlotId),
+      });
+
+      caseBatch.update(doc.ref, {
+        workflowStatus: 'missed',
+        meetingStatus: 'meeting_missed',
+        bookingStatus: 'missed',
+        missedCount: FieldValue.increment(1),
+        meetingMissedAt: FieldValue.serverTimestamp(),
+        bookingMissedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+
+      const slotId = normalizeString(data.bookingSlotId);
+      if (slotId) {
+        hasSlotUpdates = true;
+        slotBatch.set(
+          db.collection('counseling_meeting_slots').doc(slotId),
+          {
+            status: 'missed',
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          { merge: true },
+        );
+      }
+    }
+
+    if (overdueRows.length === 0) {
+      return { processed: 0, message: 'No overdue counseling meetings.' };
+    }
+
+    await caseBatch.commit();
+    if (hasSlotUpdates) {
+      await slotBatch.commit();
+    }
+
+    for (const row of overdueRows) {
+      if (!row.studentUid) continue;
+      await queueCounselingNotification({
+        caseId: row.id,
+        studentUid: row.studentUid,
+        title: 'Counseling Appointment Missed',
+        body:
+          `You did not attend your scheduled counseling appointment for case ${row.caseCode}. ` +
+          'Please book again when available.',
+        payload: {
+          module: 'counseling',
+          workflowStatus: 'missed',
+          meetingStatus: 'meeting_missed',
+        },
+      });
+      await appendCounselingActivity({
+        caseId: row.id,
+        event: 'appointment_auto_missed',
+        title: 'Appointment auto-marked missed',
+        description:
+          'Scheduled counseling appointment was not attended and was auto-marked missed.',
+        actorRole: 'system',
+        meta: {
+          caseCode: row.caseCode,
+          slotId: row.slotId,
+          workflowStatus: 'missed',
+          meetingStatus: 'meeting_missed',
+        },
+      });
+    }
+
+    return { processed: overdueRows.length };
+  },
+);
+
+exports.sweepOverdueViolationMeetings = onSchedule(
+  {
+    region: 'asia-east1',
+    schedule: 'every 15 minutes',
+    timeZone: 'Asia/Manila',
+    retryCount: 0,
+  },
+  async () => {
+    const now = new Date();
+    const nowMs = now.getTime();
+
+    const snap = await db
+      .collection('violation_cases')
+      .where('status', '==', 'Action Set')
+      .limit(500)
+      .get();
+
+    if (snap.empty) {
+      return { processed: 0, message: 'No action-set violation cases.' };
+    }
+
+    const graceExtensions = [];
+    const overdueBooking = [];
+    const scheduledMissed = [];
+
+    for (const doc of snap.docs) {
+      const data = doc.data() || {};
+      if (data.meetingRequired !== true) continue;
+
+      const meetingStatus = normalizeLower(data.meetingStatus);
+      const bookingStatus = normalizeLower(data.bookingStatus);
+
+      const pendingBooking =
+        !meetingStatus ||
+        meetingStatus === 'pending' ||
+        meetingStatus === 'pending_student_booking';
+
+      const scheduledAt =
+        data.scheduledAt && typeof data.scheduledAt.toDate === 'function'
+          ? data.scheduledAt.toDate()
+          : null;
+      const booked = meetingStatus.includes('scheduled') || bookingStatus === 'booked';
+      const completed =
+        meetingStatus.includes('completed') || bookingStatus === 'completed';
+      const missedAlready = meetingStatus.includes('missed');
+
+      if (
+        scheduledAt &&
+        booked &&
+        !completed &&
+        !missedAlready &&
+        nowMs > scheduledAt.getTime() + 60 * 60 * 1000
+      ) {
+        scheduledMissed.push({
+          id: doc.id,
+          slotId: normalizeString(data.bookingSlotId),
+          studentUid: normalizeString(data.studentUid),
+          caseCode: normalizeString(data.caseCode) || doc.id,
+        });
+        continue;
+      }
+
+      if (!pendingBooking) continue;
+      if (scheduledAt) continue;
+
+      const bookingDeadlineAt =
+        data.bookingDeadlineAt &&
+        typeof data.bookingDeadlineAt.toDate === 'function'
+          ? data.bookingDeadlineAt.toDate()
+          : null;
+      const meetingDueBy =
+        data.meetingDueBy && typeof data.meetingDueBy.toDate === 'function'
+          ? data.meetingDueBy.toDate()
+          : null;
+      const deadline = bookingDeadlineAt || meetingDueBy;
+      if (!deadline || nowMs <= deadline.getTime()) continue;
+
+      const graceCount =
+        typeof data.bookingGraceCount === 'number'
+          ? Math.trunc(data.bookingGraceCount)
+          : 0;
+      if (graceCount < 1) {
+        const nextBookingDeadline = new Date(nowMs + 2 * 24 * 60 * 60 * 1000);
+        const nextMeetingDueBy =
+          !meetingDueBy || meetingDueBy.getTime() < nextBookingDeadline.getTime()
+            ? nextBookingDeadline
+            : meetingDueBy;
+
+        graceExtensions.push({
+          id: doc.id,
+          studentUid: normalizeString(data.studentUid),
+          caseCode: normalizeString(data.caseCode) || doc.id,
+          nextBookingDeadline,
+          nextMeetingDueBy,
+          nextGraceCount: graceCount + 1,
+        });
+      } else {
+        overdueBooking.push({
+          id: doc.id,
+          studentUid: normalizeString(data.studentUid),
+          caseCode: normalizeString(data.caseCode) || doc.id,
+        });
+      }
+    }
+
+    if (graceExtensions.length > 0) {
+      const batch = db.batch();
+      for (const row of graceExtensions) {
+        batch.update(db.collection('violation_cases').doc(row.id), {
+          meetingStatus: 'pending_student_booking',
+          bookingStatus: 'pending',
+          bookingGraceCount: row.nextGraceCount,
+          bookingGraceExtendedAt: FieldValue.serverTimestamp(),
+          bookingDeadlineAt: row.nextBookingDeadline,
+          meetingDueBy: row.nextMeetingDueBy,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      }
+      await batch.commit();
+    }
+
+    if (overdueBooking.length > 0) {
+      const batch = db.batch();
+      for (const row of overdueBooking) {
+        batch.update(db.collection('violation_cases').doc(row.id), {
+          meetingStatus: 'booking_missed',
+          bookingStatus: 'missed',
+          bookingMissedAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      }
+      await batch.commit();
+    }
+
+    if (scheduledMissed.length > 0) {
+      const caseBatch = db.batch();
+      const slotBatch = db.batch();
+      let hasSlotUpdates = false;
+
+      for (const row of scheduledMissed) {
+        caseBatch.update(db.collection('violation_cases').doc(row.id), {
+          status: 'Unresolved',
+          workflowStep: 'monitoring',
+          workflowAction: 'meeting_required',
+          meetingStatus: 'meeting_missed',
+          bookingStatus: 'missed',
+          meetingMissedAt: FieldValue.serverTimestamp(),
+          unresolvedAt: FieldValue.serverTimestamp(),
+          unresolvedReason: 'meeting_absence',
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+
+        if (row.slotId) {
+          hasSlotUpdates = true;
+          slotBatch.set(
+            db.collection('osa_meeting_slots').doc(row.slotId),
+            {
+              status: 'missed',
+              updatedAt: FieldValue.serverTimestamp(),
+            },
+            { merge: true },
+          );
+        }
+      }
+
+      await caseBatch.commit();
+      if (hasSlotUpdates) {
+        await slotBatch.commit();
+      }
+    }
+
+    for (const row of graceExtensions) {
+      if (!row.studentUid) continue;
+      await queueViolationNotification({
+        caseId: row.id,
+        studentUid: row.studentUid,
+        title: 'Booking Window Extended',
+        body:
+          `You still have 2 more days to book your OSA meeting slot for case ${row.caseCode}.`,
+        payload: { meetingStatus: 'pending_student_booking' },
+      });
+    }
+
+    for (const row of overdueBooking) {
+      if (!row.studentUid) continue;
+      await queueViolationNotification({
+        caseId: row.id,
+        studentUid: row.studentUid,
+        title: 'Booking Window Missed',
+        body:
+          `You did not book an OSA meeting slot within the allowed 5-day window for case ${row.caseCode}. Please wait for OSA follow-up.`,
+        payload: { meetingStatus: 'booking_missed' },
+      });
+    }
+
+    for (const row of scheduledMissed) {
+      if (!row.studentUid) continue;
+      await queueViolationNotification({
+        caseId: row.id,
+        studentUid: row.studentUid,
+        title: 'Meeting Missed',
+        body:
+          `You did not attend the scheduled OSA meeting for case ${row.caseCode}. The case is now marked unresolved.`,
+        payload: {
+          status: 'Unresolved',
+          meetingStatus: 'meeting_missed',
+        },
+      });
+    }
+
+    return {
+      processed:
+        graceExtensions.length + overdueBooking.length + scheduledMissed.length,
+      graceExtended: graceExtensions.length,
+      bookingMissed: overdueBooking.length,
+      meetingMissed: scheduledMissed.length,
+    };
   },
 );

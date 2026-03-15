@@ -1,9 +1,13 @@
-import 'package:apps/pages/shared/handbook/handbook_sections_screen.dart';
-import 'package:apps/pages/shared/handbook/handbook_new_layout_page.dart';
+import 'package:apps/pages/shared/handbook/hb_handbook_page.dart';
 import 'package:apps/pages/shared/notifications/app_notifications_ui.dart';
 import 'package:apps/pages/shared/profile/unified_profile_page.dart';
 import 'package:apps/pages/shared/welcome_screen_page.dart';
+import 'package:apps/pages/shared/widgets/app_theme_tokens.dart';
+import 'package:apps/pages/shared/widgets/app_branding.dart';
 import 'package:apps/pages/shared/widgets/logout_confirm_dialog.dart';
+import 'package:apps/pages/shared/widgets/responsive_layout_tokens.dart';
+import 'package:apps/pages/shared/widgets/role_shell_scaffold.dart';
+import 'package:apps/pages/shared/widgets/unsaved_changes_guard.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -12,14 +16,16 @@ import 'osa_home_page.dart';
 
 // ✅ SETTINGS SUB-PAGES (adjust paths to your project)
 import 'academic/academic_years_page.dart';
-import 'handbook_manage_page.dart';
+import 'handbook_workflow_page.dart';
+import 'handbook_docs_editor_page.dart';
 import 'meeting_schedule_page.dart';
+import '../professor/professor_counseling_page.dart';
+import '../professor/violation_report_page.dart';
 import 'student_management_page.dart';
 import 'user_management_page.dart';
 import 'violation_analytics_page.dart';
 import 'violation_records_page.dart';
 import 'violation_types_page.dart';
-import 'handbook_docs_editor_page.dart';
 import 'osa_violation_review_page.dart';
 
 class OsaDashboard extends StatefulWidget {
@@ -31,52 +37,86 @@ class OsaDashboard extends StatefulWidget {
 
 class _OsaDashboardState extends State<OsaDashboard> {
   int _currentIndex = 0;
+  int _previousIndexBeforeNotifications = 0;
   bool _showDesktopNotifications = false;
   ViolationRecordsFilterPreset? _recordsPreset;
   int _recordsPresetVersion = 0;
+  int _handbookEditorReloadToken = 0;
+  String? _preselectedStudentUid;
+  String? _preselectedViolationCaseId;
+  static const int _notificationsIndex = 15;
+  final _violationUnsaved = UnsavedChangesController();
+  final _counselingUnsaved = UnsavedChangesController();
 
   // ✅ Settings section open/close
   bool _settingsOpen = false;
   bool _handbookOpen = true;
 
   // ================== THEME (match reference dashboard) ==================
-  static const bg = Color(0xFFF6FAF6);
-  static const primary = Color(0xFF1B5E20);
-  static const hint = Color(0xFF6D7F62);
-  static const textDark = Color(0xFF1F2A1F);
-  static const surface = Color(0xFFFFFFFF);
+  static const bg = AppColors.background;
+  static const primary = AppColors.primary;
+  static const hint = AppColors.hint;
+  static const textDark = AppColors.textDark;
+  static const surface = AppColors.surface;
 
   // ================== PAGES ==================
   // Keep as a getter so hot reload reflects changes (initState doesn't rerun).
   List<Widget> get _pages => [
-    OsaHomePage(onOpenAcademicSettings: () => _goSettings(4)),
-    const HandbookSectionsScreen(),
-    const HandbookSectionsScreen(useSidebarDesktop: false),
+    OsaHomePage(onOpenAcademicSettings: () => _goSettings(3)),
+    const HbHandbookPage(useSidebarDesktop: false),
     ViolationRecordsPage(
       key: ValueKey('violation-records-$_recordsPresetVersion'),
       initialFilterPreset: _recordsPreset,
+      initialSelectedCaseId: _preselectedViolationCaseId,
     ),
 
     // ✅ Settings sub-pages
     const AcademicYearsPage(),
     const UserManagementPage(),
-    const StudentManagementPage(),
+    StudentManagementPage(initialSelectedUserId: _preselectedStudentUid),
     const ViolationTypesPage(),
     const MeetingSchedulePage(),
-    const HandbookManagePage(),
+    HandbookWorkflowPage(
+      onOpenEditorForVersion: (_) {
+        setState(() {
+          _handbookEditorReloadToken++;
+          _currentIndex = 12;
+          _handbookOpen = true;
+        });
+      },
+    ),
     const UnifiedProfilePage(),
-    const HandbookNewLayoutPage(),
-    const HandbookDocsEditorPage(),
     ViolationAnalyticsPage(
       onOpenRecords: (preset) {
         setState(() {
           _recordsPreset = preset;
           _recordsPresetVersion++;
-          _currentIndex = 3;
+          _currentIndex = 2;
         });
       },
     ),
     const OsaViolationReviewPage(),
+    HandbookDocsEditorPage(
+      key: ValueKey('hb-editor-$_handbookEditorReloadToken'),
+      onBack: () {
+        setState(() {
+          _currentIndex = 8;
+          _handbookOpen = true;
+        });
+      },
+    ),
+    ViolationReportPage(unsavedChangesController: _violationUnsaved),
+    ProfessorCounselingPage(unsavedChangesController: _counselingUnsaved),
+    AppNotificationsContent(
+      onBack: () {
+        final backIndex =
+            _previousIndexBeforeNotifications == _notificationsIndex
+            ? 0
+            : _previousIndexBeforeNotifications;
+        _go(backIndex);
+      },
+      onViewNotification: _handleNotificationView,
+    ),
   ];
 
   String _pageTitle() {
@@ -86,40 +126,70 @@ class _OsaDashboardState extends State<OsaDashboard> {
       case 1:
         return "Student Handbook";
       case 2:
-        return "Student Handbook (Classic)";
-      case 3:
         return "Violation Records";
+      case 3:
+        return "Academic Settings";
 
       // ✅ Settings pages
       case 4:
-        return "Academic Settings";
-      case 5:
         return "User Management";
-      case 6:
+      case 5:
         return "Student Management";
-      case 7:
+      case 6:
         return "Violation Settings";
-      case 8:
+      case 7:
         return "Meeting Schedule";
-      case 9:
+      case 8:
         return "Manage Handbook";
-      case 10:
+      case 9:
         return "Profile";
-      case 11:
-        return "Student Handbook (New Layout)";
-      case 12:
-        return "Handbook Docs Editor";
-      case 13:
+      case 10:
         return "Violation Analytics";
-      case 14:
+      case 11:
         return "Violation Review";
+      case 12:
+        return "Manage Handbook";
+      case 13:
+        return "Report Violation";
+      case 14:
+        return "Counselling Referral";
+      case _notificationsIndex:
+        return "Notifications";
 
       default:
         return "OSA Portal";
     }
   }
 
+  UnsavedChangesController? _controllerForIndex(int index) {
+    switch (index) {
+      case 13:
+        return _violationUnsaved;
+      case 14:
+        return _counselingUnsaved;
+      default:
+        return null;
+    }
+  }
+
+  Future<bool> _confirmLeaveCurrentPage() async {
+    final controller = _controllerForIndex(_currentIndex);
+    if (controller == null || !controller.isDirty) return true;
+    final leave = await showUnsavedChangesDialog(
+      context,
+      title: 'Leave current form?',
+      message:
+          'You have unsaved changes on this form. If you continue, your draft will be discarded.',
+    );
+    if (leave) {
+      controller.discardChanges();
+    }
+    return leave;
+  }
+
   Future<void> _logout() async {
+    final canLeave = await _confirmLeaveCurrentPage();
+    if (!mounted || !canLeave) return;
     final confirmed = await showLogoutConfirmDialog(context);
     if (!mounted || !confirmed) return;
     await FirebaseAuth.instance.signOut();
@@ -133,20 +203,76 @@ class _OsaDashboardState extends State<OsaDashboard> {
   }
 
   void _go(int i) {
+    _goAsync(i);
+  }
+
+  Future<void> _goAsync(int i) async {
+    if (i == _currentIndex) return;
+    final canLeave = await _confirmLeaveCurrentPage();
+    if (!mounted || !canLeave) return;
     setState(() {
       _currentIndex = i;
-      if (i == 1 || i == 2 || i == 9 || i == 11 || i == 12) {
+      if (i != _notificationsIndex) {
+        _previousIndexBeforeNotifications = i;
+      }
+      if (i != 5) _preselectedStudentUid = null;
+      if (i != 2) _preselectedViolationCaseId = null;
+      if (i == 1 || i == 8 || i == 12) {
         _handbookOpen = true;
       }
-      if (i >= 4 && i <= 8) _settingsOpen = true;
+      if (i >= 3 && i <= 7) _settingsOpen = true;
     });
   }
 
   void _goSettings(int pageIndex) {
+    _goSettingsAsync(pageIndex);
+  }
+
+  Future<void> _goSettingsAsync(int pageIndex) async {
+    final canLeave = await _confirmLeaveCurrentPage();
+    if (!mounted || !canLeave) return;
     setState(() {
       _settingsOpen = true; // keep open when selecting sub-item
       _currentIndex = pageIndex;
+      if (pageIndex != 5) _preselectedStudentUid = null;
+      if (pageIndex != 2) _preselectedViolationCaseId = null;
     });
+  }
+
+  Future<void> _openStudentManagementAsync({String? preselectUserId}) async {
+    final canLeave = await _confirmLeaveCurrentPage();
+    if (!mounted || !canLeave) return;
+    setState(() {
+      _settingsOpen = true;
+      _currentIndex = 5;
+      final uid = (preselectUserId ?? '').trim();
+      _preselectedStudentUid = uid.isEmpty ? null : uid;
+      _preselectedViolationCaseId = null;
+    });
+  }
+
+  Future<void> _openViolationRecordsAsync({String? preselectCaseId}) async {
+    final canLeave = await _confirmLeaveCurrentPage();
+    if (!mounted || !canLeave) return;
+    setState(() {
+      _currentIndex = 2;
+      _recordsPreset = const ViolationRecordsFilterPreset(clearExisting: true);
+      _recordsPresetVersion++;
+      final caseId = (preselectCaseId ?? '').trim();
+      _preselectedViolationCaseId = caseId.isEmpty ? null : caseId;
+      _preselectedStudentUid = null;
+    });
+  }
+
+  Future<void> _handleNotificationView(AppNotificationViewIntent intent) async {
+    switch (intent.target) {
+      case AppNotificationViewTarget.pendingApproval:
+        await _openStudentManagementAsync(preselectUserId: intent.studentUid);
+        break;
+      case AppNotificationViewTarget.violationAlert:
+        await _openViolationRecordsAsync(preselectCaseId: intent.caseId);
+        break;
+    }
   }
 
   void _toggleDesktopNotifications() {
@@ -160,10 +286,15 @@ class _OsaDashboardState extends State<OsaDashboard> {
   }
 
   Future<void> _openNotificationsPage() async {
-    _closeDesktopNotifications();
-    await Navigator.of(
-      context,
-    ).push(MaterialPageRoute(builder: (_) => const AppNotificationsPage()));
+    final canLeave = await _confirmLeaveCurrentPage();
+    if (!mounted || !canLeave) return;
+    setState(() {
+      if (_currentIndex != _notificationsIndex) {
+        _previousIndexBeforeNotifications = _currentIndex;
+      }
+      _showDesktopNotifications = false;
+      _currentIndex = _notificationsIndex;
+    });
   }
 
   String _displayName(Map<String, dynamic> data, User user) {
@@ -194,6 +325,13 @@ class _OsaDashboardState extends State<OsaDashboard> {
   }
 
   @override
+  void dispose() {
+    _violationUnsaved.dispose();
+    _counselingUnsaved.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
@@ -220,188 +358,87 @@ class _OsaDashboardState extends State<OsaDashboard> {
 
         return LayoutBuilder(
           builder: (context, constraints) {
-            final w = constraints.maxWidth;
+            final shell = ResponsiveLayoutTokens.resolveShellLayout(
+              width: constraints.maxWidth,
+              height: constraints.maxHeight,
+              allowCompactDesktopDrawer: true,
+            );
 
-            // ✅ same responsiveness rule as reference
-            final bool isDesktop = w >= 900;
-            final double h = constraints.maxHeight;
-            // Treat typical 1366x768 (and nearby compact laptop sizes) as hamburger mode.
-            final bool compactDesktop = isDesktop && (w <= 1450 || h <= 820);
-            final bool showPermanentSidebar = isDesktop && !compactDesktop;
-            final bool useDrawerSidebar = !showPermanentSidebar;
+            final menuPanel = _MenuPanel(
+              currentIndex: _currentIndex,
+              primary: primary,
+              hint: hint,
+              textDark: textDark,
+              surface: surface,
+              onSelect: _go,
+              onProfile: () => _go(9),
+              settingsOpen: _settingsOpen,
+              onToggleSettings: () =>
+                  setState(() => _settingsOpen = !_settingsOpen),
+              onSelectSettingsItem: (pageIndex) => _goSettings(pageIndex),
+              handbookOpen: _handbookOpen,
+              onToggleHandbook: () =>
+                  setState(() => _handbookOpen = !_handbookOpen),
+              onLogout: _logout,
+              accountTitle: accountTitle,
+              accountEmail: accountEmail,
+              accountName: accountName,
+            );
 
-            return Scaffold(
+            return RoleShellScaffold(
               backgroundColor: bg,
-
-              // ✅ Drawer only for phone/tablet
-              drawer: useDrawerSidebar
-                  ? Drawer(
-                      child: _MenuPanel(
-                        currentIndex: _currentIndex,
-                        primary: primary,
-                        hint: hint,
-                        textDark: textDark,
-                        surface: surface,
-                        onSelect: (i) {
-                          Navigator.of(context).maybePop();
-                          _go(i);
-                        },
-                        onProfile: () {
-                          Navigator.of(context).maybePop();
-                          setState(() => _currentIndex = 10);
-                        },
-
-                        // ✅ SETTINGS SECTION
-                        settingsOpen: _settingsOpen,
-                        onToggleSettings: () =>
-                            setState(() => _settingsOpen = !_settingsOpen),
-                        onSelectSettingsItem: (pageIndex) {
-                          Navigator.of(context).maybePop();
-                          _goSettings(pageIndex);
-                        },
-                        handbookOpen: _handbookOpen,
-                        onToggleHandbook: () =>
-                            setState(() => _handbookOpen = !_handbookOpen),
-
-                        onLogout: () {
-                          Navigator.of(context).maybePop();
-                          _logout();
-                        },
-                        accountTitle: accountTitle,
-                        accountEmail: accountEmail,
-                        accountName: accountName,
-                      ),
-                    )
-                  : null,
-
-              body: Row(
-                children: [
-                  // ✅ Permanent sidebar on desktop
-                  if (showPermanentSidebar)
-                    SizedBox(
-                      width: 260,
-                      child: Material(
-                        color: surface,
-                        child: _MenuPanel(
-                          currentIndex: _currentIndex,
-                          primary: primary,
-                          hint: hint,
-                          textDark: textDark,
-                          surface: surface,
-                          onSelect: _go,
-                          onProfile: () {
-                            setState(() => _currentIndex = 10);
-                          },
-
-                          // ✅ SETTINGS SECTION
-                          settingsOpen: _settingsOpen,
-                          onToggleSettings: () =>
-                              setState(() => _settingsOpen = !_settingsOpen),
-                          onSelectSettingsItem: (pageIndex) =>
-                              _goSettings(pageIndex),
-                          handbookOpen: _handbookOpen,
-                          onToggleHandbook: () =>
-                              setState(() => _handbookOpen = !_handbookOpen),
-
-                          onLogout: _logout,
-                          accountTitle: accountTitle,
-                          accountEmail: accountEmail,
-                          accountName: accountName,
-                        ),
-                      ),
-                    ),
-
-                  // ✅ Main content
-                  Expanded(
-                    child: Stack(
-                      children: [
-                        Positioned.fill(
-                          child: Column(
-                            children: [
-                              // ✅ Shared header controlled by dashboard (same as reference)
-                              Builder(
-                                builder: (ctx) {
-                                  return Container(
-                                    height: kToolbarHeight,
-                                    width: double.infinity,
-                                    color: primary,
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 12,
-                                    ),
-                                    child: Row(
-                                      children: [
-                                        if (useDrawerSidebar)
-                                          IconButton(
-                                            icon: const Icon(
-                                              Icons.menu_rounded,
-                                              color: Colors.white,
-                                            ),
-                                            onPressed: () =>
-                                                Scaffold.of(ctx).openDrawer(),
-                                          )
-                                        else
-                                          const SizedBox(width: 8),
-                                        Expanded(
-                                          child: Text(
-                                            _pageTitle(),
-                                            overflow: TextOverflow.ellipsis,
-                                            style: const TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 20,
-                                              fontWeight: FontWeight.w700,
-                                            ),
-                                          ),
-                                        ),
-                                        IconButton(
-                                          icon: const Icon(
-                                            Icons.notifications_none_rounded,
-                                            color: Colors.white,
-                                          ),
-                                          onPressed: () {
-                                            if (isDesktop) {
-                                              _toggleDesktopNotifications();
-                                              return;
-                                            }
-                                            _openNotificationsPage();
-                                          },
-                                        ),
-                                      ],
-                                    ),
-                                  );
-                                },
-                              ),
-
-                              // ✅ Page content (keeps state)
-                              Expanded(
-                                child: IndexedStack(
-                                  index: _currentIndex,
-                                  children: _pages,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        if (isDesktop && _showDesktopNotifications) ...[
-                          Positioned.fill(
-                            child: GestureDetector(
-                              behavior: HitTestBehavior.translucent,
-                              onTap: _closeDesktopNotifications,
-                            ),
-                          ),
-                          Positioned(
-                            top: kToolbarHeight + 8,
-                            right: 14,
-                            child: DesktopNotificationsPanel(
-                              uid: user.uid,
-                              onClose: _closeDesktopNotifications,
-                              onSeeAll: _openNotificationsPage,
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
-                ],
+              title: _pageTitle(),
+              usesDrawerSidebar: shell.usesDrawerSidebar,
+              showPermanentSidebar: shell.showPermanentSidebar,
+              drawer: Drawer(
+                child: _MenuPanel(
+                  currentIndex: _currentIndex,
+                  primary: primary,
+                  hint: hint,
+                  textDark: textDark,
+                  surface: surface,
+                  onSelect: (i) {
+                    Navigator.of(context).maybePop();
+                    _go(i);
+                  },
+                  onProfile: () {
+                    Navigator.of(context).maybePop();
+                    _go(9);
+                  },
+                  settingsOpen: _settingsOpen,
+                  onToggleSettings: () =>
+                      setState(() => _settingsOpen = !_settingsOpen),
+                  onSelectSettingsItem: (pageIndex) {
+                    Navigator.of(context).maybePop();
+                    _goSettings(pageIndex);
+                  },
+                  handbookOpen: _handbookOpen,
+                  onToggleHandbook: () =>
+                      setState(() => _handbookOpen = !_handbookOpen),
+                  onLogout: () {
+                    Navigator.of(context).maybePop();
+                    _logout();
+                  },
+                  accountTitle: accountTitle,
+                  accountEmail: accountEmail,
+                  accountName: accountName,
+                ),
+              ),
+              sidebar: menuPanel,
+              content: IndexedStack(index: _currentIndex, children: _pages),
+              onNotificationsTap: () {
+                if (shell.isDesktop) {
+                  _toggleDesktopNotifications();
+                } else {
+                  _openNotificationsPage();
+                }
+              },
+              showDesktopOverlay: shell.isDesktop && _showDesktopNotifications,
+              onDismissDesktopOverlay: _closeDesktopNotifications,
+              desktopOverlay: DesktopNotificationsPanel(
+                uid: user.uid,
+                onClose: _closeDesktopNotifications,
+                onSeeAll: _openNotificationsPage,
               ),
             );
           },
@@ -463,55 +500,106 @@ class _MenuPanel extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Container(
-            padding: const EdgeInsets.fromLTRB(16, 42, 16, 18),
-            width: double.infinity,
-            decoration: BoxDecoration(
-              color: surface,
-              border: Border(
-                bottom: BorderSide(color: primary.withValues(alpha: 0.12)),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 16, 12, 6),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  AppBranding.logo(width: 28, height: 28),
+                  const SizedBox(width: 8),
+                  Text(
+                    'BUDiscipLink',
+                    style: TextStyle(
+                      color: primary,
+                      fontWeight: FontWeight.w900,
+                      fontSize: 15,
+                      letterSpacing: 0.2,
+                    ),
+                  ),
+                ],
               ),
             ),
-            child: Row(
-              children: [
-                Icon(Icons.account_circle, size: 52, color: primary),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 14),
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(14),
+                onTap: onProfile,
+                child: Ink(
+                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+                  decoration: BoxDecoration(
+                    color: primary.withValues(
+                      alpha: currentIndex == 9 ? 0.86 : 0.80,
+                    ),
+                    borderRadius: BorderRadius.circular(14),
+                    boxShadow: [
+                      BoxShadow(
+                        color: primary.withValues(alpha: 0.22),
+                        blurRadius: 10,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: Row(
                     children: [
-                      Text(
-                        accountName,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontWeight: FontWeight.w900,
-                          color: primary,
+                      Container(
+                        width: 44,
+                        height: 44,
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.16),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: const Icon(
+                          Icons.person_outline_rounded,
+                          size: 24,
+                          color: Colors.white,
                         ),
                       ),
-                      const SizedBox(height: 4),
-                      Text(
-                        accountEmail,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: hint,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        accountTitle,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: textDark.withValues(alpha: 0.70),
-                          fontWeight: FontWeight.w800,
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              accountName,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w900,
+                                color: Colors.white,
+                                fontSize: 14,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              accountEmail,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                color: Colors.white.withValues(alpha: 0.90),
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              accountTitle,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                color: Colors.white.withValues(alpha: 0.92),
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     ],
                   ),
                 ),
-              ],
+              ),
             ),
           ),
           Expanded(
@@ -519,10 +607,6 @@ class _MenuPanel extends StatelessWidget {
               padding: const EdgeInsets.only(top: 10, bottom: 16),
               child: Column(
                 children: [
-                  _SectionLabel(
-                    label: 'MAIN',
-                    color: hint.withValues(alpha: 0.95),
-                  ),
                   _MenuItem(
                     icon: Icons.dashboard_rounded,
                     label: 'Dashboard',
@@ -537,9 +621,7 @@ class _MenuPanel extends StatelessWidget {
                     expanded: handbookOpen,
                     active:
                         currentIndex == 1 ||
-                        currentIndex == 2 ||
-                        currentIndex == 9 ||
-                        currentIndex == 11 ||
+                        currentIndex == 8 ||
                         currentIndex == 12,
                     primary: primary,
                     textDark: textDark,
@@ -548,8 +630,8 @@ class _MenuPanel extends StatelessWidget {
                   ),
                   if (handbookOpen) ...[
                     _SubItem(
-                      label: 'Student Handbook',
-                      icon: Icons.menu_book_rounded,
+                      label: 'Handbook Section View',
+                      icon: Icons.menu_book_outlined,
                       active: currentIndex == 1,
                       primary: primary,
                       textDark: textDark,
@@ -557,77 +639,58 @@ class _MenuPanel extends StatelessWidget {
                       onTap: () => onSelect(1),
                     ),
                     _SubItem(
-                      label: 'Handbook Classic',
-                      icon: Icons.menu_book_outlined,
-                      active: currentIndex == 2,
-                      primary: primary,
-                      textDark: textDark,
-                      hint: hint,
-                      onTap: () => onSelect(2),
-                    ),
-                    _SubItem(
                       label: 'Manage Handbook',
-                      icon: Icons.edit_note_rounded,
-                      active: currentIndex == 9,
+                      icon: Icons.published_with_changes_rounded,
+                      active: currentIndex == 8,
                       primary: primary,
                       textDark: textDark,
                       hint: hint,
-                      onTap: () => onSelect(9),
-                    ),
-                    _SubItem(
-                      label: 'Handbook New Layout',
-                      icon: Icons.auto_awesome_rounded,
-                      active: currentIndex == 11,
-                      primary: primary,
-                      textDark: textDark,
-                      hint: hint,
-                      onTap: () => onSelect(11),
-                    ),
-                    _SubItem(
-                      label: 'Handbook Docs Editor',
-                      icon: Icons.description_rounded,
-                      active: currentIndex == 12,
-                      primary: primary,
-                      textDark: textDark,
-                      hint: hint,
-                      onTap: () => onSelect(12),
+                      onTap: () => onSelect(8),
                     ),
                     const SizedBox(height: 6),
                   ],
-                  _SectionLabel(
-                    label: 'OPERATIONS',
-                    color: hint.withValues(alpha: 0.95),
-                  ),
                   _MenuItem(
                     icon: Icons.rule_rounded,
                     label: 'Violation Review',
-                    active: currentIndex == 14,
+                    active: currentIndex == 11,
                     primary: primary,
                     textDark: textDark,
-                    onTap: () => onSelect(14),
+                    onTap: () => onSelect(11),
                   ),
                   _MenuItem(
                     icon: Icons.assignment_rounded,
                     label: 'Violation Records',
-                    active: currentIndex == 3,
+                    active: currentIndex == 2,
                     primary: primary,
                     textDark: textDark,
-                    onTap: () => onSelect(3),
+                    onTap: () => onSelect(2),
                   ),
                   _MenuItem(
                     icon: Icons.analytics_rounded,
                     label: 'Violation Analytics',
+                    active: currentIndex == 10,
+                    primary: primary,
+                    textDark: textDark,
+                    onTap: () => onSelect(10),
+                  ),
+                  _MenuItem(
+                    icon: Icons.report_rounded,
+                    label: 'Report Violation',
                     active: currentIndex == 13,
                     primary: primary,
                     textDark: textDark,
                     onTap: () => onSelect(13),
                   ),
+                  _MenuItem(
+                    icon: Icons.support_agent_rounded,
+                    label: 'Counselling Referral',
+                    active: currentIndex == 14,
+                    primary: primary,
+                    textDark: textDark,
+                    onTap: () => onSelect(14),
+                  ),
                   const SizedBox(height: 8),
                   Divider(color: primary.withValues(alpha: 0.15), height: 18),
-                  _SectionLabel(
-                    label: 'ADMINISTRATION',
-                    color: hint.withValues(alpha: 0.95),
-                  ),
                   InkWell(
                     onTap: onToggleSettings,
                     child: Container(
@@ -676,6 +739,15 @@ class _MenuPanel extends StatelessWidget {
                     _SubItem(
                       label: 'Academic Settings',
                       icon: Icons.school_rounded,
+                      active: currentIndex == 3,
+                      primary: primary,
+                      textDark: textDark,
+                      hint: hint,
+                      onTap: () => onSelectSettingsItem(3),
+                    ),
+                    _SubItem(
+                      label: 'User Management',
+                      icon: Icons.people_alt_rounded,
                       active: currentIndex == 4,
                       primary: primary,
                       textDark: textDark,
@@ -683,8 +755,8 @@ class _MenuPanel extends StatelessWidget {
                       onTap: () => onSelectSettingsItem(4),
                     ),
                     _SubItem(
-                      label: 'User Management',
-                      icon: Icons.people_alt_rounded,
+                      label: 'Student Management',
+                      icon: Icons.school_outlined,
                       active: currentIndex == 5,
                       primary: primary,
                       textDark: textDark,
@@ -692,8 +764,8 @@ class _MenuPanel extends StatelessWidget {
                       onTap: () => onSelectSettingsItem(5),
                     ),
                     _SubItem(
-                      label: 'Student Management',
-                      icon: Icons.school_outlined,
+                      label: 'Violation Settings',
+                      icon: Icons.fact_check_rounded,
                       active: currentIndex == 6,
                       primary: primary,
                       textDark: textDark,
@@ -701,93 +773,52 @@ class _MenuPanel extends StatelessWidget {
                       onTap: () => onSelectSettingsItem(6),
                     ),
                     _SubItem(
-                      label: 'Violation Settings',
-                      icon: Icons.fact_check_rounded,
+                      label: 'Meeting Schedule',
+                      icon: Icons.calendar_month_rounded,
                       active: currentIndex == 7,
                       primary: primary,
                       textDark: textDark,
                       hint: hint,
                       onTap: () => onSelectSettingsItem(7),
                     ),
-                    _SubItem(
-                      label: 'Meeting Schedule',
-                      icon: Icons.calendar_month_rounded,
-                      active: currentIndex == 8,
-                      primary: primary,
-                      textDark: textDark,
-                      hint: hint,
-                      onTap: () => onSelectSettingsItem(8),
-                    ),
                     const SizedBox(height: 6),
                   ],
-                  Divider(color: primary.withValues(alpha: 0.15), height: 18),
-                  _SectionLabel(
-                    label: 'ACCOUNT',
-                    color: hint.withValues(alpha: 0.95),
-                  ),
-                  _MenuItem(
-                    icon: Icons.person_outline_rounded,
-                    label: 'Profile',
-                    active: currentIndex == 10,
-                    primary: primary,
-                    textDark: textDark,
-                    onTap: onProfile,
-                  ),
-                  InkWell(
-                    onTap: onLogout,
-                    child: Container(
-                      margin: const EdgeInsets.fromLTRB(10, 4, 10, 0),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 14,
-                        vertical: 12,
-                      ),
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: const Row(
-                        children: [
-                          Icon(Icons.logout_rounded, color: Colors.red),
-                          SizedBox(width: 12),
-                          Text(
-                            'Logout',
-                            style: TextStyle(
-                              color: Colors.red,
-                              fontWeight: FontWeight.w900,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
                 ],
               ),
             ),
           ),
+          Container(
+            decoration: BoxDecoration(
+              border: Border(
+                top: BorderSide(color: primary.withValues(alpha: 0.15)),
+              ),
+            ),
+            padding: const EdgeInsets.fromLTRB(10, 8, 10, 12),
+            child: InkWell(
+              onTap: onLogout,
+              borderRadius: BorderRadius.circular(12),
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 12,
+                ),
+                child: const Row(
+                  children: [
+                    Icon(Icons.logout_rounded, color: Colors.red),
+                    SizedBox(width: 12),
+                    Text(
+                      'Logout',
+                      style: TextStyle(
+                        color: Colors.red,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
         ],
-      ),
-    );
-  }
-}
-
-class _SectionLabel extends StatelessWidget {
-  final String label;
-  final Color color;
-
-  const _SectionLabel({required this.label, required this.color});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      alignment: Alignment.centerLeft,
-      margin: const EdgeInsets.fromLTRB(14, 8, 14, 2),
-      child: Text(
-        label,
-        style: TextStyle(
-          color: color,
-          fontSize: 11,
-          fontWeight: FontWeight.w900,
-          letterSpacing: 0.8,
-        ),
       ),
     );
   }

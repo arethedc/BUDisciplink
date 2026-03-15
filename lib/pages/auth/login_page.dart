@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../../services/user_service.dart';
 import '../../services/role_router.dart';
+import '../shared/widgets/app_branding.dart';
 import '../auth/forgot_password_page.dart';
 
 class LoginPage extends StatefulWidget {
@@ -116,6 +117,11 @@ class _LoginPageState extends State<LoginPage> {
     super.dispose();
   }
 
+  void _submitFromKeyboard() {
+    if (isLoading) return;
+    login();
+  }
+
   InputDecoration _decor({
     required String label,
     required IconData icon,
@@ -124,7 +130,7 @@ class _LoginPageState extends State<LoginPage> {
     return InputDecoration(
       labelText: label,
       labelStyle: const TextStyle(color: hint, fontWeight: FontWeight.w700),
-      prefixIcon: Icon(icon, color: primary.withOpacity(0.85)),
+      prefixIcon: Icon(icon, color: primary.withValues(alpha: 0.85)),
       suffixIcon: suffix,
       filled: true,
       fillColor: Colors.white,
@@ -148,8 +154,6 @@ class _LoginPageState extends State<LoginPage> {
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final bool isMobile = constraints.maxWidth < 600;
-
         // ✅ fixed size (no stretch). Use 420 on all screens, but allow smaller phones.
         const double fixedCardWidth = 420.0;
         final double cardWidth = constraints.maxWidth < fixedCardWidth
@@ -165,15 +169,15 @@ class _LoginPageState extends State<LoginPage> {
                 width: cardWidth,
                 child: Container(
                   decoration: BoxDecoration(
-                    color: bg,
+                    color: Colors.white,
                     borderRadius: BorderRadius.circular(16),
                     border: Border.all(
-                      color: primary.withOpacity(0.15),
+                      color: primary.withValues(alpha: 0.18),
                       width: 1,
                     ),
                     boxShadow: [
                       BoxShadow(
-                        color: Colors.black.withOpacity(0.06),
+                        color: Colors.black.withValues(alpha: 0.06),
                         blurRadius: 18,
                         offset: const Offset(0, 8),
                       ),
@@ -187,21 +191,34 @@ class _LoginPageState extends State<LoginPage> {
                         const SizedBox(height: 8),
 
                         // Logo (Smaller for login)
-                        Center(
-                          child: SizedBox(
-                            width: 100,
-                            height: 100,
-                            child: Image.asset(
-                              "lib/assets/bu_logo.png",
-                              fit: BoxFit.contain,
-                            ),
+               
+                         Align(
+                          alignment: Alignment.centerLeft,
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              SizedBox(
+                                width: 40,
+                                height: 40,
+                                child: AppBranding.logo(fit: BoxFit.contain),
+                              ),
+                              const Text(
+                                "BUDiscipLink",
+                                style: TextStyle(
+                                  color: primary,
+                                  fontWeight: FontWeight.w900,
+                                  fontSize: 14,
+                                  letterSpacing: 0.2,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
 
-                        const SizedBox(height: 14),
+                        const SizedBox(height: 8),
 
                         const Text(
-                          "WELCOME BACK",
+                          "WELCOME",
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             color: primary,
@@ -229,6 +246,8 @@ class _LoginPageState extends State<LoginPage> {
                         // Email
                         TextField(
                           controller: emailController,
+                          textInputAction: TextInputAction.done,
+                          onSubmitted: (_) => _submitFromKeyboard(),
                           style: const TextStyle(
                             color: textDark,
                             fontWeight: FontWeight.w700,
@@ -245,6 +264,8 @@ class _LoginPageState extends State<LoginPage> {
                         TextField(
                           controller: passwordController,
                           obscureText: _obscurePassword,
+                          textInputAction: TextInputAction.done,
+                          onSubmitted: (_) => _submitFromKeyboard(),
                           style: const TextStyle(
                             color: textDark,
                             fontWeight: FontWeight.w700,
@@ -257,7 +278,7 @@ class _LoginPageState extends State<LoginPage> {
                                 _obscurePassword
                                     ? Icons.visibility_off_rounded
                                     : Icons.visibility_rounded,
-                                color: primary.withOpacity(0.85),
+                                color: primary.withValues(alpha: 0.85),
                               ),
                               onPressed: () {
                                 setState(() {
@@ -364,7 +385,7 @@ class _LoginPageState extends State<LoginPage> {
                               const SizedBox(width: 10),
                               Expanded(
                                 child: Text(
-                                  "Use your BU account to access the handbook.",
+                                  "Use your BU outlook email to login.",
                                   style: TextStyle(
                                     color: textDark.withValues(alpha: 0.85),
                                     fontWeight: FontWeight.w700,

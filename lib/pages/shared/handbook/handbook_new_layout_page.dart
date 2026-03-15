@@ -247,7 +247,7 @@ class _HandbookNewLayoutPageState extends State<HandbookNewLayoutPage> {
                     ),
                   ),
                   floatingActionButton: FloatingActionButton(
-                    heroTag: 'handbook_new_layout_ai_fab',
+                    heroTag: null,
                     onPressed: () => showHandbookAiAssistantSheet(context),
                     backgroundColor: _primary,
                     foregroundColor: Colors.white,

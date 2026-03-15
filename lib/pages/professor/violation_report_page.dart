@@ -8,12 +8,21 @@ import 'package:flutter/foundation.dart'
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
+import 'package:syncfusion_flutter_pdfviewer/pdfviewer.dart';
 
 import '../../services/violation_case_service.dart';
+import '../shared/widgets/unsaved_changes_guard.dart';
 import 'MySubmittedReportPage.dart';
 
 class ViolationReportPage extends StatefulWidget {
-  const ViolationReportPage({super.key});
+  final VoidCallback? onOpenMyReportsInShell;
+  final UnsavedChangesController? unsavedChangesController;
+
+  const ViolationReportPage({
+    super.key,
+    this.onOpenMyReportsInShell,
+    this.unsavedChangesController,
+  });
 
   @override
   State<ViolationReportPage> createState() => _ViolationReportPageState();
@@ -28,10 +37,8 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
   // =========================
   static const bg = Color(0xFFF6FAF6);
   static const primaryColor = Color(0xFF1B5E20);
-  static const accentColor = Color(0xFF43A047);
   static const textDark = Color(0xFF1F2A1F);
   static const hintColor = Color(0xFF6D7F62);
-  static const cardShadow = Color(0x0A000000);
 
   // Student search + locked student fields
   final _searchCtrl = TextEditingController();
@@ -44,6 +51,9 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
 
   // Selected student
   String? _studentUid;
+  String? _selectedStudentPhotoUrl;
+  String _selectedStudentCollegeId = '';
+  String _selectedStudentYearLevel = '';
 
   // Concern + Category + Type (3-level structure)
   String? _concern; // basic | serious
@@ -61,6 +71,7 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
   final ImagePicker _imagePicker = ImagePicker();
 
   bool _submitting = false;
+  bool _incidentModified = false;
 
   // Student cache
   bool _loadingStudents = false;
@@ -70,11 +81,26 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
   @override
   void initState() {
     super.initState();
+    _searchCtrl.addListener(_syncUnsavedState);
+    _descriptionCtrl.addListener(_syncUnsavedState);
+    _attachUnsavedController(widget.unsavedChangesController);
     _preloadStudents();
   }
 
   @override
+  void didUpdateWidget(covariant ViolationReportPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.unsavedChangesController != widget.unsavedChangesController) {
+      _detachUnsavedController(oldWidget.unsavedChangesController);
+      _attachUnsavedController(widget.unsavedChangesController);
+    }
+  }
+
+  @override
   void dispose() {
+    _detachUnsavedController(widget.unsavedChangesController);
+    _searchCtrl.removeListener(_syncUnsavedState);
+    _descriptionCtrl.removeListener(_syncUnsavedState);
     _searchCtrl.dispose();
     _studentNoCtrl.dispose();
     _studentNameCtrl.dispose();
@@ -102,7 +128,7 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
         color: hintColor,
         fontWeight: FontWeight.w600,
       ),
-      prefixIcon: Icon(icon, color: primaryColor.withOpacity(0.85)),
+      prefixIcon: Icon(icon, color: primaryColor.withValues(alpha: 0.85)),
       filled: true,
       fillColor: Colors.white,
       border: OutlineInputBorder(
@@ -133,8 +159,10 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
     });
 
     try {
-      final snap =
-          await FirebaseFirestore.instance.collection('users').limit(500).get();
+      final snap = await FirebaseFirestore.instance
+          .collection('users')
+          .limit(500)
+          .get();
 
       if (!mounted) return;
 
@@ -157,6 +185,114 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
   String _norm(String s) =>
       s.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
 
+  String _safeString(dynamic value) => (value ?? '').toString().trim();
+
+  Map<String, dynamic> _studentProfileOf(Map<String, dynamic> data) {
+    final raw = data['studentProfile'];
+    if (raw is Map<String, dynamic>) return raw;
+    if (raw is Map) return Map<String, dynamic>.from(raw);
+    return const <String, dynamic>{};
+  }
+
+  String _studentDisplayName(Map<String, dynamic> data) {
+    final explicit = _safeString(data['displayName']);
+    if (explicit.isNotEmpty) return explicit;
+    final first = _safeString(data['firstName']);
+    final last = _safeString(data['lastName']);
+    return '$first $last'.trim();
+  }
+
+  String _studentNoOf(Map<String, dynamic> data) {
+    final profile = _studentProfileOf(data);
+    if (_safeString(profile['studentNo']).isNotEmpty) {
+      return _safeString(profile['studentNo']);
+    }
+    return _safeString(data['studentNo']);
+  }
+
+  String _programIdOf(Map<String, dynamic> data) {
+    final profile = _studentProfileOf(data);
+    if (_safeString(profile['programId']).isNotEmpty) {
+      return _safeString(profile['programId']);
+    }
+    if (_safeString(profile['program']).isNotEmpty) {
+      return _safeString(profile['program']);
+    }
+    if (_safeString(data['programId']).isNotEmpty) {
+      return _safeString(data['programId']);
+    }
+    return _safeString(data['program']);
+  }
+
+  String _collegeIdOf(Map<String, dynamic> data) {
+    final profile = _studentProfileOf(data);
+    return _safeString(profile['collegeId']);
+  }
+
+  String _yearLevelOf(Map<String, dynamic> data) {
+    final profile = _studentProfileOf(data);
+    if (_safeString(profile['yearLevel']).isNotEmpty) {
+      return _safeString(profile['yearLevel']);
+    }
+    return _safeString(data['yearLevel']);
+  }
+
+  String _photoUrlOf(Map<String, dynamic> data) =>
+      _safeString(data['photoUrl']);
+
+  String _initials(String name) {
+    final parts = name
+        .trim()
+        .split(RegExp(r'\s+'))
+        .where((part) => part.isNotEmpty)
+        .toList();
+    if (parts.isEmpty) return 'S';
+    if (parts.length == 1) return parts.first.substring(0, 1).toUpperCase();
+    return (parts[0].substring(0, 1) + parts[1].substring(0, 1)).toUpperCase();
+  }
+
+  Widget _studentAvatar({
+    required String name,
+    required String photoUrl,
+    required double size,
+  }) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: primaryColor.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(size / 2),
+        border: Border.all(color: primaryColor.withValues(alpha: 0.25)),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: photoUrl.isEmpty
+          ? Center(
+              child: Text(
+                _initials(name),
+                style: TextStyle(
+                  color: primaryColor,
+                  fontWeight: FontWeight.w900,
+                  fontSize: size * 0.34,
+                ),
+              ),
+            )
+          : Image.network(
+              photoUrl,
+              fit: BoxFit.cover,
+              errorBuilder: (context, error, stackTrace) => Center(
+                child: Text(
+                  _initials(name),
+                  style: TextStyle(
+                    color: primaryColor,
+                    fontWeight: FontWeight.w900,
+                    fontSize: size * 0.34,
+                  ),
+                ),
+              ),
+            ),
+    );
+  }
+
   List<QueryDocumentSnapshot<Map<String, dynamic>>> _filterStudentsLocal(
     String q,
   ) {
@@ -168,10 +304,9 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
     final results = _studentCache.where((doc) {
       final data = doc.data();
 
-      final studentProfile = data['studentProfile'] as Map<String, dynamic>? ?? {};
-      final name = _norm((data['displayName'] ?? '').toString());
-      final studentNo = _norm((studentProfile['studentNo'] ?? data['studentNo'] ?? '').toString());
-      final programId = _norm((studentProfile['programId'] ?? data['programId'] ?? '').toString());
+      final name = _norm(_studentDisplayName(data));
+      final studentNo = _norm(_studentNoOf(data));
+      final programId = _norm(_programIdOf(data));
 
       if (name.contains(query) ||
           studentNo.contains(query) ||
@@ -188,32 +323,38 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
 
   void _selectStudent(QueryDocumentSnapshot<Map<String, dynamic>> doc) {
     final data = doc.data();
-
-    final studentProfile = data['studentProfile'] as Map<String, dynamic>? ?? {};
+    final studentNo = _studentNoOf(data);
+    final studentName = _studentDisplayName(data);
+    final programId = _programIdOf(data);
 
     setState(() {
       _studentUid = doc.id;
+      _selectedStudentPhotoUrl = _photoUrlOf(data);
+      _selectedStudentCollegeId = _collegeIdOf(data);
+      _selectedStudentYearLevel = _yearLevelOf(data);
 
-      _studentNoCtrl.text = (studentProfile['studentNo'] ?? data['studentNo'] ?? '').toString();
-      _studentNameCtrl.text = (data['displayName'] ?? '').toString();
-      _programCtrl.text = (studentProfile['programId'] ?? data['programId'] ?? '').toString();
-
-      final no = _studentNoCtrl.text.trim();
-      final name = _studentNameCtrl.text.trim();
-      _searchCtrl.text = no.isEmpty ? name : '$no - $name';
+      _studentNoCtrl.text = studentNo;
+      _studentNameCtrl.text = studentName;
+      _programCtrl.text = programId;
+      _searchCtrl.clear();
     });
+    _syncUnsavedState();
 
     FocusScope.of(context).unfocus();
   }
 
-  // ✅ If user edits search after selecting → auto-clear selection so they can pick new student
-  void _clearSelectedStudentButKeepSearch() {
+  void _clearSelectedStudent() {
     setState(() {
       _studentUid = null;
+      _selectedStudentPhotoUrl = null;
+      _selectedStudentCollegeId = '';
+      _selectedStudentYearLevel = '';
       _studentNoCtrl.clear();
       _studentNameCtrl.clear();
       _programCtrl.clear();
+      _searchCtrl.clear();
     });
+    _syncUnsavedState();
   }
 
   // =========================
@@ -248,7 +389,30 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
         defaultTargetPlatform == TargetPlatform.iOS;
   }
 
+  String _fileExtFromName(String name) {
+    final clean = name.trim().toLowerCase();
+    final dot = clean.lastIndexOf('.');
+    if (dot < 0 || dot == clean.length - 1) return '';
+    return clean.substring(dot + 1);
+  }
+
+  bool _isAllowedEvidenceExt(String ext) {
+    return ext == 'jpg' || ext == 'jpeg' || ext == 'png' || ext == 'pdf';
+  }
+
+  bool _isImageEvidenceExt(String ext) {
+    return ext == 'jpg' || ext == 'jpeg' || ext == 'png';
+  }
+
+  bool _isPdfEvidenceExt(String ext) => ext == 'pdf';
+
+  bool _isAllowedEvidenceFile(PlatformFile file) {
+    final ext = _fileExtFromName(file.name);
+    return _isAllowedEvidenceExt(ext);
+  }
+
   void _appendEvidenceFile(PlatformFile file) {
+    if (!_isAllowedEvidenceFile(file)) return;
     final exists = _pickedFiles.any(
       (x) =>
           x.name == file.name &&
@@ -258,6 +422,167 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
     if (!exists) {
       _pickedFiles.add(file);
     }
+  }
+
+  Widget _buildEvidenceThumb(PlatformFile file, {required double size}) {
+    final ext = _fileExtFromName(file.name);
+    final radius = BorderRadius.circular(10);
+    final box = BoxDecoration(
+      color: primaryColor.withValues(alpha: 0.10),
+      borderRadius: radius,
+      border: Border.all(color: Colors.black.withValues(alpha: 0.06)),
+    );
+
+    Widget child;
+    if (_isPdfEvidenceExt(ext)) {
+      child = const Icon(Icons.picture_as_pdf_rounded, color: Colors.red);
+    } else if (_isImageEvidenceExt(ext)) {
+      if (file.bytes != null) {
+        child = ClipRRect(
+          borderRadius: radius,
+          child: Image.memory(file.bytes!, fit: BoxFit.cover),
+        );
+      } else if ((file.path ?? '').isNotEmpty) {
+        child = ClipRRect(
+          borderRadius: radius,
+          child: Image.file(File(file.path!), fit: BoxFit.cover),
+        );
+      } else {
+        child = const Icon(Icons.image_rounded, color: primaryColor, size: 18);
+      }
+    } else {
+      child = const Icon(Icons.insert_drive_file_rounded, color: hintColor);
+    }
+
+    return InkWell(
+      borderRadius: radius,
+      onTap: () => _openEvidencePreview(file),
+      child: Container(
+        width: size,
+        height: size,
+        decoration: box,
+        clipBehavior: Clip.antiAlias,
+        child: child,
+      ),
+    );
+  }
+
+  Future<void> _openEvidencePreview(PlatformFile file) async {
+    final ext = _fileExtFromName(file.name);
+    final isImage = _isImageEvidenceExt(ext);
+    final isPdf = _isPdfEvidenceExt(ext);
+    if (!isImage && !isPdf) return;
+
+    Widget content;
+    if (isImage) {
+      if (file.bytes != null) {
+        content = InteractiveViewer(
+          minScale: 0.8,
+          maxScale: 4,
+          child: Image.memory(file.bytes!, fit: BoxFit.contain),
+        );
+      } else if ((file.path ?? '').isNotEmpty) {
+        content = InteractiveViewer(
+          minScale: 0.8,
+          maxScale: 4,
+          child: Image.file(File(file.path!), fit: BoxFit.contain),
+        );
+      } else {
+        content = const Center(
+          child: Text('Image preview is unavailable for this file.'),
+        );
+      }
+    } else {
+      if (file.bytes != null) {
+        content = SfPdfViewer.memory(file.bytes!);
+      } else if ((file.path ?? '').isNotEmpty) {
+        content = SfPdfViewer.file(File(file.path!));
+      } else {
+        content = Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.picture_as_pdf_rounded,
+                color: Colors.red,
+                size: 72,
+              ),
+              const SizedBox(height: 12),
+              Text(
+                file.name,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: textDark,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'PDF preview is unavailable for this file.',
+                style: TextStyle(color: hintColor, fontWeight: FontWeight.w700),
+              ),
+            ],
+          ),
+        );
+      }
+    }
+
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return Dialog(
+          backgroundColor: bg,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: Container(
+            width: 760,
+            constraints: const BoxConstraints(maxWidth: 920, maxHeight: 620),
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        file.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: textDark,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.of(dialogContext).pop(),
+                      icon: const Icon(Icons.close_rounded),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Expanded(
+                  child: Container(
+                    width: double.infinity,
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: Colors.black.withValues(alpha: 0.08),
+                      ),
+                    ),
+                    clipBehavior: Clip.antiAlias,
+                    child: content,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   Future<void> _openEvidencePicker() async {
@@ -274,22 +599,31 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
             children: [
               if (_supportsCameraCapture)
                 ListTile(
-                  leading: const Icon(Icons.camera_alt_rounded, color: primaryColor),
+                  leading: const Icon(
+                    Icons.camera_alt_rounded,
+                    color: primaryColor,
+                  ),
                   title: const Text(
                     'Take Photo',
                     style: TextStyle(fontWeight: FontWeight.w800),
                   ),
                   subtitle: const Text('Use device camera'),
-                  onTap: () => Navigator.of(context).pop(_EvidencePickAction.capturePhoto),
+                  onTap: () => Navigator.of(
+                    context,
+                  ).pop(_EvidencePickAction.capturePhoto),
                 ),
               ListTile(
-                leading: const Icon(Icons.upload_file_rounded, color: primaryColor),
+                leading: const Icon(
+                  Icons.upload_file_rounded,
+                  color: primaryColor,
+                ),
                 title: const Text(
                   'Upload Files',
                   style: TextStyle(fontWeight: FontWeight.w800),
                 ),
                 subtitle: const Text('JPG / PNG / PDF'),
-                onTap: () => Navigator.of(context).pop(_EvidencePickAction.uploadFiles),
+                onTap: () =>
+                    Navigator.of(context).pop(_EvidencePickAction.uploadFiles),
               ),
               const SizedBox(height: 8),
             ],
@@ -316,18 +650,36 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
 
     if (res == null || res.files.isEmpty) return;
 
+    final rejected = <String>[];
     setState(() {
       for (final f in res.files) {
+        if (!_isAllowedEvidenceFile(f)) {
+          rejected.add(f.name);
+          continue;
+        }
         _appendEvidenceFile(f);
       }
     });
+    _syncUnsavedState();
+
+    if (rejected.isNotEmpty && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Only photo files (JPG/PNG) and PDF are allowed. Skipped: ${rejected.length}',
+          ),
+        ),
+      );
+    }
   }
 
   Future<void> _capturePhotoEvidence() async {
     if (!_supportsCameraCapture) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Camera capture is not available on this device.')),
+        const SnackBar(
+          content: Text('Camera capture is not available on this device.'),
+        ),
       );
       return;
     }
@@ -352,20 +704,23 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
 
       if (!mounted) return;
       setState(() => _appendEvidenceFile(captured));
+      _syncUnsavedState();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Camera capture failed: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Camera capture failed: $e')));
     }
   }
 
   void _removeEvidenceAt(int i) {
     setState(() => _pickedFiles.removeAt(i));
+    _syncUnsavedState();
   }
 
   void _clearEvidence() {
     setState(() => _pickedFiles.clear());
+    _syncUnsavedState();
   }
 
   Future<List<String>> _uploadEvidenceMultiple() async {
@@ -374,6 +729,7 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
     final urls = <String>[];
 
     for (final f in _pickedFiles) {
+      if (!_isAllowedEvidenceFile(f)) continue;
       final fileName = '${DateTime.now().millisecondsSinceEpoch}_${f.name}';
       final metadata = SettableMetadata(
         contentType: _contentTypeForName(f.name),
@@ -466,7 +822,11 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
       return;
     }
 
-    setState(() => _incidentAt = selected);
+    setState(() {
+      _incidentAt = selected;
+      _incidentModified = true;
+    });
+    _syncUnsavedState();
   }
 
   // =========================
@@ -477,6 +837,9 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
 
     setState(() {
       _studentUid = null;
+      _selectedStudentPhotoUrl = null;
+      _selectedStudentCollegeId = '';
+      _selectedStudentYearLevel = '';
       _searchCtrl.clear();
       _studentNoCtrl.clear();
       _studentNameCtrl.clear();
@@ -492,11 +855,13 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
       _categoryCache = [];
       _typeCache = [];
       _incidentAt = DateTime.now();
+      _incidentModified = false;
 
       _pickedFiles.clear();
     });
 
     FocusManager.instance.primaryFocus?.unfocus();
+    _syncUnsavedState();
   }
 
   Future<void> _submit() async {
@@ -556,7 +921,7 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('✅ Violation case submitted successfully!'),
+          content: Text('Violation case submitted successfully!'),
           backgroundColor: Colors.green,
         ),
       );
@@ -564,9 +929,9 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
       _clearAll();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Submit failed: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Submit failed: $e')));
     } finally {
       if (mounted) {
         setState(() => _submitting = false);
@@ -574,50 +939,204 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
     }
   }
 
-  Future<void> _openMyReports() async {
-    await Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const MySubmittedCasesPage()),
+  bool get _hasDraftChanges =>
+      _studentUid != null ||
+      _searchCtrl.text.trim().isNotEmpty ||
+      _descriptionCtrl.text.trim().isNotEmpty ||
+      _categoryId != null ||
+      _typeId != null ||
+      _concern != null ||
+      _incidentModified ||
+      _pickedFiles.isNotEmpty;
+
+  void _syncUnsavedState() {
+    widget.unsavedChangesController?.setDirty(_hasDraftChanges);
+  }
+
+  void _discardDraftFromGuard() {
+    if (_submitting) return;
+    _clearAll();
+  }
+
+  void _attachUnsavedController(UnsavedChangesController? controller) {
+    if (controller == null) return;
+    controller.setDiscardHandler(_discardDraftFromGuard);
+    controller.setDirty(_hasDraftChanges);
+  }
+
+  void _detachUnsavedController(UnsavedChangesController? controller) {
+    if (controller == null) return;
+    controller.setDiscardHandler(null);
+    controller.clear();
+  }
+
+  Future<bool> _confirmLeaveIfUnsaved() async {
+    if (!_hasDraftChanges) return true;
+    final leave = await showUnsavedChangesDialog(
+      context,
+      title: 'Leave violation report form?',
+      message:
+          'You have an unfinished violation report. Leaving now will clear your current draft.',
     );
+    if (leave) {
+      _discardDraftFromGuard();
+    }
+    return leave;
+  }
+
+  Future<void> _openMyReports() async {
+    if (_hasDraftChanges) {
+      final leave = await showUnsavedChangesDialog(
+        context,
+        title: 'Open My Reports?',
+        message:
+            'You have an unfinished violation report. Leaving now will clear your current draft.',
+      );
+      if (!leave || !mounted) return;
+      _discardDraftFromGuard();
+    }
+    if (widget.onOpenMyReportsInShell != null) {
+      widget.onOpenMyReportsInShell!();
+      return;
+    }
+    await Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const MySubmittedCasesPage()));
   }
 
   // =========================
   // UI HELPERS
   // =========================
-  Widget _sectionTitle(String text, double scale) {
-    return Row(
+  Widget _buildSectionCard({
+    required String title,
+    required String subtitle,
+    required Widget child,
+    required double scale,
+  }) {
+    return Container(
+      width: double.infinity,
+      padding: EdgeInsets.all(12 * scale),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF7FBF7),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: primaryColor.withValues(alpha: 0.12)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: TextStyle(
+              color: textDark,
+              fontWeight: FontWeight.w900,
+              fontSize: (14.2 * scale).clamp(14.0, 16.0),
+            ),
+          ),
+          SizedBox(height: 2 * scale),
+          Text(
+            subtitle,
+            style: TextStyle(
+              color: hintColor,
+              fontWeight: FontWeight.w700,
+              fontSize: (12.0 * scale).clamp(12.0, 13.0),
+            ),
+          ),
+          SizedBox(height: 10 * scale),
+          child,
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStudentInfoAndViolationSplit(
+    double scale, {
+    required bool split,
+    required String nowText,
+  }) {
+    if (split) {
+      return Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: _studentInfoCard(scale: scale, forceFillHeight: false),
+          ),
+          SizedBox(width: 10 * scale),
+          Expanded(
+            child: _violationDetailsCard(
+              scale: scale,
+              nowText: nowText,
+              forceFillHeight: false,
+            ),
+          ),
+        ],
+      );
+    }
+
+    return Column(
       children: [
-        Container(
-          width: 10 * scale,
-          height: 10 * scale,
-          decoration: BoxDecoration(
-            color: primaryColor.withOpacity(0.15),
-            borderRadius: BorderRadius.circular(4 * scale),
-          ),
-        ),
-        SizedBox(width: 10 * scale),
-        Text(
-          text,
-          style: TextStyle(
-            color: textDark,
-            fontWeight: FontWeight.w900,
-            fontSize: (15.5 * scale).clamp(15.5, 18.0),
-          ),
+        _studentInfoCard(scale: scale, forceFillHeight: false),
+        SizedBox(height: 10 * scale),
+        _violationDetailsCard(
+          scale: scale,
+          nowText: nowText,
+          forceFillHeight: false,
         ),
       ],
     );
   }
 
-  Widget _fieldLabel(String text, double scale) {
-    return Padding(
-      padding: EdgeInsets.only(bottom: 6 * scale),
-      child: Text(
-        text,
-        style: TextStyle(
-          color: textDark,
-          fontWeight: FontWeight.w900,
-          fontSize: (13.5 * scale).clamp(13.5, 15.5),
-        ),
+  Widget _buildActions(double scale, {required bool stacked}) {
+    final clearButton = OutlinedButton.icon(
+      onPressed: _submitting ? null : _clearAll,
+      icon: const Icon(Icons.clear_rounded),
+      label: const Text('Clear Form'),
+      style: OutlinedButton.styleFrom(
+        foregroundColor: primaryColor,
+        side: BorderSide(color: primaryColor.withValues(alpha: 0.45)),
+        padding: EdgeInsets.symmetric(vertical: 12 * scale),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
+    );
+
+    final submitButton = ElevatedButton.icon(
+      onPressed: _submitting ? null : _submit,
+      icon: _submitting
+          ? const SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: Colors.white,
+              ),
+            )
+          : const Icon(Icons.send_rounded),
+      label: Text(_submitting ? 'Submitting...' : 'Submit Report'),
+      style: ElevatedButton.styleFrom(
+        backgroundColor: primaryColor,
+        foregroundColor: Colors.white,
+        padding: EdgeInsets.symmetric(vertical: 12 * scale),
+        elevation: 0,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      ),
+    );
+
+    if (stacked) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SizedBox(height: 46 * scale, child: submitButton),
+          SizedBox(height: 10 * scale),
+          SizedBox(height: 46 * scale, child: clearButton),
+        ],
+      );
+    }
+
+    return Row(
+      children: [
+        Expanded(child: clearButton),
+        SizedBox(width: 10 * scale),
+        Expanded(child: submitButton),
+      ],
     );
   }
 
@@ -633,254 +1152,170 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
         final scale = (w / 430).clamp(1.0, 1.20);
         final pad = (16.0 * scale).clamp(16.0, 24.0);
 
-        // breakpoints
-        final bool wide = w >= 980; // desktop wide
-        final bool tablet = w >= 640 && w < 980;
+        final bool desktop = w >= 1100;
+        final bool split = w >= 980;
+        final bool stackActions = w < 640;
 
-        final nowText = DateFormat('MMM d, yyyy • h:mm a').format(_incidentAt);
+        final nowText = DateFormat('MMM d, yyyy - h:mm a').format(_incidentAt);
 
-        final showSuggestions =
-            _searchCtrl.text.trim().isNotEmpty && _studentUid == null;
+        final showSuggestions = _searchCtrl.text.trim().isNotEmpty;
 
         final suggestions = showSuggestions
             ? _filterStudentsLocal(_searchCtrl.text)
             : <QueryDocumentSnapshot<Map<String, dynamic>>>[];
 
-        final maxCanvas = wide ? 1100.0 : 900.0;
+        final maxCanvas = desktop ? 1160.0 : 920.0;
 
-        return Scaffold(
-        backgroundColor: bg,
-        body: SafeArea(
-            child: SingleChildScrollView(
-              padding: EdgeInsets.fromLTRB(pad, 14 * scale, pad, 16 * scale),
-              child: Center(
-                child: ConstrainedBox(
-                  constraints: BoxConstraints(maxWidth: maxCanvas),
-                  child: Column(
-                    children: [
-                      // ✅ OUTER SOFT CONTAINER
-                      Container(
-                        width: double.infinity,
-                        padding: EdgeInsets.all(14 * scale),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.55),
-                          borderRadius: BorderRadius.circular(26 * scale),
-                          border: Border.all(color: Colors.black.withOpacity(0.05)),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withOpacity(0.06),
-                              blurRadius: 18,
-                              offset: const Offset(0, 10),
-                            ),
-                          ],
-                        ),
-                        child: Container(
+        return WillPopScope(
+          onWillPop: _confirmLeaveIfUnsaved,
+          child: Scaffold(
+            backgroundColor: bg,
+            body: SafeArea(
+              child: SingleChildScrollView(
+                padding: EdgeInsets.fromLTRB(pad, 14 * scale, pad, 16 * scale),
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(maxWidth: maxCanvas),
+                    child: Column(
+                      children: [
+                        // OUTER SOFT CONTAINER
+                        Container(
                           width: double.infinity,
                           padding: EdgeInsets.all(14 * scale),
                           decoration: BoxDecoration(
-                            color: Colors.white,
-                            borderRadius: BorderRadius.circular(22 * scale),
+                            color: Colors.white.withValues(alpha: 0.55),
+                            borderRadius: BorderRadius.circular(26 * scale),
+                            border: Border.all(
+                              color: Colors.black.withValues(alpha: 0.05),
+                            ),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withValues(alpha: 0.06),
+                                blurRadius: 18,
+                                offset: const Offset(0, 10),
+                              ),
+                            ],
                           ),
-                          child: Form(
-                            key: _formKey,
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Center(
-                                  child: Text(
-                                    "Violation Report",
-                                    style: TextStyle(
-                                      color: textDark,
-                                      fontWeight: FontWeight.w900,
-                                      fontSize: (18 * scale).clamp(18.0, 22.0),
-                                    ),
-                                  ),
-                                ),
-                                SizedBox(height: 6 * scale),
-                                Center(
-                                  child: Text(
-                                    "Search student first, then complete the report.",
-                                    textAlign: TextAlign.center,
-                                    style: TextStyle(
-                                      color: hintColor,
-                                      fontWeight: FontWeight.w700,
-                                      fontSize: (12.5 * scale).clamp(12.5, 14.0),
-                                    ),
-                                  ),
-                                ),
-                                SizedBox(height: 10 * scale),
-                                Align(
-                                  alignment: Alignment.centerRight,
-                                  child: OutlinedButton.icon(
-                                    onPressed: _openMyReports,
-                                    icon: const Icon(Icons.article_outlined),
-                                    style: OutlinedButton.styleFrom(
-                                      foregroundColor: primaryColor,
-                                      side: BorderSide(
-                                        color: primaryColor.withOpacity(0.45),
-                                      ),
-                                      shape: RoundedRectangleBorder(
-                                        borderRadius: BorderRadius.circular(
-                                          12 * scale,
-                                        ),
-                                      ),
-                                    ),
-                                    label: Text(
-                                      "My Reports",
+                          child: Container(
+                            width: double.infinity,
+                            padding: EdgeInsets.all(14 * scale),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(22 * scale),
+                            ),
+                            child: Form(
+                              key: _formKey,
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Center(
+                                    child: Text(
+                                      "Violation Report",
                                       style: TextStyle(
+                                        color: textDark,
                                         fontWeight: FontWeight.w900,
-                                        fontSize: (13.5 * scale).clamp(
-                                          13.5,
-                                          15.0,
+                                        fontSize: (18 * scale).clamp(
+                                          18.0,
+                                          22.0,
                                         ),
                                       ),
                                     ),
                                   ),
-                                ),
-                                SizedBox(height: 16 * scale),
-
-                                // ✅ STEP 1: SEARCH OUTSIDE CARDS (inside outer container)
-                                _searchSection(
-                                  scale: scale,
-                                  suggestions: suggestions,
-                                ),
-
-                                SizedBox(height: 14 * scale),
-
-                                // ✅ STEP 2: CARDS
-                                if (wide) ...[
-                                  IntrinsicHeight(
-                                    child: Row(
-                                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                                      children: [
-                                        Expanded(child: _studentInfoCard(scale: scale, forceFillHeight: true)),
-                                        SizedBox(width: 14 * scale),
-                                        Expanded(child: _violationDetailsCard(scale: scale, nowText: nowText, forceFillHeight: true)),
-                                      ],
-                                    ),
-                                  ),
-                                  SizedBox(height: 14 * scale),
-
-                                  // ✅ Card 3 full-width on desktop
-                                  _narrativeEvidenceCard(scale: scale),
-                                ] else ...[
-                                  _studentInfoCard(scale: scale, forceFillHeight: false),
-                                  SizedBox(height: 12 * scale),
-                                  _violationDetailsCard(scale: scale, nowText: nowText, forceFillHeight: false),
-                                  SizedBox(height: 12 * scale),
-
-                                  // ✅ stacked on tablet/phone
-                                  _narrativeEvidenceCard(scale: scale),
-                                ],
-
-                                SizedBox(height: 14 * scale),
-
-                                // ✅ ACTIONS
-                                if (wide || tablet) ...[
-                                  Row(
-                                    children: [
-                                      Expanded(
-                                        child: SizedBox(
-                                          height: (52 * scale).clamp(52.0, 58.0),
-                                          child: OutlinedButton.icon(
-                                            onPressed: _submitting ? null : _clearAll,
-                                            icon: const Icon(Icons.clear_all_rounded),
-                                            style: OutlinedButton.styleFrom(
-                                              foregroundColor: primaryColor,
-                                              side: BorderSide(color: primaryColor.withOpacity(0.45)),
-                                              shape: RoundedRectangleBorder(
-                                                borderRadius: BorderRadius.circular(16 * scale),
-                                              ),
-                                            ),
-                                            label: Text(
-                                              "Clear Form",
-                                              style: TextStyle(
-                                                fontWeight: FontWeight.w900,
-                                                fontSize: (15.0 * scale).clamp(15.0, 17.0),
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                      SizedBox(width: 12 * scale),
-                                      Expanded(
-                                        child: SizedBox(
-                                          height: (52 * scale).clamp(52.0, 58.0),
-                                          child: ElevatedButton(
-                                            onPressed: _submitting ? null : _submit,
-                                            style: ElevatedButton.styleFrom(
-                                              backgroundColor: primaryColor,
-                                              elevation: 0,
-                                              shape: RoundedRectangleBorder(
-                                                borderRadius: BorderRadius.circular(16 * scale),
-                                              ),
-                                            ),
-                                            child: Text(
-                                              _submitting ? "Submitting..." : "Submit Report",
-                                              style: TextStyle(
-                                                color: Colors.white,
-                                                fontWeight: FontWeight.w900,
-                                                fontSize: (15.5 * scale).clamp(15.5, 17.0),
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ] else ...[
-                                  SizedBox(
-                                    width: double.infinity,
-                                    height: (52 * scale).clamp(52.0, 58.0),
-                                    child: ElevatedButton(
-                                      onPressed: _submitting ? null : _submit,
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor: primaryColor,
-                                        elevation: 0,
-                                        shape: RoundedRectangleBorder(
-                                          borderRadius: BorderRadius.circular(16 * scale),
-                                        ),
-                                      ),
-                                      child: Text(
-                                        _submitting ? "Submitting..." : "Submit Report",
-                                        style: TextStyle(
-                                          color: Colors.white,
-                                          fontWeight: FontWeight.w900,
-                                          fontSize: (15.5 * scale).clamp(15.5, 17.0),
+                                  SizedBox(height: 6 * scale),
+                                  Center(
+                                    child: Text(
+                                      "Search student first, then complete the report.",
+                                      textAlign: TextAlign.center,
+                                      style: TextStyle(
+                                        color: hintColor,
+                                        fontWeight: FontWeight.w700,
+                                        fontSize: (12.5 * scale).clamp(
+                                          12.5,
+                                          14.0,
                                         ),
                                       ),
                                     ),
                                   ),
                                   SizedBox(height: 10 * scale),
-                                  SizedBox(
-                                    width: double.infinity,
-                                    height: (48 * scale).clamp(48.0, 54.0),
+                                  Align(
+                                    alignment: Alignment.centerRight,
                                     child: OutlinedButton.icon(
-                                      onPressed: _submitting ? null : _clearAll,
-                                      icon: const Icon(Icons.clear_all_rounded),
+                                      onPressed: _openMyReports,
+                                      icon: const Icon(Icons.article_outlined),
                                       style: OutlinedButton.styleFrom(
                                         foregroundColor: primaryColor,
-                                        side: BorderSide(color: primaryColor.withOpacity(0.45)),
+                                        side: BorderSide(
+                                          color: primaryColor.withValues(
+                                            alpha: 0.45,
+                                          ),
+                                        ),
                                         shape: RoundedRectangleBorder(
-                                          borderRadius: BorderRadius.circular(16 * scale),
+                                          borderRadius: BorderRadius.circular(
+                                            12 * scale,
+                                          ),
                                         ),
                                       ),
                                       label: Text(
-                                        "Clear Form",
+                                        "My Reports",
                                         style: TextStyle(
                                           fontWeight: FontWeight.w900,
-                                          fontSize: (14.5 * scale).clamp(14.5, 16.0),
+                                          fontSize: (13.5 * scale).clamp(
+                                            13.5,
+                                            15.0,
+                                          ),
                                         ),
                                       ),
                                     ),
                                   ),
+                                  SizedBox(height: 16 * scale),
+                                  _buildSectionCard(
+                                    title: 'Student Selection',
+                                    subtitle:
+                                        'Search and select the student for this report.',
+                                    scale: scale,
+                                    child: _searchSection(
+                                      scale: scale,
+                                      suggestions: suggestions,
+                                    ),
+                                  ),
+                                  SizedBox(height: 12 * scale),
+                                  _buildSectionCard(
+                                    title:
+                                        'Student Information & Violation Details',
+                                    subtitle:
+                                        'Review auto-filled student data and complete violation details.',
+                                    scale: scale,
+                                    child: _buildStudentInfoAndViolationSplit(
+                                      scale,
+                                      split: split,
+                                      nowText: nowText,
+                                    ),
+                                  ),
+                                  SizedBox(height: 12 * scale),
+                                  _buildSectionCard(
+                                    title: 'Incident Notes',
+                                    subtitle:
+                                        'Provide incident details for review.',
+                                    scale: scale,
+                                    child: _notesCard(scale: scale),
+                                  ),
+                                  SizedBox(height: 12 * scale),
+                                  _buildSectionCard(
+                                    title: 'Evidence',
+                                    subtitle:
+                                        'Attach photo, image, or PDF files related to the reported incident.',
+                                    scale: scale,
+                                    child: _narrativeEvidenceCard(scale: scale),
+                                  ),
+                                  SizedBox(height: 14 * scale),
+                                  _buildActions(scale, stacked: stackActions),
                                 ],
-                              ],
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -898,22 +1333,18 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
     required double scale,
     required List<QueryDocumentSnapshot<Map<String, dynamic>>> suggestions,
   }) {
-    final showSuggestions =
-        _searchCtrl.text.trim().isNotEmpty && _studentUid == null;
+    final showSuggestions = _searchCtrl.text.trim().isNotEmpty;
 
     return Container(
-      padding: EdgeInsets.all(14 * scale),
+      padding: EdgeInsets.all(10 * scale),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.55),
-        borderRadius: BorderRadius.circular(18 * scale),
-        border: Border.all(color: Colors.black.withOpacity(0.06)),
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _sectionTitle("Search Student", scale),
-          SizedBox(height: 10 * scale),
-
           TextFormField(
             controller: _searchCtrl,
             style: TextStyle(
@@ -922,16 +1353,13 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
               fontSize: (13.5 * scale).clamp(13.5, 15.0),
             ),
             decoration: _decor(
-              label: "Search (Name / Student No. / Program)",
+              label: _loadingStudents
+                  ? 'Loading students...'
+                  : "Search student by name, number, or program",
               icon: Icons.search_rounded,
-              helperText: _studentUid == null
-                  ? "Pick a result to lock the student fields below"
-                  : "Edit search to change selected student",
             ),
-            onChanged: (_) {
-              if (_studentUid != null) _clearSelectedStudentButKeepSearch();
-              setState(() {});
-            },
+            enabled: !_loadingStudents,
+            onChanged: (_) => setState(() {}),
           ),
 
           if (_loadingStudents)
@@ -951,6 +1379,39 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
               ),
             ),
           ],
+          if (_studentUid != null) ...[
+            SizedBox(height: 10 * scale),
+            Container(
+              width: double.infinity,
+              padding: EdgeInsets.all(10 * scale),
+              decoration: BoxDecoration(
+                color: primaryColor.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: primaryColor.withValues(alpha: 0.24)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.check_circle, color: primaryColor, size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '${_studentNameCtrl.text.trim().isEmpty ? 'Selected student' : _studentNameCtrl.text.trim()} | '
+                      '${_studentNoCtrl.text.trim().isEmpty ? 'No ID' : _studentNoCtrl.text.trim()}'
+                      '${_programCtrl.text.trim().isNotEmpty ? ' | ${_programCtrl.text.trim()}' : ''}',
+                      style: const TextStyle(
+                        color: textDark,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: _clearSelectedStudent,
+                    child: const Text('Clear'),
+                  ),
+                ],
+              ),
+            ),
+          ],
 
           if (!_loadingStudents &&
               _studentLoadError == null &&
@@ -958,9 +1419,9 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
             SizedBox(height: 10 * scale),
             Container(
               decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.75),
-                borderRadius: BorderRadius.circular(16 * scale),
-                border: Border.all(color: Colors.black.withOpacity(0.08)),
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.black.withValues(alpha: 0.12)),
               ),
               child: suggestions.isEmpty
                   ? Padding(
@@ -977,63 +1438,70 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
                   : Column(
                       children: suggestions.map((doc) {
                         final d = doc.data();
-                        final name = (d['displayName'] ?? '').toString();
-                        final no = (d['studentNo'] ?? '').toString();
-                        final programId = (d['programId'] ?? '').toString();
+                        final name = _studentDisplayName(d);
+                        final no = _studentNoOf(d);
+                        final programId = _programIdOf(d);
+                        final collegeId = _collegeIdOf(d);
+                        final yearLevel = _yearLevelOf(d);
+                        final photoUrl = _photoUrlOf(d);
+                        final primaryMeta = <String>[
+                          if (no.isNotEmpty) no,
+                          if (programId.isNotEmpty) programId,
+                        ].join(' | ');
+                        final secondaryMeta = <String>[
+                          if (collegeId.isNotEmpty) collegeId,
+                          if (yearLevel.isNotEmpty) yearLevel,
+                        ].join(' | ');
 
                         return ListTile(
-                          leading: Container(
-                            width: 36,
-                            height: 36,
-                            decoration: BoxDecoration(
-                              color: primaryColor.withOpacity(0.12),
-                              borderRadius: BorderRadius.circular(12 * scale),
-                              border: Border.all(color: Colors.black.withOpacity(0.06)),
-                            ),
-                            child: const Icon(Icons.person_rounded, color: primaryColor, size: 18),
+                          dense: true,
+                          contentPadding: EdgeInsets.symmetric(
+                            horizontal: 12 * scale,
+                            vertical: 4 * scale,
+                          ),
+                          leading: _studentAvatar(
+                            name: name.isEmpty ? 'Student' : name,
+                            photoUrl: photoUrl,
+                            size: 40,
                           ),
                           title: Text(
-                            no.isEmpty ? name : "$no — $name",
-                            style: TextStyle(color: textDark, fontWeight: FontWeight.w900),
+                            name.isEmpty ? 'Unnamed student' : name,
+                            style: TextStyle(
+                              color: textDark,
+                              fontWeight: FontWeight.w900,
+                            ),
                           ),
-                          subtitle: Text(
-                            programId.isEmpty ? "—" : programId,
-                            style: TextStyle(color: hintColor, fontWeight: FontWeight.w700),
+                          subtitle: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              if (primaryMeta.isNotEmpty)
+                                Text(
+                                  primaryMeta,
+                                  style: TextStyle(
+                                    color: hintColor,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              if (secondaryMeta.isNotEmpty)
+                                Text(
+                                  secondaryMeta,
+                                  style: TextStyle(
+                                    color: hintColor.withValues(alpha: 0.9),
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                            ],
                           ),
-                          onTap: () => _selectStudent(doc),
+                          onTap: () {
+                            _selectStudent(doc);
+                            setState(() {});
+                          },
                         );
                       }).toList(),
                     ),
             ),
           ],
-
-          SizedBox(height: 10 * scale),
-
-          Align(
-            alignment: Alignment.centerLeft,
-            child: Container(
-              padding: EdgeInsets.symmetric(horizontal: 12 * scale, vertical: 8 * scale),
-              decoration: BoxDecoration(
-                color: (_studentUid != null)
-                    ? primaryColor.withOpacity(0.12)
-                    : Colors.black.withOpacity(0.06),
-                borderRadius: BorderRadius.circular(999),
-                border: Border.all(
-                  color: (_studentUid != null)
-                      ? primaryColor.withOpacity(0.35)
-                      : Colors.black.withOpacity(0.10),
-                ),
-              ),
-              child: Text(
-                _studentUid != null ? "Student selected" : "No student selected",
-                style: TextStyle(
-                  color: _studentUid != null ? primaryColor : hintColor,
-                  fontWeight: FontWeight.w900,
-                  fontSize: (12.5 * scale).clamp(12.5, 14.0),
-                ),
-              ),
-            ),
-          ),
         ],
       ),
     );
@@ -1047,17 +1515,94 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
     required bool forceFillHeight,
   }) {
     return Container(
-      padding: EdgeInsets.all(14 * scale),
+      padding: EdgeInsets.all(10 * scale),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.55),
-        borderRadius: BorderRadius.circular(18 * scale),
-        border: Border.all(color: Colors.black.withOpacity(0.06)),
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _sectionTitle("Student Info", scale),
-          SizedBox(height: 10 * scale),
+          if (_studentUid != null) ...[
+            Container(
+              width: double.infinity,
+              padding: EdgeInsets.all(10 * scale),
+              decoration: BoxDecoration(
+                color: primaryColor.withValues(alpha: 0.06),
+                borderRadius: BorderRadius.circular(14 * scale),
+                border: Border.all(color: primaryColor.withValues(alpha: 0.22)),
+              ),
+              child: Row(
+                children: [
+                  _studentAvatar(
+                    name: _studentNameCtrl.text.trim().isEmpty
+                        ? 'Student'
+                        : _studentNameCtrl.text.trim(),
+                    photoUrl: _selectedStudentPhotoUrl ?? '',
+                    size: (54 * scale).clamp(48.0, 62.0),
+                  ),
+                  SizedBox(width: 10 * scale),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          _studentNameCtrl.text.trim().isEmpty
+                              ? 'Selected student'
+                              : _studentNameCtrl.text.trim(),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: textDark,
+                            fontWeight: FontWeight.w900,
+                            fontSize: (14.2 * scale).clamp(14.2, 16.0),
+                          ),
+                        ),
+                        SizedBox(height: 2 * scale),
+                        Text(
+                          [
+                            if (_studentNoCtrl.text.trim().isNotEmpty)
+                              _studentNoCtrl.text.trim(),
+                            if (_programCtrl.text.trim().isNotEmpty)
+                              _programCtrl.text.trim(),
+                          ].join(' | '),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: hintColor,
+                            fontWeight: FontWeight.w700,
+                            fontSize: (12.4 * scale).clamp(12.4, 13.8),
+                          ),
+                        ),
+                        if (_selectedStudentCollegeId.trim().isNotEmpty ||
+                            _selectedStudentYearLevel.trim().isNotEmpty)
+                          Padding(
+                            padding: EdgeInsets.only(top: 2 * scale),
+                            child: Text(
+                              [
+                                if (_selectedStudentCollegeId.trim().isNotEmpty)
+                                  _selectedStudentCollegeId.trim(),
+                                if (_selectedStudentYearLevel.trim().isNotEmpty)
+                                  _selectedStudentYearLevel.trim(),
+                              ].join(' | '),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: hintColor.withValues(alpha: 0.9),
+                                fontWeight: FontWeight.w600,
+                                fontSize: (12.0 * scale).clamp(12.0, 13.2),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            SizedBox(height: 10 * scale),
+          ],
 
           TextFormField(
             controller: _studentNoCtrl,
@@ -1107,16 +1652,6 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
           ),
 
           if (forceFillHeight) const Spacer(),
-
-          SizedBox(height: 10 * scale),
-          Text(
-            "Note: These fields auto-fill after selecting a student.",
-            style: TextStyle(
-              color: hintColor,
-              fontWeight: FontWeight.w700,
-              fontSize: (12.5 * scale).clamp(12.5, 14.0),
-            ),
-          ),
         ],
       ),
     );
@@ -1131,18 +1666,15 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
     required bool forceFillHeight,
   }) {
     return Container(
-      padding: EdgeInsets.all(14 * scale),
+      padding: EdgeInsets.all(10 * scale),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.55),
-        borderRadius: BorderRadius.circular(18 * scale),
-        border: Border.all(color: Colors.black.withOpacity(0.06)),
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _sectionTitle("Violation Details", scale),
-          SizedBox(height: 10 * scale),
-
           // Step 1: Category (concern auto-derived from selected category)
           StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
             stream: _categoriesStream(),
@@ -1209,8 +1741,10 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
                   final picked = docs.firstWhere((d) => d.id == id);
                   final data = picked.data();
                   final pickedName = (data['name'] ?? '').toString();
-                  final mappedConcern =
-                      (data['concern'] ?? '').toString().trim().toLowerCase();
+                  final mappedConcern = (data['concern'] ?? '')
+                      .toString()
+                      .trim()
+                      .toLowerCase();
                   setState(() {
                     _categoryId = id;
                     _categoryName = pickedName;
@@ -1219,6 +1753,7 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
                     _typeName = null;
                     _typeCache = [];
                   });
+                  _syncUnsavedState();
                 },
                 validator: (v) => v == null ? "Required" : null,
               );
@@ -1295,11 +1830,13 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
                     : (id) {
                         if (id == null) return;
                         final picked = docs.firstWhere((d) => d.id == id);
-                        final pickedLabel = (picked.data()['label'] ?? '').toString();
+                        final pickedLabel = (picked.data()['label'] ?? '')
+                            .toString();
                         setState(() {
                           _typeId = id;
                           _typeName = pickedLabel;
                         });
+                        _syncUnsavedState();
                       },
                 validator: (v) => v == null ? "Required" : null,
               );
@@ -1332,7 +1869,7 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
                   ),
                   Icon(
                     Icons.edit_calendar_rounded,
-                    color: primaryColor.withOpacity(0.9),
+                    color: primaryColor.withValues(alpha: 0.9),
                   ),
                 ],
               ),
@@ -1356,56 +1893,69 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
   }
 
   // =========================
-  // CARD 3: Description + Evidence (full width on desktop)
+  // NOTES
+  // =========================
+  Widget _notesCard({required double scale}) {
+    return Container(
+      width: double.infinity,
+      padding: EdgeInsets.all(10 * scale),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+      ),
+      child: TextFormField(
+        controller: _descriptionCtrl,
+        minLines: 4,
+        maxLines: 6,
+        style: TextStyle(
+          color: textDark,
+          fontWeight: FontWeight.w700,
+          fontSize: (13.5 * scale).clamp(13.5, 15.0),
+        ),
+        decoration: _decor(
+          label: "What happened in this incident?",
+          icon: Icons.notes_rounded,
+        ),
+        validator: (v) => (v == null || v.trim().isEmpty) ? "Required" : null,
+      ),
+    );
+  }
+
+  // =========================
+  // EVIDENCE
   // =========================
   Widget _narrativeEvidenceCard({required double scale}) {
     final hasFiles = _pickedFiles.isNotEmpty;
 
     return Container(
-      padding: EdgeInsets.all(14 * scale),
+      padding: EdgeInsets.all(10 * scale),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.55),
-        borderRadius: BorderRadius.circular(18 * scale),
-        border: Border.all(color: Colors.black.withOpacity(0.06)),
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _sectionTitle("Narrative & Evidence", scale),
-          SizedBox(height: 10 * scale),
-
-          TextFormField(
-            controller: _descriptionCtrl,
-            maxLines: 5,
-            style: TextStyle(
-              color: textDark,
-              fontWeight: FontWeight.w700,
-              fontSize: (13.5 * scale).clamp(13.5, 15.0),
-            ),
-            decoration: _decor(
-              label: "Description",
-              icon: Icons.description_outlined,
-              helperText: "Briefly explain what happened",
-            ),
-            validator: (v) => (v == null || v.trim().isEmpty) ? "Required" : null,
-          ),
-
-          SizedBox(height: 14 * scale),
-
-          Row(
-            children: [
-              Expanded(child: _fieldLabel("Proof / Evidence (Multiple)", scale)),
-              if (hasFiles)
-                TextButton.icon(
-                  onPressed: _clearEvidence,
-                  icon: const Icon(Icons.delete_outline_rounded, color: Colors.red),
-                  label: const Text(
-                    "Clear",
-                    style: TextStyle(color: Colors.red, fontWeight: FontWeight.w900),
+          if (hasFiles)
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                onPressed: _clearEvidence,
+                icon: const Icon(
+                  Icons.delete_outline_rounded,
+                  color: Colors.red,
+                ),
+                label: const Text(
+                  "Clear",
+                  style: TextStyle(
+                    color: Colors.red,
+                    fontWeight: FontWeight.w900,
                   ),
                 ),
-            ],
-          ),
+              ),
+            ),
 
           InkWell(
             borderRadius: BorderRadius.circular(18 * scale),
@@ -1414,9 +1964,9 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
               width: double.infinity,
               padding: EdgeInsets.all(14 * scale),
               decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.75),
-                borderRadius: BorderRadius.circular(18 * scale),
-                border: Border.all(color: Colors.black.withOpacity(0.10)),
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.black.withValues(alpha: 0.10)),
               ),
               child: Row(
                 children: [
@@ -1424,11 +1974,16 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
                     width: (46 * scale).clamp(46.0, 58.0),
                     height: (46 * scale).clamp(46.0, 58.0),
                     decoration: BoxDecoration(
-                      color: primaryColor.withOpacity(0.12),
+                      color: primaryColor.withValues(alpha: 0.12),
                       borderRadius: BorderRadius.circular(16 * scale),
-                      border: Border.all(color: Colors.black.withOpacity(0.06)),
+                      border: Border.all(
+                        color: Colors.black.withValues(alpha: 0.06),
+                      ),
                     ),
-                    child: const Icon(Icons.upload_file_rounded, color: primaryColor),
+                    child: const Icon(
+                      Icons.upload_file_rounded,
+                      color: primaryColor,
+                    ),
                   ),
                   SizedBox(width: 12 * scale),
                   Expanded(
@@ -1459,7 +2014,10 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
                       ],
                     ),
                   ),
-                  const Icon(Icons.chevron_right_rounded, color: Colors.black54),
+                  const Icon(
+                    Icons.chevron_right_rounded,
+                    color: Colors.black54,
+                  ),
                 ],
               ),
             ),
@@ -1473,31 +2031,21 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
               width: double.infinity,
               padding: EdgeInsets.all(12 * scale),
               decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.75),
+                color: Colors.white,
                 borderRadius: BorderRadius.circular(16 * scale),
-                border: Border.all(color: Colors.black.withOpacity(0.08)),
+                border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
               ),
               child: Column(
                 children: List.generate(_pickedFiles.length, (i) {
                   final f = _pickedFiles[i];
-                  final ext = (f.extension ?? '').toLowerCase();
-                  final isPdf = ext == 'pdf';
-                  final icon = isPdf ? Icons.picture_as_pdf_rounded : Icons.image_rounded;
 
                   return Padding(
-                    padding: EdgeInsets.only(bottom: i == _pickedFiles.length - 1 ? 0 : 10 * scale),
+                    padding: EdgeInsets.only(
+                      bottom: i == _pickedFiles.length - 1 ? 0 : 10 * scale,
+                    ),
                     child: Row(
                       children: [
-                        Container(
-                          width: 36,
-                          height: 36,
-                          decoration: BoxDecoration(
-                            color: primaryColor.withOpacity(0.10),
-                            borderRadius: BorderRadius.circular(12 * scale),
-                            border: Border.all(color: Colors.black.withOpacity(0.06)),
-                          ),
-                          child: Icon(icon, color: primaryColor, size: 18),
-                        ),
+                        _buildEvidenceThumb(f, size: 36),
                         SizedBox(width: 10 * scale),
                         Expanded(
                           child: Column(
@@ -1532,11 +2080,17 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
                             width: 34,
                             height: 34,
                             decoration: BoxDecoration(
-                              color: Colors.red.withOpacity(0.10),
+                              color: Colors.red.withValues(alpha: 0.10),
                               borderRadius: BorderRadius.circular(999),
-                              border: Border.all(color: Colors.red.withOpacity(0.18)),
+                              border: Border.all(
+                                color: Colors.red.withValues(alpha: 0.18),
+                              ),
                             ),
-                            child: const Icon(Icons.close_rounded, color: Colors.red, size: 18),
+                            child: const Icon(
+                              Icons.close_rounded,
+                              color: Colors.red,
+                              size: 18,
+                            ),
                           ),
                         ),
                       ],
@@ -1552,7 +2106,4 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
   }
 }
 
-enum _EvidencePickAction {
-  capturePhoto,
-  uploadFiles,
-}
+enum _EvidencePickAction { capturePhoto, uploadFiles }

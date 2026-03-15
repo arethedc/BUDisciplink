@@ -2,14 +2,17 @@ import 'package:apps/pages/osa_admin/osa_cases_page.dart';
 import 'package:apps/pages/shared/notifications/app_notifications_ui.dart';
 import 'package:apps/pages/shared/profile/unified_profile_page.dart';
 import 'package:apps/pages/shared/welcome_screen_page.dart';
+import 'package:apps/pages/shared/widgets/app_theme_tokens.dart';
 import 'package:apps/pages/shared/widgets/logout_confirm_dialog.dart';
+import 'package:apps/pages/shared/widgets/responsive_layout_tokens.dart';
+import 'package:apps/pages/shared/widgets/role_shell_scaffold.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 // ✅ your pages
 import 'super_admin_home_page.dart';
-import 'package:apps/pages/shared/handbook/handbook_sections_screen.dart';
+import 'package:apps/pages/shared/handbook/hb_handbook_page.dart';
 
 class SuperAdminDashboard extends StatefulWidget {
   const SuperAdminDashboard({super.key});
@@ -23,16 +26,16 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
   bool _showDesktopNotifications = false;
 
   // ================== THEME (match StudentDashboard 2) ==================
-  static const bg = Color(0xFFF6FAF6);
-  static const primary = Color(0xFF1B5E20);
-  static const hint = Color(0xFF6D7F62);
-  static const textDark = Color(0xFF1F2A1F);
-  static const surface = Color(0xFFFFFFFF);
+  static const bg = AppColors.background;
+  static const primary = AppColors.primary;
+  static const hint = AppColors.hint;
+  static const textDark = AppColors.textDark;
+  static const surface = AppColors.surface;
 
   final List<Widget> _pages = [
     SuperAdminHomePage(),
     OsaCasesPage(),
-    HandbookSectionsScreen(),
+    HbHandbookPage(),
   ];
 
   final List<_NavItem> _navItems = const [
@@ -135,166 +138,73 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
 
         return LayoutBuilder(
           builder: (context, constraints) {
-            final w = constraints.maxWidth;
+            final shell = ResponsiveLayoutTokens.resolveShellLayout(
+              width: constraints.maxWidth,
+              height: constraints.maxHeight,
+            );
 
-            // ✅ responsive:
-            // phone/tablet => drawer
-            // desktop => permanent sidebar
-            final bool isDesktop = w >= 900;
-            final bool useDrawer = !isDesktop;
+            final menuPanel = _AdminMenuPanel(
+              currentIndex: _currentIndex,
+              navItems: _navItems,
+              accountName: accountName,
+              accountEmail: accountEmail,
+              primary: primary,
+              hint: hint,
+              textDark: textDark,
+              surface: surface,
+              onSelect: _go,
+              onProfile: _openProfile,
+              onLogout: _logout,
+            );
 
-            return Scaffold(
+            return RoleShellScaffold(
               backgroundColor: bg,
-
-              // ✅ Drawer only on phone/tablet
-              drawer: useDrawer
-                  ? Drawer(
-                      shape: const RoundedRectangleBorder(
-                        borderRadius: BorderRadius.zero,
-                      ),
-                      child: _AdminMenuPanel(
-                        currentIndex: _currentIndex,
-                        navItems: _navItems,
-                        accountName: accountName,
-                        accountEmail: accountEmail,
-                        primary: primary,
-                        hint: hint,
-                        textDark: textDark,
-                        surface: surface,
-                        onSelect: (i) {
-                          Navigator.of(context).maybePop();
-                          _go(i);
-                        },
-                        onProfile: () {
-                          Navigator.of(context).maybePop();
-                          _openProfile();
-                        },
-                        onLogout: () {
-                          Navigator.of(context).maybePop();
-                          _logout();
-                        },
-                      ),
-                    )
-                  : null,
-
-              body: Row(
-                children: [
-                  // ✅ Sidebar only on desktop
-                  if (isDesktop)
-                    SizedBox(
-                      width: 280,
-                      child: Material(
-                        color: surface,
-                        child: _AdminMenuPanel(
-                          currentIndex: _currentIndex,
-                          navItems: _navItems,
-                          accountName: accountName,
-                          accountEmail: accountEmail,
-                          primary: primary,
-                          hint: hint,
-                          textDark: textDark,
-                          surface: surface,
-                          onSelect: _go,
-                          onProfile: _openProfile,
-                          onLogout: _logout,
-                        ),
-                      ),
-                    ),
-
-                  // ✅ Main content
-                  Expanded(
-                    child: Stack(
-                      children: [
-                        Positioned.fill(
-                          child: Column(
-                            children: [
-                              // ✅ shared header controlled by dashboard (title changes)
-                              Builder(
-                                builder: (ctx) {
-                                  return Container(
-                                    height: kToolbarHeight,
-                                    width: double.infinity,
-                                    color: primary,
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 12,
-                                    ),
-                                    child: Row(
-                                      children: [
-                                        if (useDrawer)
-                                          IconButton(
-                                            icon: const Icon(
-                                              Icons.menu_rounded,
-                                              color: Colors.white,
-                                            ),
-                                            onPressed: () =>
-                                                Scaffold.of(ctx).openDrawer(),
-                                          )
-                                        else
-                                          const SizedBox(width: 8),
-
-                                        Expanded(
-                                          child: Text(
-                                            _pageTitle(),
-                                            overflow: TextOverflow.ellipsis,
-                                            style: const TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 20,
-                                              fontWeight: FontWeight.w700,
-                                            ),
-                                          ),
-                                        ),
-
-                                        // ✅ Optional: keep actions if you want
-                                        IconButton(
-                                          icon: const Icon(
-                                            Icons.notifications_none_rounded,
-                                            color: Colors.white,
-                                          ),
-                                          onPressed: () {
-                                            if (isDesktop) {
-                                              _toggleDesktopNotifications();
-                                              return;
-                                            }
-                                            _openNotificationsPage();
-                                          },
-                                        ),
-                                      ],
-                                    ),
-                                  );
-                                },
-                              ),
-
-                              // ✅ content (keeps state between tabs)
-                              Expanded(
-                                child: IndexedStack(
-                                  index: _currentIndex,
-                                  children: _pages,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        if (isDesktop && _showDesktopNotifications) ...[
-                          Positioned.fill(
-                            child: GestureDetector(
-                              behavior: HitTestBehavior.translucent,
-                              onTap: _closeDesktopNotifications,
-                            ),
-                          ),
-                          Positioned(
-                            top: kToolbarHeight + 8,
-                            right: 14,
-                            child: DesktopNotificationsPanel(
-                              uid: user.uid,
-                              onClose: _closeDesktopNotifications,
-                              onSeeAll: _openNotificationsPage,
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
-                ],
+              title: _pageTitle(),
+              usesDrawerSidebar: shell.usesDrawerSidebar,
+              showPermanentSidebar: shell.showPermanentSidebar,
+              sidebarWidth: 280,
+              drawer: Drawer(
+                shape: const RoundedRectangleBorder(
+                  borderRadius: BorderRadius.zero,
+                ),
+                child: _AdminMenuPanel(
+                  currentIndex: _currentIndex,
+                  navItems: _navItems,
+                  accountName: accountName,
+                  accountEmail: accountEmail,
+                  primary: primary,
+                  hint: hint,
+                  textDark: textDark,
+                  surface: surface,
+                  onSelect: (i) {
+                    Navigator.of(context).maybePop();
+                    _go(i);
+                  },
+                  onProfile: () {
+                    Navigator.of(context).maybePop();
+                    _openProfile();
+                  },
+                  onLogout: () {
+                    Navigator.of(context).maybePop();
+                    _logout();
+                  },
+                ),
+              ),
+              sidebar: menuPanel,
+              content: IndexedStack(index: _currentIndex, children: _pages),
+              onNotificationsTap: () {
+                if (shell.isDesktop) {
+                  _toggleDesktopNotifications();
+                } else {
+                  _openNotificationsPage();
+                }
+              },
+              showDesktopOverlay: shell.isDesktop && _showDesktopNotifications,
+              onDismissDesktopOverlay: _closeDesktopNotifications,
+              desktopOverlay: DesktopNotificationsPanel(
+                uid: user.uid,
+                onClose: _closeDesktopNotifications,
+                onSeeAll: _openNotificationsPage,
               ),
             );
           },

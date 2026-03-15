@@ -9,6 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:intl/intl.dart';
 
 import '../shared/widgets/modern_table_layout.dart';
+import '../shared/widgets/app_layout_tokens.dart';
 import '../../services/osa_meeting_schedule_service.dart';
 import '../../services/violation_case_service.dart';
 import '../../services/violation_types_service.dart';
@@ -22,7 +23,21 @@ const textDark = Color(0xFF1F2A1F);
 const hintColor = Color(0xFF6D7F62);
 
 /// âœ… Enhanced OSA Review Inbox
-enum _CaseTab { review, monitoring, unresolved, resolved }
+enum _CaseTab { review, needsBooking, scheduled, unresolved, resolved }
+
+class _CaseTabConfig {
+  final _CaseTab tab;
+  final String label;
+  final bool showMeetingColumn;
+  final bool showSeverityColumn;
+
+  const _CaseTabConfig({
+    required this.tab,
+    required this.label,
+    this.showMeetingColumn = false,
+    this.showSeverityColumn = false,
+  });
+}
 
 class OsaViolationReviewPage extends StatefulWidget {
   const OsaViolationReviewPage({super.key});
@@ -32,6 +47,26 @@ class OsaViolationReviewPage extends StatefulWidget {
 }
 
 class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
+  static const List<_CaseTabConfig> _tabConfigs = [
+    _CaseTabConfig(tab: _CaseTab.review, label: 'Review Inbox'),
+    _CaseTabConfig(
+      tab: _CaseTab.needsBooking,
+      label: 'Needs Booking',
+      showMeetingColumn: true,
+    ),
+    _CaseTabConfig(
+      tab: _CaseTab.scheduled,
+      label: 'Scheduled',
+      showMeetingColumn: true,
+    ),
+    _CaseTabConfig(tab: _CaseTab.unresolved, label: 'Unresolved'),
+    _CaseTabConfig(
+      tab: _CaseTab.resolved,
+      label: 'Resolved',
+      showSeverityColumn: true,
+    ),
+  ];
+
   final _svc = ViolationCaseService();
   final _meetingScheduleSvc = OsaMeetingScheduleService();
 
@@ -42,22 +77,38 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
   String _concernFilter = 'All';
   String _actionFilter = 'All';
   String _meetingFilter = 'All';
-  String _monitoringSubTab = 'Due Today';
   String _dateFilter = 'All';
 
-  int? _selectedIndex;
+  String? _selectedCaseId;
+  final ValueNotifier<List<QueryDocumentSnapshot<Map<String, dynamic>>>>
+  _visibleCaseDocs =
+      ValueNotifier<List<QueryDocumentSnapshot<Map<String, dynamic>>>>(
+        const [],
+      );
+  final ValueNotifier<Map<_CaseTab, int>> _tabCounts =
+      ValueNotifier<Map<_CaseTab, int>>({
+        _CaseTab.review: 0,
+        _CaseTab.needsBooking: 0,
+        _CaseTab.scheduled: 0,
+        _CaseTab.unresolved: 0,
+        _CaseTab.resolved: 0,
+      });
 
   bool _bookingSweepRunning = false;
   String? _departmentScopeCollegeId;
   Set<String>? _departmentStudentUids;
   bool _loadingDepartmentScope = false;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _deptStudentsSub;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _tabCountsSub;
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _latestRawCaseDocs =
+      const <QueryDocumentSnapshot<Map<String, dynamic>>>[];
 
   @override
   void initState() {
     super.initState();
     _runBookingExpirySweep();
     _initDepartmentScope();
+    _bindTabCountsStream();
   }
 
   Future<void> _initDepartmentScope() async {
@@ -82,6 +133,7 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
           _departmentStudentUids = <String>{};
           _loadingDepartmentScope = false;
         });
+        _recomputeTabCounts();
         return;
       }
 
@@ -90,6 +142,7 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
         _departmentScopeCollegeId = dept;
         _loadingDepartmentScope = true;
       });
+      _recomputeTabCounts();
 
       await _deptStudentsSub?.cancel();
       _deptStudentsSub = FirebaseFirestore.instance
@@ -113,6 +166,7 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
                 _departmentStudentUids = ids;
                 _loadingDepartmentScope = false;
               });
+              _recomputeTabCounts();
             },
             onError: (_) {
               if (!mounted) return;
@@ -120,6 +174,7 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
                 _departmentStudentUids = <String>{};
                 _loadingDepartmentScope = false;
               });
+              _recomputeTabCounts();
             },
           );
     } catch (_) {
@@ -129,6 +184,7 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
         _departmentStudentUids = null;
         _loadingDepartmentScope = false;
       });
+      _recomputeTabCounts();
     }
   }
 
@@ -143,15 +199,52 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
     }
   }
 
-  @override
-  void dispose() {
-    _deptStudentsSub?.cancel();
-    _searchCtrl.dispose();
-    super.dispose();
+  void _bindTabCountsStream() {
+    _tabCountsSub?.cancel();
+    _tabCountsSub = _svc.streamAllCases().listen((snapshot) {
+      _latestRawCaseDocs = snapshot.docs;
+      _recomputeTabCounts();
+    });
   }
 
-  String _fmtTsLong(DateTime d) =>
-      DateFormat('MMM d, yyyy â€¢ h:mm a').format(d);
+  void _recomputeTabCounts() {
+    final allowedStudentUids = _departmentScopeCollegeId == null
+        ? null
+        : (_departmentStudentUids ?? <String>{});
+    final next = <_CaseTab, int>{
+      _CaseTab.review: 0,
+      _CaseTab.needsBooking: 0,
+      _CaseTab.scheduled: 0,
+      _CaseTab.unresolved: 0,
+      _CaseTab.resolved: 0,
+    };
+
+    for (final doc in _latestRawCaseDocs) {
+      final d = doc.data();
+      if (allowedStudentUids != null) {
+        final studentUid = _safeStr(d['studentUid']);
+        if (studentUid.isEmpty || !allowedStudentUids.contains(studentUid)) {
+          continue;
+        }
+      }
+      for (final config in _tabConfigs) {
+        if (_matchesTabFor(d, config.tab)) {
+          next[config.tab] = (next[config.tab] ?? 0) + 1;
+        }
+      }
+    }
+    _tabCounts.value = next;
+  }
+
+  @override
+  void dispose() {
+    _tabCountsSub?.cancel();
+    _deptStudentsSub?.cancel();
+    _tabCounts.dispose();
+    _searchCtrl.dispose();
+    _visibleCaseDocs.dispose();
+    super.dispose();
+  }
 
   // -----------------------------
   // Firestore date helpers
@@ -170,6 +263,18 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
 
   String _fmtShort(DateTime d) {
     return _TableRow._fmtShortGlobal(d);
+  }
+
+  _CaseTabConfig get _activeTabConfig {
+    for (final config in _tabConfigs) {
+      if (config.tab == _tab) return config;
+    }
+    return _tabConfigs.first;
+  }
+
+  int get _activeTabIndex {
+    final index = _tabConfigs.indexWhere((config) => config.tab == _tab);
+    return index < 0 ? 0 : index;
   }
 
   // -----------------------------
@@ -198,22 +303,25 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
         reporter.contains(needle);
   }
 
-  bool _matchesTab(Map<String, dynamic> d) {
+  bool _matchesTabFor(Map<String, dynamic> d, _CaseTab tab) {
     final key = _statusKey(_safeStr(d['status']));
-    if (_tab == _CaseTab.review) {
+    if (tab == _CaseTab.review) {
       return key == 'submitted' || key == 'under review';
     }
-    if (_tab == _CaseTab.monitoring) {
+    if (tab == _CaseTab.needsBooking || tab == _CaseTab.scheduled) {
       if (key != 'action set') return false;
       if (!_meetingRequired(d)) return false;
       final flow = _effectiveMeetingStatusKey(d);
-      return flow == 'needs_booking' || flow == 'scheduled';
+      if (tab == _CaseTab.needsBooking) return flow == 'needs_booking';
+      return flow == 'scheduled';
     }
-    if (_tab == _CaseTab.unresolved) {
+    if (tab == _CaseTab.unresolved) {
       return key == 'unresolved';
     }
     return key == 'resolved';
   }
+
+  bool _matchesTab(Map<String, dynamic> d) => _matchesTabFor(d, _tab);
 
   bool _matchesConcern(Map<String, dynamic> d) {
     if (_concernFilter == 'All') return true;
@@ -303,70 +411,9 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
     return DateFormat('MMMM d, yyyy').format(day);
   }
 
-  List<String> _dateBucketOptions(
-    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
-  ) {
-    final seen = <String>{};
-    final options = <String>['All'];
-    for (final doc in docs) {
-      final dt = _bestDate(doc.data());
-      if (dt == null) continue;
-      final label = _dateBucketLabel(_dayOnly(dt));
-      if (seen.add(label)) {
-        options.add(label);
-      }
-    }
-    return options;
-  }
-
-  bool _isSameDay(DateTime a, DateTime b) {
-    return a.year == b.year && a.month == b.month && a.day == b.day;
-  }
-
-  bool _matchesMonitoringSubTab(Map<String, dynamic> d) {
-    final flow = _effectiveMeetingStatusKey(d);
-
-    switch (_monitoringSubTab) {
-      case 'Needs Booking':
-        return flow == 'needs_booking';
-      case 'Scheduled':
-        return flow == 'scheduled';
-      case 'Due Today':
-        return _isDueTodayForMonitoring(d);
-      default:
-        return true;
-    }
-  }
-
-  bool _isDueTodayForMonitoring(Map<String, dynamic> d) {
-    final flow = _effectiveMeetingStatusKey(d);
-    final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
-    final scheduledAt = _tsToDate(d['scheduledAt']);
-    final dueBy =
-        _tsToDate(d['bookingDeadlineAt']) ?? _tsToDate(d['meetingDueBy']);
-
-    if (flow == 'scheduled' && scheduledAt != null) {
-      final day = DateTime(
-        scheduledAt.year,
-        scheduledAt.month,
-        scheduledAt.day,
-      );
-      return day == today;
-    }
-
-    if (flow == 'needs_booking' && dueBy != null) {
-      final day = DateTime(dueBy.year, dueBy.month, dueBy.day);
-      return day == today;
-    }
-
-    return false;
-  }
-
   List<QueryDocumentSnapshot<Map<String, dynamic>>> _filterDocs(
     List<QueryDocumentSnapshot<Map<String, dynamic>>> raw,
     String q, {
-    bool includeMonitoringSubTab = true,
     bool includeDateFilter = true,
     String? dateFilterOverride,
     Set<String>? allowedStudentUids,
@@ -387,11 +434,6 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
       if (_tab == _CaseTab.unresolved || _tab == _CaseTab.resolved) {
         if (!_matchesAction(d) || !_matchesMeeting(d)) return false;
       }
-      if (_tab == _CaseTab.monitoring &&
-          includeMonitoringSubTab &&
-          !_matchesMonitoringSubTab(d)) {
-        return false;
-      }
       if (includeDateFilter &&
           !_matchesDate(d, dateFilterOverride: dateFilterOverride)) {
         return false;
@@ -411,35 +453,11 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
     return docs;
   }
 
-  Map<String, int> _monitoringSummary(
-    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
-  ) {
-    var needsBooking = 0;
-    var scheduled = 0;
-    var dueToday = 0;
-
-    for (final doc in docs) {
-      final d = doc.data();
-      final flow = _effectiveMeetingStatusKey(d);
-
-      if (flow == 'needs_booking') needsBooking++;
-      if (flow == 'scheduled') scheduled++;
-      if (_isDueTodayForMonitoring(d)) dueToday++;
-    }
-
-    return {
-      'needsBooking': needsBooking,
-      'scheduled': scheduled,
-      'dueToday': dueToday,
-    };
-  }
-
   void _clearFilters() {
     _searchCtrl.clear();
     _concernFilter = 'All';
     _actionFilter = 'All';
     _meetingFilter = 'All';
-    _monitoringSubTab = 'Due Today';
     _dateFilter = 'All';
   }
 
@@ -447,33 +465,7 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
     return _searchCtrl.text.trim().isNotEmpty ||
         _concernFilter != 'All' ||
         _actionFilter != 'All' ||
-        _meetingFilter != 'All' ||
-        (_tab == _CaseTab.monitoring && _monitoringSubTab != 'Due Today');
-  }
-
-  _StatusCounts _countStatuses(
-    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
-  ) {
-    var submitted = 0;
-    var underReview = 0;
-    var actionSet = 0;
-    var resolved = 0;
-
-    for (final doc in docs) {
-      final key = _statusKey(_safeStr(doc.data()['status']));
-      if (key == 'submitted') submitted++;
-      if (key == 'under review') underReview++;
-      if (key == 'action set' || key == 'unresolved') actionSet++;
-      if (key == 'resolved') resolved++;
-    }
-
-    return _StatusCounts(
-      total: docs.length,
-      submitted: submitted,
-      underReview: underReview,
-      actionSet: actionSet,
-      resolved: resolved,
-    );
+        _meetingFilter != 'All';
   }
 
   // -----------------------------
@@ -487,7 +479,7 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
         final detailsPaneWidth = (constraints.maxWidth * 0.33)
             .clamp(320.0, 420.0)
             .toDouble();
-        final aiDesktopInset = desktopWide && _selectedIndex != null
+        final aiDesktopInset = desktopWide && _selectedCaseId != null
             ? detailsPaneWidth + 16
             : 0.0;
 
@@ -507,6 +499,7 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
           floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
           body: ModernTableLayout(
             detailsWidth: detailsPaneWidth,
+            detailsIncludeHeader: true,
             header: ModernTableHeader(
               title: 'Violation Reviews',
               subtitle: 'Monitor and review student conduct',
@@ -519,99 +512,53 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
                   filled: true,
                   fillColor: bg,
                   border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
+                    borderRadius: BorderRadius.circular(AppRadii.md),
                     borderSide: BorderSide.none,
                   ),
                   contentPadding: EdgeInsets.zero,
                 ),
               ),
               tabs: DefaultTabController(
-                length: 4,
-                initialIndex: _tab == _CaseTab.review
-                    ? 0
-                    : _tab == _CaseTab.monitoring
-                    ? 1
-                    : _tab == _CaseTab.unresolved
-                    ? 2
-                    : 3,
+                length: _tabConfigs.length,
+                initialIndex: _activeTabIndex,
                 child: Builder(
                   builder: (context) {
-                    final tabController = DefaultTabController.of(context);
-                    tabController.addListener(() {
-                      if (!tabController.indexIsChanging) {
-                        final newTab = tabController.index == 0
-                            ? _CaseTab.review
-                            : tabController.index == 1
-                            ? _CaseTab.monitoring
-                            : tabController.index == 2
-                            ? _CaseTab.unresolved
-                            : _CaseTab.resolved;
-                        if (newTab != _tab) {
-                          setState(() {
-                            _tab = newTab;
-                            _selectedIndex = null;
-                            _concernFilter = 'All';
-                            _actionFilter = 'All';
-                            _meetingFilter = 'All';
-                            _monitoringSubTab = 'Due Today';
-                          });
-                        }
-                      }
-                    });
-                    return TabBar(
-                      isScrollable: true,
-                      tabAlignment: TabAlignment.start,
-                      labelColor: primaryColor,
-                      indicatorColor: primaryColor,
-                      dividerColor: Colors.transparent,
-                      tabs: const [
-                        Tab(text: 'Review Inbox'),
-                        Tab(text: 'Monitoring'),
-                        Tab(text: 'Unresolved'),
-                        Tab(text: 'Resolved'),
-                      ],
+                    return ValueListenableBuilder<Map<_CaseTab, int>>(
+                      valueListenable: _tabCounts,
+                      builder: (context, counts, _) {
+                        return TabBar(
+                          isScrollable: true,
+                          tabAlignment: TabAlignment.start,
+                          labelColor: primaryColor,
+                          indicatorColor: primaryColor,
+                          dividerColor: Colors.transparent,
+                          onTap: (index) {
+                            final newTab = _tabConfigs[index].tab;
+                            if (newTab != _tab) {
+                              setState(() {
+                                _tab = newTab;
+                                _selectedCaseId = null;
+                                _concernFilter = 'All';
+                                _actionFilter = 'All';
+                                _meetingFilter = 'All';
+                              });
+                            }
+                          },
+                          tabs: _tabConfigs
+                              .map(
+                                (config) => Tab(
+                                  text:
+                                      '${config.label} (${counts[config.tab] ?? 0})',
+                                ),
+                              )
+                              .toList(),
+                        );
+                      },
                     );
                   },
                 ),
               ),
               filters: [
-                if (_tab == _CaseTab.review)
-                  _buildFilterChip(
-                    'Concern',
-                    _concernFilter,
-                    ['All', 'Basic', 'Serious'],
-                    (v) {
-                      setState(() => _concernFilter = v);
-                    },
-                  ),
-                if (_tab == _CaseTab.monitoring) ...[_buildMonitoringSubTabs()],
-                if (_tab == _CaseTab.unresolved ||
-                    _tab == _CaseTab.resolved) ...[
-                  _buildFilterChip(
-                    'Action',
-                    _actionFilter,
-                    ['All', 'Warning', 'Meeting', 'OSA Call', 'Monitoring'],
-                    (v) {
-                      setState(() => _actionFilter = v);
-                    },
-                  ),
-                  const SizedBox(width: 8),
-                  _buildFilterChip(
-                    'Meeting Flow',
-                    _meetingFilter,
-                    [
-                      'All',
-                      'Needs Booking',
-                      'Scheduled',
-                      'Missed',
-                      'Completed',
-                      'No Meeting',
-                    ],
-                    (v) {
-                      setState(() => _meetingFilter = v);
-                    },
-                  ),
-                ],
                 if (_hasActiveFilters()) ...[
                   const SizedBox(width: 12),
                   TextButton.icon(
@@ -646,6 +593,7 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
                   q,
                   allowedStudentUids: allowedStudentUids,
                 );
+                _visibleCaseDocs.value = docs;
 
                 if (docs.isEmpty) {
                   return Center(
@@ -670,52 +618,8 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
                   );
                 }
 
-                if (_tab == _CaseTab.monitoring) {
-                  final monitoringBaseDocs = _filterDocs(
-                    raw,
-                    q,
-                    includeMonitoringSubTab: false,
-                    allowedStudentUids: allowedStudentUids,
-                  );
-                  final summary = _monitoringSummary(monitoringBaseDocs);
-
-                  final listBody = constraints.maxWidth >= 900
-                      ? _buildDesktopTable(docs)
-                      : ListView.builder(
-                          padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
-                          itemCount: docs.length,
-                          itemBuilder: (context, i) {
-                            final doc = docs[i];
-                            final isSelected = _selectedIndex == i;
-                            return _buildCaseCard(
-                              doc.id,
-                              doc.data(),
-                              isSelected,
-                              desktopWide,
-                              () {
-                                if (desktopWide) {
-                                  setState(() {
-                                    _selectedIndex = isSelected ? null : i;
-                                  });
-                                } else {
-                                  _openDetailsPage(context, doc);
-                                }
-                              },
-                              'All',
-                            );
-                          },
-                        );
-
-                  return Column(
-                    children: [
-                      _buildMonitoringSummaryBar(summary),
-                      Expanded(child: listBody),
-                    ],
-                  );
-                }
-
                 if (constraints.maxWidth >= 900) {
-                  return _buildDesktopTable(docs);
+                  return _buildDesktopTable(docs, config: _activeTabConfig);
                 }
 
                 return ListView.builder(
@@ -723,7 +627,7 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
                   itemCount: docs.length,
                   itemBuilder: (context, i) {
                     final doc = docs[i];
-                    final isSelected = _selectedIndex == i;
+                    final isSelected = _selectedCaseId == doc.id;
                     return _buildCaseCard(
                       doc.id,
                       doc.data(),
@@ -732,7 +636,7 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
                       () {
                         if (desktopWide) {
                           setState(() {
-                            _selectedIndex = isSelected ? null : i;
+                            _selectedCaseId = isSelected ? null : doc.id;
                           });
                         } else {
                           _openDetailsPage(context, doc);
@@ -744,36 +648,27 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
                 );
               },
             ),
-            showDetails: _selectedIndex != null,
-            details: _selectedIndex != null
-                ? StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                    stream: _svc.streamAllCases(),
-                    builder: (context, snap) {
-                      if (!snap.hasData) return const SizedBox();
-                      if (_departmentScopeCollegeId != null &&
-                          _loadingDepartmentScope) {
-                        return const Center(child: CircularProgressIndicator());
+            showDetails: _selectedCaseId != null,
+            details: _selectedCaseId != null
+                ? ValueListenableBuilder<
+                    List<QueryDocumentSnapshot<Map<String, dynamic>>>
+                  >(
+                    valueListenable: _visibleCaseDocs,
+                    builder: (context, docs, _) {
+                      QueryDocumentSnapshot<Map<String, dynamic>>? selectedDoc;
+                      for (final doc in docs) {
+                        if (doc.id == _selectedCaseId) {
+                          selectedDoc = doc;
+                          break;
+                        }
                       }
-                      final raw = snap.data!.docs;
-                      final q = _searchCtrl.text;
-                      final allowedStudentUids =
-                          _departmentScopeCollegeId == null
-                          ? null
-                          : (_departmentStudentUids ?? <String>{});
-                      final docs = _filterDocs(
-                        raw,
-                        q,
-                        allowedStudentUids: allowedStudentUids,
-                      );
-
-                      if (_selectedIndex! >= docs.length) {
+                      if (selectedDoc == null) {
                         return const SizedBox();
                       }
-                      final selectedDoc = docs[_selectedIndex!];
                       return _DetailsPanel(
                         doc: selectedDoc,
                         bestDate: _bestDate,
-                        onClose: () => setState(() => _selectedIndex = null),
+                        onClose: () => setState(() => _selectedCaseId = null),
                       );
                     },
                   )
@@ -784,377 +679,325 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
     );
   }
 
-  Widget _buildFilterChip(
-    String label,
-    String current,
-    List<String> items,
-    ValueChanged<String> onSelected,
-  ) {
-    return PopupMenuButton<String>(
-      onSelected: onSelected,
-      itemBuilder: (context) => items
-          .map((item) => PopupMenuItem(value: item, child: Text(item)))
-          .toList(),
-      child: Container(
-        margin: const EdgeInsets.only(right: 8),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        decoration: BoxDecoration(
-          color: current == 'All'
-              ? Colors.transparent
-              : primaryColor.withOpacity(0.1),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(
-            color: current == 'All' ? Colors.grey[300]! : primaryColor,
-          ),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              '$label: $current',
-              style: TextStyle(
-                color: current == 'All' ? textDark : primaryColor,
-                fontWeight: FontWeight.bold,
-                fontSize: 13,
-              ),
-            ),
-            const Icon(Icons.arrow_drop_down, size: 18),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildDateBucketBar(List<String> options) {
-    if (options.length <= 1) return const SizedBox.shrink();
-    return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.fromLTRB(24, 8, 24, 8),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          children: options.map((label) {
-            final selected = _dateFilter == label;
-            return Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: ChoiceChip(
-                label: Text(label),
-                selected: selected,
-                onSelected: (_) => setState(() => _dateFilter = label),
-                selectedColor: primaryColor.withValues(alpha: 0.12),
-                backgroundColor: Colors.white,
-                labelStyle: TextStyle(
-                  color: selected ? primaryColor : textDark,
-                  fontWeight: FontWeight.w800,
-                  fontSize: 12,
-                ),
-                side: BorderSide(
-                  color: selected
-                      ? primaryColor.withValues(alpha: 0.25)
-                      : Colors.grey[300]!,
-                ),
-                showCheckmark: false,
-                visualDensity: const VisualDensity(
-                  horizontal: -2,
-                  vertical: -2,
-                ),
-              ),
-            );
-          }).toList(),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildMonitoringSubTabs() {
-    const items = ['Due Today', 'Scheduled', 'Needs Booking'];
-
-    return Container(
-      margin: const EdgeInsets.only(right: 8),
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: Colors.grey[300]!),
-        color: Colors.white,
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: items.map((item) {
-          final selected = _monitoringSubTab == item;
-          return Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4),
-            child: ChoiceChip(
-              label: Text(item),
-              selected: selected,
-              onSelected: (_) => setState(() => _monitoringSubTab = item),
-              selectedColor: primaryColor.withValues(alpha: 0.12),
-              labelStyle: TextStyle(
-                color: selected ? primaryColor : textDark,
-                fontWeight: FontWeight.w800,
-                fontSize: 12,
-              ),
-              side: BorderSide(
-                color: selected
-                    ? primaryColor.withValues(alpha: 0.25)
-                    : Colors.grey[300]!,
-              ),
-              showCheckmark: false,
-              visualDensity: const VisualDensity(horizontal: -2, vertical: -2),
-            ),
-          );
-        }).toList(),
-      ),
-    );
-  }
-
-  Widget _buildMonitoringSummaryBar(Map<String, int> summary) {
-    return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.fromLTRB(24, 16, 24, 8),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.black.withOpacity(0.08)),
-      ),
-      child: Wrap(
-        spacing: 8,
-        runSpacing: 8,
-        children: [
-          _summaryPill('Due Today', summary['dueToday'] ?? 0),
-          _summaryPill('Scheduled', summary['scheduled'] ?? 0),
-          _summaryPill('Needs Booking', summary['needsBooking'] ?? 0),
-        ],
-      ),
-    );
-  }
-
-  Widget _summaryPill(String label, int value, {bool danger = false}) {
-    final color = danger ? Colors.red.shade700 : primaryColor;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: color.withValues(alpha: 0.25)),
-      ),
-      child: Text(
-        '$label: $value',
-        style: TextStyle(
-          color: color,
-          fontWeight: FontWeight.w900,
-          fontSize: 12,
-        ),
-      ),
-    );
-  }
-
   Widget _buildDesktopTable(
-    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
-  ) {
-    final showMeetingColumn = _tab == _CaseTab.monitoring;
-    final showSeverityColumn = _tab == _CaseTab.resolved;
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs, {
+    required _CaseTabConfig config,
+  }) {
+    final showMeetingColumn = config.showMeetingColumn;
+    final showSeverityColumn = config.showSeverityColumn;
+    final isNeedsBooking = config.tab == _CaseTab.needsBooking;
+    final rowHeight = isNeedsBooking ? 60.0 : 56.0;
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(24),
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
       child: Container(
         width: double.infinity,
         decoration: BoxDecoration(
           color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: Colors.black.withOpacity(0.08)),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.02),
-              blurRadius: 10,
-              offset: const Offset(0, 4),
-            ),
-          ],
+          borderRadius: BorderRadius.circular(AppRadii.xl),
+          border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
         ),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(16),
-          child: DataTable(
-            showCheckboxColumn: false,
-            headingRowColor: WidgetStateProperty.all(bg),
-            columnSpacing: 24,
-            columns: [
-              const DataColumn(
-                label: Text(
-                  'CODE',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w900,
-                    color: hintColor,
-                    fontSize: 12,
-                    letterSpacing: 0.5,
-                  ),
-                ),
-              ),
-              const DataColumn(
-                label: Text(
-                  'STUDENT',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w900,
-                    color: hintColor,
-                    fontSize: 12,
-                    letterSpacing: 0.5,
-                  ),
-                ),
-              ),
-              const DataColumn(
-                label: Text(
-                  'CONCERN',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w900,
-                    color: hintColor,
-                    fontSize: 12,
-                    letterSpacing: 0.5,
-                  ),
-                ),
-              ),
-              const DataColumn(
-                label: Text(
-                  'VIOLATION',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w900,
-                    color: hintColor,
-                    fontSize: 12,
-                    letterSpacing: 0.5,
-                  ),
-                ),
-              ),
-              const DataColumn(
-                label: Text(
-                  'DATE',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w900,
-                    color: hintColor,
-                    fontSize: 12,
-                    letterSpacing: 0.5,
-                  ),
-                ),
-              ),
-              if (showSeverityColumn)
-                const DataColumn(
-                  label: Text(
-                    'SEVERITY',
-                    style: TextStyle(
-                      fontWeight: FontWeight.w900,
-                      color: hintColor,
-                      fontSize: 12,
-                      letterSpacing: 0.5,
-                    ),
-                  ),
-                ),
-              if (showMeetingColumn)
-                DataColumn(
-                  label: Text(
-                    _monitoringMeetingColumnHeader(),
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w900,
-                      color: hintColor,
-                      fontSize: 12,
-                      letterSpacing: 0.5,
-                    ),
-                  ),
-                ),
-            ],
-            rows: List.generate(docs.length, (i) {
-              final doc = docs[i];
-              final d = doc.data();
-              final isSelected = _selectedIndex == i;
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final tableWidth = constraints.maxWidth;
+            final tableColumnSpacing = isNeedsBooking ? 28.0 : 20.0;
+            final meetingWeight = config.tab == _CaseTab.scheduled ? 2.0 : 1.8;
+            final totalWeight =
+                1.15 +
+                2.35 +
+                1.55 +
+                2.35 +
+                1.20 +
+                (showSeverityColumn ? 1.25 : 0.0) +
+                (showMeetingColumn ? meetingWeight : 0.0);
+            double colWidth(double weight, double minWidth) {
+              final value = tableWidth * (weight / totalWeight);
+              return value < minWidth ? minWidth : value;
+            }
 
-              final code = _safeStr(d['caseCode']).isEmpty
-                  ? doc.id.substring(0, 8)
-                  : _safeStr(d['caseCode']);
-              final student = _safeStr(d['studentName']);
-              final violation = _safeStr(
-                d['violationTypeLabel'] ??
-                    d['violationNameSnapshot'] ??
-                    d['violationName'],
-              );
-              final date = _bestDate(d);
-              final concern = _safeStr(
-                d['concern'] ?? d['concernType'] ?? d['reportedConcernType'],
-              );
-              final severity = _safeStr(d['finalSeverity']);
+            final codeCellWidth = colWidth(1.15, 100);
+            final studentCellWidth = colWidth(2.35, 210);
+            final concernCellWidth = colWidth(1.55, 138);
+            final violationCellWidth = colWidth(2.35, 220);
+            final dateCellWidth = colWidth(1.20, 112);
+            final severityCellWidth = showSeverityColumn
+                ? colWidth(1.25, 120)
+                : 0.0;
+            final meetingCellWidth = showMeetingColumn
+                ? colWidth(
+                    meetingWeight,
+                    config.tab == _CaseTab.scheduled ? 172 : 150,
+                  )
+                : 0.0;
 
-              return DataRow(
-                selected: isSelected,
-                color: WidgetStateProperty.resolveWith<Color?>((states) {
-                  if (isSelected) return primaryColor.withOpacity(0.08);
-                  return null;
-                }),
-                onSelectChanged: (val) {
-                  setState(() {
-                    _selectedIndex = isSelected ? null : i;
-                  });
-                },
-                cells: [
-                  DataCell(
-                    Text(
-                      code,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w900,
-                        color: primaryColor,
-                        fontSize: 13,
-                      ),
-                    ),
-                  ),
-                  DataCell(
-                    Text(
-                      student,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: textDark,
-                      ),
-                    ),
-                  ),
-                  DataCell(_buildConcernPill(concern)),
-                  DataCell(
-                    SizedBox(
-                      width: 200,
-                      child: Text(
-                        violation,
-                        style: const TextStyle(
-                          color: textDark,
-                          fontWeight: FontWeight.w500,
+            return SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(minWidth: constraints.maxWidth),
+                child: DataTable(
+                  showCheckboxColumn: false,
+                  headingRowColor: WidgetStateProperty.all(bg),
+                  columnSpacing: tableColumnSpacing,
+                  dataRowMinHeight: rowHeight,
+                  dataRowMaxHeight: rowHeight,
+                  columns: [
+                    DataColumn(
+                      label: SizedBox(
+                        width: codeCellWidth,
+                        child: const Text(
+                          'CODE',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w900,
+                            color: hintColor,
+                            fontSize: 12,
+                            letterSpacing: 0.5,
+                          ),
                         ),
-                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                  ),
-                  DataCell(
-                    Text(
-                      date != null ? _fmtShort(date) : '--',
-                      style: const TextStyle(
-                        color: hintColor,
-                        fontWeight: FontWeight.w600,
+                    DataColumn(
+                      label: SizedBox(
+                        width: studentCellWidth,
+                        child: const Text(
+                          'STUDENT',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w900,
+                            color: hintColor,
+                            fontSize: 12,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
                       ),
                     ),
-                  ),
-                  if (showSeverityColumn)
-                    DataCell(
-                      severity.isEmpty
-                          ? const Text(
-                              '--',
-                              style: TextStyle(
-                                color: hintColor,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            )
-                          : Text(
-                              _titleCase(severity),
+                    DataColumn(
+                      label: SizedBox(
+                        width: concernCellWidth,
+                        child: const Text(
+                          'CONCERN',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w900,
+                            color: hintColor,
+                            fontSize: 12,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                      ),
+                    ),
+                    DataColumn(
+                      label: SizedBox(
+                        width: violationCellWidth,
+                        child: const Text(
+                          'VIOLATION',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w900,
+                            color: hintColor,
+                            fontSize: 12,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                      ),
+                    ),
+                    DataColumn(
+                      label: SizedBox(
+                        width: dateCellWidth,
+                        child: const Text(
+                          'DATE',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w900,
+                            color: hintColor,
+                            fontSize: 12,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                      ),
+                    ),
+                    if (showSeverityColumn)
+                      DataColumn(
+                        label: SizedBox(
+                          width: severityCellWidth,
+                          child: const Text(
+                            'SEVERITY',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w900,
+                              color: hintColor,
+                              fontSize: 12,
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                        ),
+                      ),
+                    if (showMeetingColumn)
+                      DataColumn(
+                        label: SizedBox(
+                          width: meetingCellWidth,
+                          child: Text(
+                            _meetingColumnHeader(config),
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w900,
+                              color: hintColor,
+                              fontSize: 12,
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                  rows: List.generate(docs.length, (i) {
+                    final doc = docs[i];
+                    final d = doc.data();
+                    final isSelected = _selectedCaseId == doc.id;
+
+                    final code = _safeStr(d['caseCode']).isEmpty
+                        ? doc.id.substring(0, 8)
+                        : _safeStr(d['caseCode']);
+                    final student = _safeStr(d['studentName']).isEmpty
+                        ? '--'
+                        : _safeStr(d['studentName']);
+                    final studentNo = _safeStr(d['studentNo']).isEmpty
+                        ? '--'
+                        : _safeStr(d['studentNo']);
+                    final violation = _safeStr(
+                      d['violationTypeLabel'] ??
+                          d['violationNameSnapshot'] ??
+                          d['violationName'],
+                    );
+                    final date = _bestDate(d);
+                    final concern = _safeStr(
+                      d['concern'] ??
+                          d['concernType'] ??
+                          d['reportedConcernType'],
+                    );
+                    final severity = _safeStr(d['finalSeverity']);
+
+                    return DataRow(
+                      selected: isSelected,
+                      color: WidgetStateProperty.resolveWith<Color?>((states) {
+                        if (isSelected) {
+                          return primaryColor.withValues(alpha: 0.08);
+                        }
+                        return null;
+                      }),
+                      onSelectChanged: (val) {
+                        setState(() {
+                          _selectedCaseId = isSelected ? null : doc.id;
+                        });
+                      },
+                      cells: [
+                        DataCell(
+                          SizedBox(
+                            width: codeCellWidth,
+                            child: Text(
+                              code,
                               style: const TextStyle(
-                                color: textDark,
-                                fontWeight: FontWeight.w700,
+                                fontWeight: FontWeight.w900,
+                                color: primaryColor,
+                                fontSize: 12,
                               ),
                             ),
-                    ),
-                  if (showMeetingColumn)
-                    DataCell(_buildMonitoringMeetingCell(d)),
-                ],
-              );
-            }),
-          ),
+                          ),
+                        ),
+                        DataCell(
+                          SizedBox(
+                            width: studentCellWidth,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Text(
+                                  student,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                    color: textDark,
+                                  ),
+                                ),
+                                if (studentNo != '--')
+                                  Text(
+                                    studentNo,
+                                    style: const TextStyle(
+                                      color: hintColor,
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 11.5,
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        DataCell(
+                          SizedBox(
+                            width: concernCellWidth,
+                            child: Align(
+                              alignment: Alignment.centerLeft,
+                              child: _buildConcernPill(concern),
+                            ),
+                          ),
+                        ),
+                        DataCell(
+                          SizedBox(
+                            width: violationCellWidth,
+                            child: Text(
+                              violation,
+                              style: const TextStyle(
+                                color: textDark,
+                                fontWeight: FontWeight.w500,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ),
+                        DataCell(
+                          SizedBox(
+                            width: dateCellWidth,
+                            child: Text(
+                              date != null ? _fmtShort(date) : '--',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: hintColor,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ),
+                        if (showSeverityColumn)
+                          DataCell(
+                            SizedBox(
+                              width: severityCellWidth,
+                              child: severity.isEmpty
+                                  ? const Text(
+                                      '--',
+                                      style: TextStyle(
+                                        color: hintColor,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    )
+                                  : Text(
+                                      _titleCase(severity),
+                                      style: const TextStyle(
+                                        color: textDark,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                            ),
+                          ),
+                        if (showMeetingColumn)
+                          DataCell(
+                            SizedBox(
+                              width: meetingCellWidth,
+                              child: Align(
+                                alignment: Alignment.centerLeft,
+                                child: _buildMeetingCell(d, config: config),
+                              ),
+                            ),
+                          ),
+                      ],
+                    );
+                  }),
+                ),
+              ),
+            );
+          },
         ),
       ),
     );
@@ -1165,9 +1008,9 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(
-        color: primaryColor.withOpacity(0.10),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: primaryColor.withOpacity(0.25)),
+        color: primaryColor.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(AppRadii.xxl),
+        border: Border.all(color: primaryColor.withValues(alpha: 0.25)),
       ),
       child: Text(
         label,
@@ -1181,13 +1024,16 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
     );
   }
 
-  String _monitoringMeetingColumnHeader() {
-    if (_monitoringSubTab == 'Scheduled') return 'SCHEDULED AT';
+  String _meetingColumnHeader(_CaseTabConfig config) {
+    if (config.tab == _CaseTab.scheduled) return 'SCHEDULED AT';
     return 'MEETING STATUS';
   }
 
-  Widget _buildMonitoringMeetingCell(Map<String, dynamic> data) {
-    if (_monitoringSubTab == 'Scheduled') {
+  Widget _buildMeetingCell(
+    Map<String, dynamic> data, {
+    required _CaseTabConfig config,
+  }) {
+    if (config.tab == _CaseTab.scheduled) {
       final scheduledAt = _tsToDate(data['scheduledAt']);
       if (scheduledAt == null) {
         return const Text(
@@ -1215,41 +1061,41 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
     final isGraceWindow = _isGraceWindowGlobal(data);
     if (status == 'scheduled') {
       return _Tone(
-        fill: Colors.blue.withOpacity(0.10),
-        border: Colors.blue.withOpacity(0.30),
+        fill: Colors.blue.withValues(alpha: 0.10),
+        border: Colors.blue.withValues(alpha: 0.30),
         text: Colors.blue.shade900,
       );
     }
     if (status == 'completed') {
       return _Tone(
-        fill: primaryColor.withOpacity(0.12),
-        border: primaryColor.withOpacity(0.35),
+        fill: primaryColor.withValues(alpha: 0.12),
+        border: primaryColor.withValues(alpha: 0.35),
         text: primaryColor,
       );
     }
     if (status == 'booking_missed' || status == 'meeting_missed') {
       return _Tone(
-        fill: Colors.red.withOpacity(0.10),
-        border: Colors.red.withOpacity(0.30),
+        fill: Colors.red.withValues(alpha: 0.10),
+        border: Colors.red.withValues(alpha: 0.30),
         text: Colors.red.shade900,
       );
     }
     if (status == 'needs_booking') {
       return _Tone(
         fill: isGraceWindow
-            ? Colors.deepOrange.withOpacity(0.10)
-            : Colors.orange.withOpacity(0.10),
+            ? Colors.deepOrange.withValues(alpha: 0.10)
+            : Colors.orange.withValues(alpha: 0.10),
         border: isGraceWindow
-            ? Colors.deepOrange.withOpacity(0.30)
-            : Colors.orange.withOpacity(0.30),
+            ? Colors.deepOrange.withValues(alpha: 0.30)
+            : Colors.orange.withValues(alpha: 0.30),
         text: isGraceWindow
             ? Colors.deepOrange.shade900
             : Colors.orange.shade900,
       );
     }
     return _Tone(
-      fill: Colors.black.withOpacity(0.04),
-      border: Colors.black.withOpacity(0.10),
+      fill: Colors.black.withValues(alpha: 0.04),
+      border: Colors.black.withValues(alpha: 0.10),
       text: hintColor,
     );
   }
@@ -1288,17 +1134,21 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
       onTap: onTap,
       child: Container(
         margin: const EdgeInsets.only(bottom: 12),
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(AppSpacing.md),
         decoration: BoxDecoration(
-          color: isSelected ? primaryColor.withOpacity(0.05) : Colors.white,
-          borderRadius: BorderRadius.circular(16),
+          color: isSelected
+              ? primaryColor.withValues(alpha: 0.05)
+              : Colors.white,
+          borderRadius: BorderRadius.circular(AppRadii.xl),
           border: Border.all(
-            color: isSelected ? primaryColor : Colors.black.withOpacity(0.05),
+            color: isSelected
+                ? primaryColor
+                : Colors.black.withValues(alpha: 0.05),
             width: isSelected ? 2 : 1,
           ),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.02),
+              color: Colors.black.withValues(alpha: 0.02),
               blurRadius: 10,
               offset: const Offset(0, 4),
             ),
@@ -1360,18 +1210,19 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
     final s = status.toLowerCase();
     if (s.contains('submitted')) {
       color = Colors.blue;
-    } else if (s.contains('review'))
+    } else if (s.contains('review')) {
       color = Colors.orange;
-    else if (s.contains('action'))
+    } else if (s.contains('action')) {
       color = Colors.purple;
-    else if (s.contains('resolved'))
+    } else if (s.contains('resolved')) {
       color = Colors.green;
+    }
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(12),
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(AppRadii.md),
       ),
       child: Text(
         status.toUpperCase(),
@@ -1395,11 +1246,15 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
       showDragHandle: true,
       backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(AppRadii.xxl)),
       ),
       builder: (_) => SizedBox(
         height: MediaQuery.of(context).size.height * 0.92,
-        child: _MobileDetailsPage(doc: doc, bestDate: _bestDate),
+        child: _DetailsPanel(
+          doc: doc,
+          bestDate: _bestDate,
+          onClose: () => Navigator.of(context).pop(),
+        ),
       ),
     );
   }
@@ -1409,697 +1264,13 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
 // HEADER WITH KPI STATS
 // ======================================================================
 
-class _HeaderBlock extends StatelessWidget {
-  final _StatusCounts counts;
-  final _CaseTab tab;
-  final ValueChanged<_CaseTab> onTabChanged;
-
-  const _HeaderBlock({
-    required this.counts,
-    required this.tab,
-    required this.onTabChanged,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: Colors.black.withOpacity(0.08)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.04),
-            blurRadius: 14,
-            offset: const Offset(0, 8),
-          ),
-        ],
-      ),
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final narrow = constraints.maxWidth < 800;
-
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    width: 40,
-                    height: 40,
-                    decoration: BoxDecoration(
-                      color: primaryColor.withOpacity(0.12),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: const Icon(
-                      Icons.fact_check_rounded,
-                      color: primaryColor,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'OSA Review Inbox',
-                          style: TextStyle(
-                            color: textDark,
-                            fontWeight: FontWeight.w900,
-                            fontSize: narrow ? 15.0 : 16.8,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          'Triage and monitor submitted violation reports.',
-                          style: TextStyle(
-                            color: hintColor,
-                            fontWeight: FontWeight.w700,
-                            fontSize: narrow ? 11.5 : 12.6,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  _SegmentTabs(tab: tab, onChanged: onTabChanged),
-                ],
-              ),
-              const SizedBox(height: 16),
-
-              // âœ… KPI Stats Row
-              if (narrow)
-                SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: Row(
-                    children: [
-                      _KpiChip(label: 'Total', value: counts.total),
-                      const SizedBox(width: 8),
-                      _KpiChip(label: 'New', value: counts.submitted),
-                      const SizedBox(width: 8),
-                      _KpiChip(label: 'Review', value: counts.underReview),
-                      const SizedBox(width: 8),
-                      _KpiChip(label: 'Resolved', value: counts.resolved),
-                    ],
-                  ),
-                )
-              else
-                Wrap(
-                  spacing: 12,
-                  runSpacing: 8,
-                  children: [
-                    _KpiChip(label: 'Total Cases', value: counts.total),
-                    _KpiChip(label: 'New Submissions', value: counts.submitted),
-                    _KpiChip(label: 'Under Review', value: counts.underReview),
-                    _KpiChip(label: 'Action Set', value: counts.actionSet),
-                    _KpiChip(label: 'Resolved', value: counts.resolved),
-                  ],
-                ),
-            ],
-          );
-        },
-      ),
-    );
-  }
-}
-
-class _SegmentTabs extends StatelessWidget {
-  final _CaseTab tab;
-  final ValueChanged<_CaseTab> onChanged;
-
-  const _SegmentTabs({required this.tab, required this.onChanged});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(4),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.black.withOpacity(0.10)),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _SegBtn(
-            label: 'Review',
-            selected: tab == _CaseTab.review,
-            onTap: () => onChanged(_CaseTab.review),
-          ),
-          _SegBtn(
-            label: 'Monitor',
-            selected: tab == _CaseTab.monitoring,
-            onTap: () => onChanged(_CaseTab.monitoring),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _SegBtn extends StatelessWidget {
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-
-  const _SegBtn({
-    required this.label,
-    required this.selected,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        decoration: BoxDecoration(
-          color: selected ? primaryColor.withOpacity(0.14) : Colors.transparent,
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            fontWeight: FontWeight.w900,
-            fontSize: 12.6,
-            color: selected ? primaryColor : hintColor,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _KpiChip extends StatelessWidget {
-  final String label;
-  final int value;
-
-  const _KpiChip({required this.label, required this.value});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: Colors.black.withOpacity(0.10)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.02),
-            blurRadius: 8,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            label,
-            style: const TextStyle(
-              color: textDark,
-              fontWeight: FontWeight.w800,
-              fontSize: 12.4,
-            ),
-            overflow: TextOverflow.ellipsis,
-          ),
-          const SizedBox(width: 8),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              color: primaryColor.withOpacity(0.12),
-              borderRadius: BorderRadius.circular(999),
-            ),
-            child: Text(
-              value.toString(),
-              style: const TextStyle(
-                color: primaryColor,
-                fontWeight: FontWeight.w900,
-                fontSize: 12.2,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 // ======================================================================
 // TOOLBAR (unchanged, just enhanced search hint)
 // ======================================================================
 
-class _Toolbar extends StatelessWidget {
-  final TextEditingController searchCtrl;
-  final VoidCallback onChanged;
-
-  final List<String> statusItems;
-  final String statusValue;
-  final String severityValue;
-  final String actionValue;
-  final String meetingValue;
-  final String dateValue;
-
-  final bool showSeverity;
-  final bool showAction;
-  final bool showMeeting;
-
-  final bool hasActiveFilters;
-  final ValueChanged<String> onStatusChanged;
-  final ValueChanged<String> onSeverityChanged;
-  final ValueChanged<String> onActionChanged;
-  final ValueChanged<String> onMeetingChanged;
-  final ValueChanged<String> onDateChanged;
-  final VoidCallback onClearFilters;
-
-  const _Toolbar({
-    required this.searchCtrl,
-    required this.onChanged,
-    required this.statusItems,
-    required this.statusValue,
-    required this.severityValue,
-    required this.actionValue,
-    required this.meetingValue,
-    required this.dateValue,
-    required this.showSeverity,
-    required this.showAction,
-    required this.showMeeting,
-    required this.hasActiveFilters,
-    required this.onStatusChanged,
-    required this.onSeverityChanged,
-    required this.onActionChanged,
-    required this.onMeetingChanged,
-    required this.onDateChanged,
-    required this.onClearFilters,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: Colors.black.withOpacity(0.08)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.04),
-            blurRadius: 14,
-            offset: const Offset(0, 8),
-          ),
-        ],
-      ),
-      child: LayoutBuilder(
-        builder: (context, c) {
-          final narrow = c.maxWidth < 900;
-
-          final search = TextField(
-            controller: searchCtrl,
-            onChanged: (_) => onChanged(),
-            decoration: InputDecoration(
-              hintText:
-                  'Search (student, case code, violation, category, status, reporter)',
-              hintStyle: const TextStyle(
-                color: hintColor,
-                fontWeight: FontWeight.w700,
-              ),
-              prefixIcon: const Icon(Icons.search_rounded, color: hintColor),
-              filled: true,
-              fillColor: Colors.white,
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: 12,
-                vertical: 12,
-              ),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(14),
-                borderSide: BorderSide(color: Colors.black.withOpacity(0.10)),
-              ),
-              enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(14),
-                borderSide: BorderSide(color: Colors.black.withOpacity(0.10)),
-              ),
-              focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(14),
-                borderSide: const BorderSide(color: primaryColor, width: 1.4),
-              ),
-            ),
-          );
-
-          final filters = Wrap(
-            spacing: 10,
-            runSpacing: 10,
-            children: [
-              _SelectChip(
-                label: 'Status',
-                value: statusValue,
-                items: statusItems,
-                onChanged: onStatusChanged,
-              ),
-              if (showSeverity)
-                _SelectChip(
-                  label: 'Concern',
-                  value: severityValue,
-                  items: const ['All', 'Basic', 'Serious'],
-                  onChanged: onSeverityChanged,
-                ),
-              if (showAction)
-                _SelectChip(
-                  label: 'Action',
-                  value: actionValue,
-                  items: const [
-                    'All',
-                    'Advisory / Reminder',
-                    'Written Warning',
-                    'OSA Check-in',
-                    'Parent/Guardian Conference',
-                    'OSA Endorsement',
-                    'Immediate Action Required',
-                    'Other',
-                  ],
-                  onChanged: onActionChanged,
-                ),
-              if (showMeeting)
-                _SelectChip(
-                  label: 'Meeting',
-                  value: meetingValue,
-                  items: const [
-                    'All',
-                    'Required',
-                    'Not Required',
-                    'Pending',
-                    'Scheduled',
-                    'Completed',
-                    'Missed',
-                  ],
-                  onChanged: onMeetingChanged,
-                ),
-              _SelectChip(
-                label: 'Date',
-                value: dateValue,
-                items: const ['All', 'Today', 'This Week', 'This Month'],
-                onChanged: onDateChanged,
-              ),
-              InkWell(
-                borderRadius: BorderRadius.circular(999),
-                onTap: hasActiveFilters ? onClearFilters : null,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 10,
-                  ),
-                  decoration: BoxDecoration(
-                    color: hasActiveFilters
-                        ? Colors.white
-                        : Colors.black.withOpacity(0.03),
-                    borderRadius: BorderRadius.circular(999),
-                    border: Border.all(
-                      color: hasActiveFilters
-                          ? primaryColor.withOpacity(0.35)
-                          : Colors.black.withOpacity(0.08),
-                    ),
-                  ),
-                  child: Text(
-                    'Clear',
-                    style: TextStyle(
-                      color: hasActiveFilters ? primaryColor : hintColor,
-                      fontWeight: FontWeight.w900,
-                      fontSize: 12.6,
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          );
-
-          if (narrow) {
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [search, const SizedBox(height: 10), filters],
-            );
-          }
-
-          return Row(
-            children: [
-              Expanded(child: search),
-              const SizedBox(width: 12),
-              filters,
-            ],
-          );
-        },
-      ),
-    );
-  }
-}
-
-class _SelectChip extends StatelessWidget {
-  final String label;
-  final String value;
-  final List<String> items;
-  final ValueChanged<String> onChanged;
-
-  const _SelectChip({
-    required this.label,
-    required this.value,
-    required this.items,
-    required this.onChanged,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: Colors.black.withOpacity(0.10)),
-      ),
-      child: DropdownButtonHideUnderline(
-        child: DropdownButton<String>(
-          value: value,
-          isDense: true,
-          icon: const Icon(Icons.expand_more_rounded, color: hintColor),
-          items: items
-              .map(
-                (e) => DropdownMenuItem(
-                  value: e,
-                  child: Text(
-                    '$label: $e',
-                    style: const TextStyle(
-                      color: textDark,
-                      fontWeight: FontWeight.w800,
-                      fontSize: 12.4,
-                    ),
-                  ),
-                ),
-              )
-              .toList(),
-          onChanged: (v) {
-            if (v != null) onChanged(v);
-          },
-        ),
-      ),
-    );
-  }
-}
-
 // ======================================================================
 // DESKTOP TABLE PANEL (enhanced with case codes + category pills)
 // ======================================================================
-
-class _DesktopTablePanel extends StatelessWidget {
-  final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs;
-  final int totalCount;
-  final int filteredCount;
-  final _CaseTab tab;
-
-  final int? selectedIndex;
-  final DateTime? Function(Map<String, dynamic> d) bestDate;
-  final String dateFilter;
-  final ValueChanged<int> onSelect;
-
-  const _DesktopTablePanel({
-    required this.docs,
-    required this.totalCount,
-    required this.filteredCount,
-    required this.tab,
-    required this.selectedIndex,
-    required this.bestDate,
-    required this.dateFilter,
-    required this.onSelect,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final title = tab == _CaseTab.review
-        ? 'Review Queue'
-        : tab == _CaseTab.monitoring
-        ? 'Monitoring Board'
-        : tab == _CaseTab.unresolved
-        ? 'Unresolved Cases'
-        : 'Resolved Cases';
-    final icon = tab == _CaseTab.review
-        ? Icons.rate_review_rounded
-        : tab == _CaseTab.monitoring
-        ? Icons.visibility_rounded
-        : tab == _CaseTab.unresolved
-        ? Icons.error_outline_rounded
-        : Icons.task_alt_rounded;
-    final subtitle = filteredCount == totalCount
-        ? 'Showing all $totalCount records'
-        : 'Showing $filteredCount of $totalCount matching records';
-
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: Colors.black.withOpacity(0.08)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.04),
-            blurRadius: 14,
-            offset: const Offset(0, 8),
-          ),
-        ],
-      ),
-      child: Column(
-        children: [
-          _PanelHeader(
-            title: title,
-            subtitle: subtitle,
-            badge: filteredCount,
-            icon: icon,
-          ),
-          const Divider(height: 1),
-          _TableHeaderRow(),
-          const Divider(height: 1),
-          Expanded(
-            child: docs.isEmpty
-                ? const _EmptyState()
-                : ListView.separated(
-                    padding: const EdgeInsets.all(12),
-                    itemCount: docs.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 8),
-                    itemBuilder: (context, i) {
-                      return _TableRow(
-                        doc: docs[i],
-                        selected: selectedIndex == i,
-                        bestDate: bestDate,
-                        dateFilter: dateFilter,
-                        onTap: () => onSelect(i),
-                      );
-                    },
-                  ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _PanelHeader extends StatelessWidget {
-  final String title;
-  final String subtitle;
-  final int badge;
-  final IconData icon;
-
-  const _PanelHeader({
-    required this.title,
-    required this.subtitle,
-    required this.badge,
-    required this.icon,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
-      child: Row(
-        children: [
-          const Icon(Icons.inbox_rounded, color: primaryColor),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: const TextStyle(
-                    color: textDark,
-                    fontWeight: FontWeight.w900,
-                    fontSize: 15.4,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  subtitle,
-                  style: const TextStyle(
-                    color: hintColor,
-                    fontWeight: FontWeight.w700,
-                    fontSize: 12.4,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-            decoration: BoxDecoration(
-              color: primaryColor.withOpacity(0.12),
-              borderRadius: BorderRadius.circular(999),
-              border: Border.all(color: primaryColor.withOpacity(0.22)),
-            ),
-            child: Text(
-              badge.toString(),
-              style: const TextStyle(
-                color: primaryColor,
-                fontWeight: FontWeight.w900,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _TableHeaderRow extends StatelessWidget {
-  const _TableHeaderRow();
-
-  @override
-  Widget build(BuildContext context) {
-    const style = TextStyle(
-      color: hintColor,
-      fontWeight: FontWeight.w900,
-      fontSize: 12.0,
-    );
-
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final narrow = constraints.maxWidth < 800;
-
-        return Padding(
-          padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
-          child: Row(
-            children: [
-              if (!narrow)
-                const Expanded(
-                  flex: 15,
-                  child: Text('CASE CODE', style: style),
-                ),
-              const Expanded(flex: 25, child: Text('STUDENT', style: style)),
-              const Expanded(flex: 20, child: Text('CATEGORY', style: style)),
-              const Expanded(flex: 25, child: Text('VIOLATION', style: style)),
-              const Expanded(flex: 15, child: Text('DATE', style: style)),
-            ],
-          ),
-        );
-      },
-    );
-  }
-}
 
 class _TableRow extends StatelessWidget {
   final QueryDocumentSnapshot<Map<String, dynamic>> doc;
@@ -2146,16 +1317,18 @@ class _TableRow extends StatelessWidget {
 
         return InkWell(
           onTap: onTap,
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(AppRadii.lg),
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
             decoration: BoxDecoration(
-              color: selected ? primaryColor.withOpacity(0.10) : Colors.white,
-              borderRadius: BorderRadius.circular(14),
+              color: selected
+                  ? primaryColor.withValues(alpha: 0.10)
+                  : Colors.white,
+              borderRadius: BorderRadius.circular(AppRadii.lg),
               border: Border.all(
                 color: selected
-                    ? primaryColor.withOpacity(0.35)
-                    : Colors.black.withOpacity(0.10),
+                    ? primaryColor.withValues(alpha: 0.35)
+                    : Colors.black.withValues(alpha: 0.10),
               ),
             ),
             child: Row(
@@ -2246,37 +1419,6 @@ class _TableRow extends StatelessWidget {
     return DateFormat('MMMM d, yyyy').format(day);
   }
 
-  static String _formatTimeGlobal(DateTime dt) {
-    final h24 = dt.hour;
-    final suffix = h24 >= 12 ? 'PM' : 'AM';
-    final h12 = h24 % 12 == 0 ? 12 : h24 % 12;
-    final m = dt.minute.toString().padLeft(2, '0');
-    return '$h12:$m $suffix';
-  }
-
-  static String _formatWeekdayGlobal(DateTime dt) {
-    const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-    return days[dt.weekday - 1];
-  }
-
-  static String _formatMonthDayGlobal(DateTime dt) {
-    const months = [
-      "Jan",
-      "Feb",
-      "Mar",
-      "Apr",
-      "May",
-      "Jun",
-      "Jul",
-      "Aug",
-      "Sep",
-      "Oct",
-      "Nov",
-      "Dec",
-    ];
-    return "${months[dt.month - 1]} ${dt.day}";
-  }
-
   static String _fmtShortGlobal(DateTime d) {
     const months = [
       "Jan",
@@ -2300,773 +1442,8 @@ class _TableRow extends StatelessWidget {
 // MOBILE CARDS PANEL (optimized layout)
 // ======================================================================
 
-class _MobileCardsPanel extends StatelessWidget {
-  final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs;
-  final int totalCount;
-  final int filteredCount;
-  final _CaseTab tab;
-
-  final DateTime? Function(Map<String, dynamic> d) bestDate;
-  final String Function(DateTime? dt) dateLabel;
-  final void Function(QueryDocumentSnapshot<Map<String, dynamic>> doc) onSelect;
-
-  const _MobileCardsPanel({
-    required this.docs,
-    required this.totalCount,
-    required this.filteredCount,
-    required this.tab,
-    required this.bestDate,
-    required this.dateLabel,
-    required this.onSelect,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final title = tab == _CaseTab.review
-        ? 'Review Queue'
-        : tab == _CaseTab.monitoring
-        ? 'Monitoring Board'
-        : tab == _CaseTab.unresolved
-        ? 'Unresolved Cases'
-        : 'Resolved Cases';
-    final icon = tab == _CaseTab.review
-        ? Icons.rate_review_rounded
-        : tab == _CaseTab.monitoring
-        ? Icons.visibility_rounded
-        : tab == _CaseTab.unresolved
-        ? Icons.error_outline_rounded
-        : Icons.task_alt_rounded;
-    final subtitle = filteredCount == totalCount
-        ? 'Showing all $totalCount records'
-        : 'Showing $filteredCount of $totalCount matching records';
-
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: Colors.black.withOpacity(0.08)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.04),
-            blurRadius: 14,
-            offset: const Offset(0, 8),
-          ),
-        ],
-      ),
-      child: Column(
-        children: [
-          _PanelHeader(
-            title: title,
-            subtitle: subtitle,
-            badge: filteredCount,
-            icon: icon,
-          ),
-          const Divider(height: 1),
-          Expanded(
-            child: docs.isEmpty
-                ? const _EmptyState()
-                : ListView.separated(
-                    padding: const EdgeInsets.all(12),
-                    itemCount: docs.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 12),
-                    itemBuilder: (context, i) {
-                      return _MobileCard(
-                        doc: docs[i],
-                        tab: tab,
-                        bestDate: bestDate,
-                        dateLabel: (dt) =>
-                            _TableRow._dynamicDateTextGlobal(dt, 'All'),
-                        onTap: () => onSelect(docs[i]),
-                      );
-                    },
-                  ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _MobileCard extends StatelessWidget {
-  final QueryDocumentSnapshot<Map<String, dynamic>> doc;
-  final _CaseTab tab;
-  final DateTime? Function(Map<String, dynamic> d) bestDate;
-  final String Function(DateTime? dt) dateLabel;
-  final VoidCallback onTap;
-
-  const _MobileCard({
-    required this.doc,
-    required this.tab,
-    required this.bestDate,
-    required this.dateLabel,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final d = doc.data();
-
-    final studentName = _safeStr(d['studentName']).isEmpty
-        ? 'Unknown'
-        : _safeStr(d['studentName']);
-    final studentNo = _safeStr(d['studentNo']);
-    final caseCode = _safeStr(d['caseCode']).isEmpty
-        ? 'No Code'
-        : _safeStr(d['caseCode']);
-    final violation = _safeStr(
-      d['violationTypeLabel'] ??
-          d['violationNameSnapshot'] ??
-          d['violationName'],
-    );
-    final category = _categoryLabelFromCaseGlobal(d);
-
-    final dt = bestDate(d);
-
-    final evidenceCount = _evidenceCount(d);
-
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(16),
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: Colors.black.withOpacity(0.08)),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.02),
-              blurRadius: 8,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Top row: Case code
-            Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 6,
-                  ),
-                  decoration: BoxDecoration(
-                    color: primaryColor.withOpacity(0.12),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: primaryColor.withOpacity(0.25)),
-                  ),
-                  child: Text(
-                    caseCode,
-                    style: const TextStyle(
-                      color: primaryColor,
-                      fontWeight: FontWeight.w900,
-                      fontSize: 11,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 12),
-
-            // Student info
-            Row(
-              children: [
-                Container(
-                  width: 40,
-                  height: 40,
-                  decoration: BoxDecoration(
-                    color: primaryColor.withOpacity(0.10),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: primaryColor.withOpacity(0.20)),
-                  ),
-                  child: const Icon(
-                    Icons.person_rounded,
-                    color: primaryColor,
-                    size: 20,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        studentName,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: textDark,
-                          fontWeight: FontWeight.w900,
-                          fontSize: 16,
-                        ),
-                      ),
-                      if (studentNo.isNotEmpty)
-                        Text(
-                          studentNo,
-                          style: const TextStyle(
-                            color: hintColor,
-                            fontWeight: FontWeight.w700,
-                            fontSize: 13,
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 12),
-
-            // Violation + Category
-            Text(
-              violation.isEmpty ? 'Unspecified violation' : violation,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: textDark,
-                fontWeight: FontWeight.w700,
-                fontSize: 14,
-              ),
-            ),
-
-            if (_safeStr(d['finalSeverity']).isNotEmpty &&
-                !_isActionSetNeedsBooking(d)) ...[
-              const SizedBox(height: 8),
-              Text(
-                'Severity: ${_titleCase(_safeStr(d['finalSeverity']))}',
-                style: const TextStyle(
-                  color: hintColor,
-                  fontWeight: FontWeight.w800,
-                  fontSize: 12.2,
-                ),
-              ),
-            ],
-            if (tab == _CaseTab.monitoring && _meetingRequired(d)) ...[
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  const Icon(
-                    Icons.schedule_rounded,
-                    size: 15,
-                    color: primaryColor,
-                  ),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      _meetingStatusLineGlobal(d),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: primaryColor,
-                        fontWeight: FontWeight.w800,
-                        fontSize: 12.2,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-            const SizedBox(height: 12),
-
-            // Bottom row: Category, Evidence, Date
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                _CategoryPill(
-                  text: category,
-                  concern: _safeStr(
-                    d['concern'] ??
-                        d['concernType'] ??
-                        d['reportedConcernType'],
-                  ),
-                ),
-                _Pill(
-                  text: 'Evidence $evidenceCount',
-                  tone: _Tone(
-                    fill: Colors.black.withOpacity(0.04),
-                    border: Colors.black.withOpacity(0.10),
-                    text: hintColor,
-                  ),
-                ),
-                _Pill(
-                  text: dateLabel(dt),
-                  tone: _Tone(
-                    fill: Colors.black.withOpacity(0.04),
-                    border: Colors.black.withOpacity(0.10),
-                    text: hintColor,
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 // ======================================================================
 // MOBILE DETAILS PAGE (full-screen instead of modal)
-// ======================================================================
-
-class _MobileDetailsPage extends StatelessWidget {
-  final QueryDocumentSnapshot<Map<String, dynamic>> doc;
-  final DateTime? Function(Map<String, dynamic> d) bestDate;
-
-  const _MobileDetailsPage({required this.doc, required this.bestDate});
-
-  @override
-  Widget build(BuildContext context) {
-    final d = doc.data();
-    final studentUid = _safeStr(d['studentUid']);
-
-    final studentName = _safeStr(d['studentName']).isEmpty
-        ? 'Unknown'
-        : _safeStr(d['studentName']);
-    final studentNo = _safeStr(d['studentNo']).isEmpty
-        ? '--'
-        : _safeStr(d['studentNo']);
-    final studentProgramFuture = _resolveStudentProgramLabel(d, studentUid);
-    final caseCode = _safeStr(d['caseCode']).isEmpty
-        ? 'No Code'
-        : _safeStr(d['caseCode']);
-    final concern = _safeStr(
-      d['concern'] ?? d['concernType'] ?? d['reportedConcernType'],
-    );
-    final violation = _safeStr(
-      d['violationTypeLabel'] ??
-          d['violationNameSnapshot'] ??
-          d['violationName'],
-    );
-    final category = _categoryLabelFromCaseGlobal(d);
-
-    final dt = bestDate(d);
-    final dateText = _formatReportedAtSmartGlobal(dt);
-
-    final reportedBy = _reportedByDisplay(d);
-    final reportedType = _safeStr(
-      d['reportedTypeNameSnapshot'] ?? d['violationNameSnapshot'],
-    );
-    final reportedCategory = _safeStr(
-      d['reportedCategoryNameSnapshot'] ?? d['categoryNameSnapshot'],
-    );
-    final wasCorrectedByOsa = d['wasCorrectedByOsa'] == true;
-    final correctionReason = _safeStr(
-      (d['correction'] as Map<String, dynamic>?)?['latestReason'],
-    );
-    final narrative = _safeStr(d['narrative'] ?? d['description']).isEmpty
-        ? '--'
-        : _safeStr(d['narrative'] ?? d['description']);
-    final svc = ViolationCaseService();
-    final statusKey = _statusKey(_safeStr(d['status']));
-    final isMonitor =
-        statusKey == 'action set' ||
-        statusKey == 'unresolved' ||
-        statusKey == 'resolved';
-    final hideSeverityForNeedsBooking = _isActionSetNeedsBooking(d);
-    final meetingRequired = _meetingRequired(d);
-    final effectiveMeetingStatus = _effectiveMeetingStatusKeyGlobal(d);
-    final canCompleteMeeting =
-        meetingRequired &&
-        (statusKey == 'action set' || statusKey == 'unresolved') &&
-        effectiveMeetingStatus != 'completed';
-    final canRescheduleMeeting =
-        meetingRequired &&
-        (effectiveMeetingStatus == 'booking_missed' ||
-            effectiveMeetingStatus == 'meeting_missed');
-    final reschedulePrompt = effectiveMeetingStatus == 'booking_missed'
-        ? 'Reopen booking window for this missed booking?'
-        : 'Reopen booking window for this missed meeting attendance?';
-
-    return Scaffold(
-      backgroundColor: bg,
-      appBar: AppBar(
-        automaticallyImplyLeading: false,
-        backgroundColor: Colors.white,
-        foregroundColor: textDark,
-        elevation: 0,
-        titleSpacing: 12,
-        title: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                color: primaryColor.withOpacity(0.12),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: primaryColor.withOpacity(0.25)),
-              ),
-              child: Text(
-                caseCode,
-                style: const TextStyle(
-                  color: primaryColor,
-                  fontWeight: FontWeight.w900,
-                  fontSize: 12,
-                ),
-              ),
-            ),
-            const SizedBox(width: 10),
-            const Expanded(
-              child: Text(
-                'Case Details',
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: textDark,
-                  fontWeight: FontWeight.w900,
-                  fontSize: 16,
-                ),
-              ),
-            ),
-          ],
-        ),
-        bottom: const PreferredSize(
-          preferredSize: Size.fromHeight(1),
-          child: Divider(height: 1),
-        ),
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            _DetailCard(
-              title: 'Student Information',
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Container(
-                        width: 48,
-                        height: 48,
-                        decoration: BoxDecoration(
-                          color: primaryColor.withOpacity(0.12),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                            color: primaryColor.withOpacity(0.25),
-                          ),
-                        ),
-                        child: const Icon(
-                          Icons.person_rounded,
-                          color: primaryColor,
-                          size: 24,
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              studentName,
-                              style: const TextStyle(
-                                color: textDark,
-                                fontWeight: FontWeight.w900,
-                                fontSize: 18,
-                              ),
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              'Student No: $studentNo',
-                              style: const TextStyle(
-                                color: hintColor,
-                                fontWeight: FontWeight.w700,
-                                fontSize: 14,
-                              ),
-                            ),
-                            const SizedBox(height: 2),
-                            FutureBuilder<String>(
-                              future: studentProgramFuture,
-                              initialData: _studentProgramLabelFromCase(d),
-                              builder: (context, snapshot) {
-                                final program =
-                                    _safeStr(snapshot.data).isEmpty
-                                        ? '--'
-                                        : _safeStr(snapshot.data);
-                                return Text(
-                                  'Program: $program',
-                                  style: const TextStyle(
-                                    color: hintColor,
-                                    fontWeight: FontWeight.w700,
-                                    fontSize: 14,
-                                  ),
-                                );
-                              },
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 16),
-            _DetailCard(
-              title: 'Incident Summary',
-              child: Column(
-                children: [
-                  _kv('Concern', concern.isEmpty ? '--' : _titleCase(concern)),
-                  const SizedBox(height: 12),
-                  _kv('Category', category.isEmpty ? '--' : category),
-                  const SizedBox(height: 12),
-                  _kv('Violation Type', violation.isEmpty ? '--' : violation),
-                  const SizedBox(height: 12),
-                  _kv('Date Reported', dateText),
-                  const SizedBox(height: 12),
-                  _kv('Reported By', reportedBy),
-                ],
-              ),
-            ),
-            const SizedBox(height: 16),
-            _DetailCard(
-              title: 'Incident Description',
-              child: Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.03),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.black.withOpacity(0.08)),
-                ),
-                child: Text(
-                  narrative,
-                  style: const TextStyle(
-                    color: textDark,
-                    fontWeight: FontWeight.w600,
-                    height: 1.4,
-                    fontSize: 15,
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-            _DetailCard(
-              title: 'Evidence',
-              child: _EvidencePlaceholders(urls: _evidenceUrls(d)),
-            ),
-
-            if (_safeStr(d['finalSeverity']).isNotEmpty &&
-                !hideSeverityForNeedsBooking) ...[
-              const SizedBox(height: 16),
-              _DetailCard(
-                title: 'Assessment & Decision',
-                child: Column(
-                  children: [
-                    _kv(
-                      'Severity',
-                      _safeStr(d['finalSeverity']).isEmpty
-                          ? '--'
-                          : _titleCase(_safeStr(d['finalSeverity'])),
-                    ),
-                    const SizedBox(height: 12),
-                    _kv(
-                      'Sanction Given',
-                      _safeStr(d['sanctionType']).isEmpty
-                          ? '--'
-                          : _titleCase(_safeStr(d['sanctionType'])),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-
-            if (meetingRequired) ...[
-              const SizedBox(height: 16),
-              _DetailCard(
-                title: 'Meeting Details',
-                child: _MeetingDetailsInfo(data: d),
-              ),
-            ],
-
-            const SizedBox(height: 16),
-            _DetailCard(
-              title: 'Student Case History',
-              child: _StudentHistorySection(
-                studentUid: studentUid,
-                currentCaseId: doc.id,
-                currentViolationType: violation,
-              ),
-            ),
-            const SizedBox(height: 32),
-          ],
-        ),
-      ),
-      bottomNavigationBar: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          border: Border(
-            top: BorderSide(color: Colors.black.withOpacity(0.08)),
-          ),
-        ),
-        child: SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (!isMonitor)
-                SizedBox(
-                  width: double.infinity,
-                  height: 50,
-                  child: ElevatedButton.icon(
-                    onPressed: () async {
-                      final changed = await showDialog<bool>(
-                        context: context,
-                        builder: (c) => _AssignActionDialog(
-                          doc: doc,
-                          currentSeverity: _safeStr(
-                            d['finalSeverity'] ?? d['concern'],
-                          ),
-                          currentAction: _actionKey(d),
-                          svc: svc,
-                        ),
-                      );
-                      if (changed == true && context.mounted) {
-                        final status = _safeStr(d['status']).toLowerCase();
-                        if (status == 'resolved') Navigator.pop(context);
-                      }
-                    },
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: primaryColor,
-                      foregroundColor: Colors.white,
-                      elevation: 0,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                    ),
-                    icon: const Icon(Icons.gavel_rounded),
-                    label: const Text(
-                      'Set Action',
-                      style: TextStyle(fontWeight: FontWeight.w900),
-                    ),
-                  ),
-                )
-              else ...[
-                if (canCompleteMeeting) ...[
-                  SizedBox(
-                    width: double.infinity,
-                    height: 50,
-                    child: ElevatedButton.icon(
-                      onPressed: () async {
-                        final saved = await showDialog<bool>(
-                          context: context,
-                          builder: (c) =>
-                              _CompleteMeetingDialog(caseId: doc.id, svc: svc),
-                        );
-                        if (saved == true && context.mounted) {
-                          // keep page open; stream will refresh details
-                        }
-                      },
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: primaryColor,
-                        foregroundColor: Colors.white,
-                        elevation: 0,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                      icon: const Icon(Icons.edit_note_rounded),
-                      label: const Text(
-                        'Complete Meeting',
-                        style: TextStyle(fontWeight: FontWeight.w900),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                ],
-                if (canRescheduleMeeting) ...[
-                  SizedBox(
-                    width: double.infinity,
-                    height: 46,
-                    child: OutlinedButton.icon(
-                      onPressed: () async {
-                        final confirm = await showDialog<bool>(
-                          context: context,
-                          builder: (c) => AlertDialog(
-                            title: const Text('Reschedule meeting?'),
-                            content: Text(reschedulePrompt),
-                            actions: [
-                              TextButton(
-                                onPressed: () => Navigator.pop(c, false),
-                                child: const Text('Cancel'),
-                              ),
-                              TextButton(
-                                onPressed: () => Navigator.pop(c, true),
-                                child: const Text('Reschedule'),
-                              ),
-                            ],
-                          ),
-                        );
-                        if (confirm == true) {
-                          await svc.rescheduleMissedMeeting(caseId: doc.id);
-                          if (context.mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text('Meeting booking reopened.'),
-                              ),
-                            );
-                          }
-                        }
-                      },
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: primaryColor,
-                        side: BorderSide(color: primaryColor.withOpacity(0.35)),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                      icon: const Icon(Icons.restart_alt_rounded, size: 18),
-                      label: const Text(
-                        'Reschedule',
-                        style: TextStyle(fontWeight: FontWeight.w800),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                ],
-              ],
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  static Widget _kv(String k, String v) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        SizedBox(
-          width: 100,
-          child: Text(
-            '$k:',
-            style: const TextStyle(
-              color: hintColor,
-              fontWeight: FontWeight.w900,
-              fontSize: 13,
-            ),
-          ),
-        ),
-        Expanded(
-          child: Text(
-            v,
-            style: const TextStyle(
-              color: textDark,
-              fontWeight: FontWeight.w700,
-              fontSize: 13,
-              height: 1.3,
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-// ======================================================================
-// DESKTOP DETAILS PANEL (enhanced)
 // ======================================================================
 
 class _DetailsPanel extends StatelessWidget {
@@ -3146,67 +1523,27 @@ class _DetailsPanel extends StatelessWidget {
     final svc = ViolationCaseService();
 
     return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: Colors.black.withOpacity(0.08)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.04),
-            blurRadius: 14,
-            offset: const Offset(0, 8),
-          ),
-        ],
-      ),
+      color: const Color(0xFFF9FBF9),
       child: Column(
         children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
+          Container(
+            padding: const EdgeInsets.fromLTRB(14, 14, 10, 10),
             child: Row(
               children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 6,
-                  ),
-                  decoration: BoxDecoration(
-                    color: primaryColor.withOpacity(0.12),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: primaryColor.withOpacity(0.25)),
-                  ),
-                  child: Text(
-                    caseCode,
-                    style: const TextStyle(
-                      color: primaryColor,
-                      fontWeight: FontWeight.w900,
-                      fontSize: 12,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
+                const Expanded(
                   child: Text(
                     'Case Details',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
+                    style: TextStyle(
                       color: textDark,
                       fontWeight: FontWeight.w900,
-                      fontSize: 16,
                     ),
                   ),
                 ),
-                if (onClose != null) ...[
-                  const SizedBox(width: 8),
+                if (onClose != null)
                   IconButton(
                     onPressed: onClose,
-                    icon: const Icon(Icons.close_rounded, color: hintColor),
-                    style: IconButton.styleFrom(
-                      backgroundColor: Colors.black.withOpacity(0.04),
-                      padding: const EdgeInsets.all(8),
-                    ),
+                    icon: const Icon(Icons.close_rounded),
                   ),
-                ],
               ],
             ),
           ),
@@ -3214,34 +1551,74 @@ class _DetailsPanel extends StatelessWidget {
 
           Expanded(
             child: SingleChildScrollView(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.all(14),
               child: Column(
                 children: [
                   _DetailCard(
                     title: 'Student Information',
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                    child: Row(
                       children: [
-                        Text(
-                          studentName,
-                          style: const TextStyle(
-                            color: textDark,
-                            fontWeight: FontWeight.w900,
-                            fontSize: 16,
+                        Container(
+                          width: 46,
+                          height: 46,
+                          decoration: BoxDecoration(
+                            color: const Color(
+                              0xFF1B5E20,
+                            ).withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(AppRadii.md),
+                            border: Border.all(
+                              color: const Color(
+                                0xFF1B5E20,
+                              ).withValues(alpha: 0.25),
+                            ),
+                          ),
+                          child: const Icon(
+                            Icons.person_rounded,
+                            color: Color(0xFF1B5E20),
+                            size: 24,
                           ),
                         ),
-                        const SizedBox(height: 8),
-                        _kv('Student No', studentNo),
-                        const SizedBox(height: 8),
-                        FutureBuilder<String>(
-                          future: studentProgramFuture,
-                          initialData: _studentProgramLabelFromCase(d),
-                          builder: (context, snapshot) {
-                            final program = _safeStr(snapshot.data).isEmpty
-                                ? '--'
-                                : _safeStr(snapshot.data);
-                            return _kv('Program', program);
-                          },
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                studentName,
+                                style: const TextStyle(
+                                  color: textDark,
+                                  fontWeight: FontWeight.w900,
+                                  fontSize: 17,
+                                ),
+                              ),
+                              const SizedBox(height: 3),
+                              Text(
+                                'Student No: $studentNo',
+                                style: const TextStyle(
+                                  color: hintColor,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              FutureBuilder<String>(
+                                future: studentProgramFuture,
+                                initialData: _studentProgramLabelFromCase(d),
+                                builder: (context, snapshot) {
+                                  final program =
+                                      _safeStr(snapshot.data).isEmpty
+                                      ? '--'
+                                      : _safeStr(snapshot.data);
+                                  return Text(
+                                    'Program: $program',
+                                    style: const TextStyle(
+                                      color: hintColor,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  );
+                                },
+                              ),
+                            ],
+                          ),
                         ),
                       ],
                     ),
@@ -3266,6 +1643,8 @@ class _DetailsPanel extends StatelessWidget {
                         _kv('Date Reported', dateText),
                         const SizedBox(height: 8),
                         _kv('Reported By', reportedBy),
+                        const SizedBox(height: 8),
+                        _kv('Case Code', caseCode),
                       ],
                     ),
                   ),
@@ -3295,15 +1674,15 @@ class _DetailsPanel extends StatelessWidget {
                   ],
                   const SizedBox(height: 12),
                   _DetailCard(
-                    title: 'Description',
+                    title: 'Incident Description',
                     child: Container(
                       width: double.infinity,
-                      padding: const EdgeInsets.all(12),
+                      padding: const EdgeInsets.all(14),
                       decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.03),
-                        borderRadius: BorderRadius.circular(12),
+                        color: Colors.black.withValues(alpha: 0.03),
+                        borderRadius: BorderRadius.circular(10),
                         border: Border.all(
-                          color: Colors.black.withOpacity(0.08),
+                          color: Colors.black.withValues(alpha: 0.08),
                         ),
                       ),
                       child: Text(
@@ -3311,7 +1690,8 @@ class _DetailsPanel extends StatelessWidget {
                         style: const TextStyle(
                           color: textDark,
                           fontWeight: FontWeight.w600,
-                          height: 1.35,
+                          height: 1.4,
+                          fontSize: 14.5,
                         ),
                       ),
                     ),
@@ -3377,7 +1757,7 @@ class _DetailsPanel extends StatelessWidget {
                 bottom: Radius.circular(18),
               ),
               border: Border(
-                top: BorderSide(color: Colors.black.withOpacity(0.08)),
+                top: BorderSide(color: Colors.black.withValues(alpha: 0.08)),
               ),
             ),
             child: !isMonitor
@@ -3413,7 +1793,7 @@ class _DetailsPanel extends StatelessWidget {
                           label: 'Correct Report',
                           fill: Colors.white,
                           textColor: primaryColor,
-                          borderColor: primaryColor.withOpacity(0.30),
+                          borderColor: primaryColor.withValues(alpha: 0.30),
                           onTap: () async {
                             final changed = await showDialog<bool>(
                               context: context,
@@ -3459,7 +1839,7 @@ class _DetailsPanel extends StatelessWidget {
                             label: 'Reschedule',
                             fill: Colors.white,
                             textColor: primaryColor,
-                            borderColor: primaryColor.withOpacity(0.35),
+                            borderColor: primaryColor.withValues(alpha: 0.35),
                             onTap: () async {
                               final confirm = await showDialog<bool>(
                                 context: context,
@@ -3499,13 +1879,13 @@ class _DetailsPanel extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         SizedBox(
-          width: 90,
+          width: 116,
           child: Text(
             '$k:',
             style: const TextStyle(
               color: hintColor,
               fontWeight: FontWeight.w900,
-              fontSize: 12.2,
+              fontSize: 13,
             ),
           ),
         ),
@@ -3515,8 +1895,8 @@ class _DetailsPanel extends StatelessWidget {
             style: const TextStyle(
               color: textDark,
               fontWeight: FontWeight.w700,
-              fontSize: 12.8,
-              height: 1.2,
+              fontSize: 13,
+              height: 1.3,
             ),
           ),
         ),
@@ -3599,9 +1979,9 @@ class _MeetingDetailsInfo extends StatelessWidget {
               margin: const EdgeInsets.only(bottom: 6),
               padding: const EdgeInsets.all(8),
               decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.03),
+                color: Colors.black.withValues(alpha: 0.03),
                 borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.black.withOpacity(0.07)),
+                border: Border.all(color: Colors.black.withValues(alpha: 0.07)),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -3736,9 +2116,9 @@ class _MeetingDetailsInfo extends StatelessWidget {
           width: double.infinity,
           padding: const EdgeInsets.all(10),
           decoration: BoxDecoration(
-            color: Colors.black.withOpacity(0.03),
+            color: Colors.black.withValues(alpha: 0.03),
             borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: Colors.black.withOpacity(0.08)),
+            border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
           ),
           child: Text(
             text,
@@ -4075,15 +2455,15 @@ class _CorrectViolationDialogState extends State<_CorrectViolationDialog> {
       filled: true,
       fillColor: enabled ? Colors.white : Colors.grey[100],
       border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(AppRadii.md),
         borderSide: BorderSide(color: Colors.grey[300]!),
       ),
       enabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(AppRadii.md),
         borderSide: BorderSide(color: Colors.grey[300]!),
       ),
       focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(AppRadii.md),
         borderSide: const BorderSide(color: primaryColor, width: 1.6),
       ),
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
@@ -4132,7 +2512,9 @@ class _CorrectViolationDialogState extends State<_CorrectViolationDialog> {
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: bg,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AppRadii.xxl),
+        ),
         title: const Text(
           'Confirm Correction',
           style: TextStyle(color: primaryColor, fontWeight: FontWeight.w900),
@@ -4179,7 +2561,7 @@ class _CorrectViolationDialogState extends State<_CorrectViolationDialog> {
             style: FilledButton.styleFrom(
               backgroundColor: primaryColor,
               shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(AppRadii.md),
               ),
             ),
             child: const Text(
@@ -4293,7 +2675,7 @@ class _CorrectViolationDialogState extends State<_CorrectViolationDialog> {
               ),
               const SizedBox(height: 10),
               DropdownButtonFormField<String>(
-                value: _concern,
+                initialValue: _concern,
                 style: const TextStyle(
                   color: textDark,
                   fontWeight: FontWeight.w700,
@@ -4328,7 +2710,7 @@ class _CorrectViolationDialogState extends State<_CorrectViolationDialog> {
               ),
               const SizedBox(height: 12),
               DropdownButtonFormField<String>(
-                value: _selectedCategoryId,
+                initialValue: _selectedCategoryId,
                 hint: const Text('Select category'),
                 style: const TextStyle(
                   color: textDark,
@@ -4368,7 +2750,7 @@ class _CorrectViolationDialogState extends State<_CorrectViolationDialog> {
               ],
               const SizedBox(height: 12),
               DropdownButtonFormField<String>(
-                value: _selectedTypeId,
+                initialValue: _selectedTypeId,
                 hint: const Text('Select specific violation'),
                 style: const TextStyle(
                   color: textDark,
@@ -4450,7 +2832,7 @@ class _CorrectViolationDialogState extends State<_CorrectViolationDialog> {
           style: FilledButton.styleFrom(
             backgroundColor: primaryColor,
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(AppRadii.md),
             ),
             padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
           ),
@@ -4536,19 +2918,19 @@ class _CompleteMeetingDialogState extends State<_CompleteMeetingDialog> {
         color: hintColor,
         fontWeight: FontWeight.w700,
       ),
-      prefixIcon: Icon(icon, color: primaryColor.withOpacity(0.85)),
+      prefixIcon: Icon(icon, color: primaryColor.withValues(alpha: 0.85)),
       filled: true,
       fillColor: Colors.white,
       border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(AppRadii.md),
         borderSide: BorderSide(color: Colors.grey[300]!),
       ),
       enabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(AppRadii.md),
         borderSide: BorderSide(color: Colors.grey[300]!),
       ),
       focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(AppRadii.md),
         borderSide: const BorderSide(color: primaryColor, width: 1.6),
       ),
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
@@ -4695,10 +3077,10 @@ class _CompleteMeetingDialogState extends State<_CompleteMeetingDialog> {
                       sanctionType: _sanctionType ?? 'none',
                       facultyNote: _facultyNoteCtrl.text,
                     );
-                    if (!mounted) return;
+                    if (!context.mounted) return;
                     Navigator.pop(context, true);
                   } catch (e) {
-                    if (!mounted) return;
+                    if (!context.mounted) return;
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(content: Text('Resolve failed: $e')),
                     );
@@ -4708,7 +3090,7 @@ class _CompleteMeetingDialogState extends State<_CompleteMeetingDialog> {
           style: FilledButton.styleFrom(
             backgroundColor: primaryColor,
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(AppRadii.md),
             ),
             padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
           ),
@@ -4818,13 +3200,13 @@ class _StudentHistorySection extends StatelessWidget {
               padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
                 color: isConnected
-                    ? primaryColor.withOpacity(0.05)
-                    : Colors.black.withOpacity(0.02),
+                    ? primaryColor.withValues(alpha: 0.05)
+                    : Colors.black.withValues(alpha: 0.02),
                 borderRadius: BorderRadius.circular(10),
                 border: Border.all(
                   color: isConnected
-                      ? primaryColor.withOpacity(0.2)
-                      : Colors.black.withOpacity(0.05),
+                      ? primaryColor.withValues(alpha: 0.2)
+                      : Colors.black.withValues(alpha: 0.05),
                 ),
               ),
               child: Row(
@@ -4852,7 +3234,7 @@ class _StudentHistorySection extends StatelessWidget {
                         ),
                         const SizedBox(height: 2),
                         Text(
-                          '$dateStr â€¢ $status â€¢ $severity',
+                          '$dateStr - $status - $severity',
                           style: const TextStyle(
                             color: hintColor,
                             fontWeight: FontWeight.w700,
@@ -5259,7 +3641,9 @@ class _AssignActionDialogState extends State<_AssignActionDialog> {
                             ),
                             decoration: BoxDecoration(
                               color: primaryColor.withValues(alpha: 0.10),
-                              borderRadius: BorderRadius.circular(999),
+                              borderRadius: BorderRadius.circular(
+                                AppRadii.pill,
+                              ),
                               border: Border.all(
                                 color: primaryColor.withValues(alpha: 0.25),
                               ),
@@ -5454,7 +3838,7 @@ class _AssignActionDialogState extends State<_AssignActionDialog> {
           style: FilledButton.styleFrom(
             backgroundColor: primaryColor,
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(AppRadii.md),
             ),
             padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
           ),
@@ -5554,13 +3938,13 @@ class _CategoryPill extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
         color: isSerious
-            ? primaryColor.withOpacity(0.12)
-            : Colors.blue.withOpacity(0.12),
+            ? primaryColor.withValues(alpha: 0.12)
+            : Colors.blue.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(6),
         border: Border.all(
           color: isSerious
-              ? primaryColor.withOpacity(0.25)
-              : Colors.blue.withOpacity(0.25),
+              ? primaryColor.withValues(alpha: 0.25)
+              : Colors.blue.withValues(alpha: 0.25),
         ),
       ),
       child: Text(
@@ -5587,18 +3971,11 @@ class _DetailCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(AppSpacing.sm),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.black.withOpacity(0.08)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.02),
-            blurRadius: 8,
-            offset: const Offset(0, 4),
-          ),
-        ],
+        borderRadius: BorderRadius.circular(AppRadii.md),
+        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -5608,7 +3985,7 @@ class _DetailCard extends StatelessWidget {
             style: const TextStyle(
               color: textDark,
               fontWeight: FontWeight.w900,
-              fontSize: 13.5,
+              fontSize: 14.5,
             ),
           ),
           const SizedBox(height: 10),
@@ -5661,7 +4038,7 @@ class _EvidencePlaceholders extends StatelessWidget {
             final imageUrls = urls.where((u) => !_isLikelyPdf(u)).toList();
             final imageInitialIndex = imageUrls.indexOf(url);
             return InkWell(
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(AppRadii.md),
               onTap: () async {
                 if (isPdf) {
                   await _openEvidenceFile(context, url);
@@ -5679,9 +4056,11 @@ class _EvidencePlaceholders extends StatelessWidget {
                     width: 100,
                     height: 70,
                     decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.04),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.black.withOpacity(0.08)),
+                      color: Colors.black.withValues(alpha: 0.04),
+                      borderRadius: BorderRadius.circular(AppRadii.md),
+                      border: Border.all(
+                        color: Colors.black.withValues(alpha: 0.08),
+                      ),
                     ),
                     clipBehavior: Clip.antiAlias,
                     child: isPdf
@@ -5700,8 +4079,8 @@ class _EvidencePlaceholders extends StatelessWidget {
                     child: Container(
                       padding: const EdgeInsets.all(3),
                       decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.6),
-                        borderRadius: BorderRadius.circular(999),
+                        color: Colors.black.withValues(alpha: 0.6),
+                        borderRadius: BorderRadius.circular(AppRadii.pill),
                       ),
                       child: const Icon(
                         Icons.open_in_new_rounded,
@@ -5720,8 +4099,8 @@ class _EvidencePlaceholders extends StatelessWidget {
                           vertical: 2,
                         ),
                         decoration: BoxDecoration(
-                          color: Colors.red.withOpacity(0.85),
-                          borderRadius: BorderRadius.circular(999),
+                          color: Colors.red.withValues(alpha: 0.85),
+                          borderRadius: BorderRadius.circular(AppRadii.pill),
                         ),
                         child: const Text(
                           'PDF',
@@ -5739,8 +4118,8 @@ class _EvidencePlaceholders extends StatelessWidget {
                       child: Container(
                         alignment: Alignment.center,
                         decoration: BoxDecoration(
-                          color: Colors.black.withOpacity(0.45),
-                          borderRadius: BorderRadius.circular(12),
+                          color: Colors.black.withValues(alpha: 0.45),
+                          borderRadius: BorderRadius.circular(AppRadii.md),
                         ),
                         child: Text(
                           '+${count - show}',
@@ -5780,13 +4159,13 @@ class _ActionBtn extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return InkWell(
-      borderRadius: BorderRadius.circular(12),
+      borderRadius: BorderRadius.circular(AppRadii.md),
       onTap: onTap,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
         decoration: BoxDecoration(
           color: fill,
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(AppRadii.md),
           border: Border.all(color: borderColor),
         ),
         child: Center(
@@ -5822,7 +4201,7 @@ class _Pill extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
         color: tone.fill,
-        borderRadius: BorderRadius.circular(999),
+        borderRadius: BorderRadius.circular(AppRadii.pill),
         border: Border.all(color: tone.border),
       ),
       child: Text(
@@ -5838,88 +4217,9 @@ class _Pill extends StatelessWidget {
   }
 }
 
-_Tone _severityTone(String raw) {
-  final s = raw.toLowerCase();
-  if (s.contains('major')) {
-    return _Tone(
-      fill: Colors.red.withOpacity(0.1),
-      border: Colors.red.withOpacity(0.3),
-      text: Colors.red.shade900,
-    );
-  }
-  if (s.contains('moderate')) {
-    return _Tone(
-      fill: Colors.orange.withOpacity(0.1),
-      border: Colors.orange.withOpacity(0.3),
-      text: Colors.orange.shade900,
-    );
-  }
-  return _Tone(
-    fill: Colors.blue.withOpacity(0.1),
-    border: Colors.blue.withOpacity(0.3),
-    text: Colors.blue.shade900,
-  );
-}
-
 // ======================================================================
 // STATES + HELPERS
 // ======================================================================
-
-class _EmptyState extends StatelessWidget {
-  const _EmptyState();
-
-  @override
-  Widget build(BuildContext context) {
-    return const Center(
-      child: Padding(
-        padding: EdgeInsets.all(18),
-        child: Text(
-          'No reports found for the selected filters.',
-          textAlign: TextAlign.center,
-          style: TextStyle(color: hintColor, fontWeight: FontWeight.w900),
-        ),
-      ),
-    );
-  }
-}
-
-class _ErrorState extends StatelessWidget {
-  final String error;
-  const _ErrorState({required this.error});
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(18),
-        child: Text(
-          "Error loading reports:\n$error",
-          textAlign: TextAlign.center,
-          style: const TextStyle(
-            color: Colors.red,
-            fontWeight: FontWeight.w900,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _StatusCounts {
-  final int total;
-  final int submitted;
-  final int underReview;
-  final int actionSet;
-  final int resolved;
-
-  const _StatusCounts({
-    required this.total,
-    required this.submitted,
-    required this.underReview,
-    required this.actionSet,
-    required this.resolved,
-  });
-}
 
 class _Tone {
   final Color fill;
@@ -6241,38 +4541,6 @@ bool _isGraceWindowGlobal(Map<String, dynamic> d) {
   return false;
 }
 
-String _meetingStatusLineGlobal(Map<String, dynamic> d) {
-  if (!_meetingRequired(d)) return 'No meeting required';
-  final status = _effectiveMeetingStatusKeyGlobal(d);
-  final scheduledAt = _globalTsToDate(d['scheduledAt']);
-  final dueBy =
-      _globalTsToDate(d['bookingDeadlineAt']) ??
-      _globalTsToDate(d['meetingDueBy']);
-
-  if (scheduledAt != null &&
-      (status == 'scheduled' ||
-          status == 'meeting_missed' ||
-          status == 'completed')) {
-    if (status == 'completed') {
-      return 'Completed: ${DateFormat('MMM d, h:mm a').format(scheduledAt)}';
-    }
-    if (status == 'meeting_missed') {
-      return 'Missed Meeting: ${DateFormat('MMM d, h:mm a').format(scheduledAt)}';
-    }
-    return 'Scheduled: ${DateFormat('MMM d, h:mm a').format(scheduledAt)}';
-  }
-  if (status == 'booking_missed') return 'Missed - no slot booked in time';
-  if (status == 'meeting_missed') return 'Missed - student absent';
-
-  final bookingWindowLabel = _isGraceWindowGlobal(d)
-      ? 'Grace Window'
-      : 'Booking Window';
-  if (dueBy != null) {
-    return '$bookingWindowLabel • book by ${DateFormat('MMM d, h:mm a').format(dueBy)}';
-  }
-  return bookingWindowLabel;
-}
-
 String _meetingStatusChipTextGlobal(Map<String, dynamic> d) {
   if (!_meetingRequired(d)) return 'No Meeting';
   final status = _effectiveMeetingStatusKeyGlobal(d);
@@ -6284,96 +4552,8 @@ String _meetingStatusChipTextGlobal(Map<String, dynamic> d) {
   return _isGraceWindowGlobal(d) ? 'Grace Window' : 'Booking Window';
 }
 
-String _meetingStatusSubTextGlobal(Map<String, dynamic> d) {
-  if (!_meetingRequired(d)) return '';
-
-  final scheduledAt = _globalTsToDate(d['scheduledAt']);
-  final dueBy =
-      _globalTsToDate(d['bookingDeadlineAt']) ??
-      _globalTsToDate(d['meetingDueBy']);
-  final status = _effectiveMeetingStatusKeyGlobal(d);
-
-  if (scheduledAt != null &&
-      (status == 'scheduled' ||
-          status == 'meeting_missed' ||
-          status == 'completed')) {
-    return 'Scheduled: ${DateFormat('MMM d, h:mm a').format(scheduledAt)}';
-  }
-  if (status == 'booking_missed') return 'No slot booked within 5 days';
-  if (status == 'meeting_missed')
-    return 'Student did not attend scheduled meeting';
-  if (dueBy != null) {
-    return 'Book by ${DateFormat('MMM d, h:mm a').format(dueBy)}';
-  }
-  return 'Waiting for booking';
-}
-
-_Tone _meetingStatusToneGlobal(Map<String, dynamic> d) {
-  final status = _effectiveMeetingStatusKeyGlobal(d);
-  final isGraceWindow = _isGraceWindowGlobal(d);
-  if (status == 'scheduled') {
-    return _Tone(
-      fill: Colors.blue.withOpacity(0.10),
-      border: Colors.blue.withOpacity(0.30),
-      text: Colors.blue.shade900,
-    );
-  }
-  if (status == 'completed') {
-    return _Tone(
-      fill: primaryColor.withOpacity(0.12),
-      border: primaryColor.withOpacity(0.35),
-      text: primaryColor,
-    );
-  }
-  if (status == 'booking_missed' || status == 'meeting_missed') {
-    return _Tone(
-      fill: Colors.red.withOpacity(0.10),
-      border: Colors.red.withOpacity(0.30),
-      text: Colors.red.shade900,
-    );
-  }
-  if (status == 'needs_booking') {
-    return _Tone(
-      fill: isGraceWindow
-          ? Colors.deepOrange.withOpacity(0.10)
-          : Colors.orange.withOpacity(0.10),
-      border: isGraceWindow
-          ? Colors.deepOrange.withOpacity(0.30)
-          : Colors.orange.withOpacity(0.30),
-      text: isGraceWindow ? Colors.deepOrange.shade900 : Colors.orange.shade900,
-    );
-  }
-  return _Tone(
-    fill: Colors.black.withOpacity(0.04),
-    border: Colors.black.withOpacity(0.10),
-    text: hintColor,
-  );
-}
-
-String _meetingWindowDisplay(String raw) {
-  final k = raw.toLowerCase().replaceAll(RegExp(r'[\s_-]+'), '');
-  if (k.isEmpty) return '--';
-  switch (k) {
-    case 'today':
-    case 'withinaday':
-    case 'within1day':
-      return 'Same Day';
-    case '3days':
-    case 'threedays':
-    case 'within3days':
-      return '3 Days';
-    case 'week':
-    case '1week':
-    case 'withinweek':
-    case 'within7days':
-      return '1 Week';
-    default:
-      return _titleCase(raw);
-  }
-}
-
 String _fmtMeetingDateTime(DateTime dateTime) {
-  return DateFormat('MMM d, yyyy â€¢ h:mm a').format(dateTime);
+  return DateFormat('MMM d, yyyy - h:mm a').format(dateTime);
 }
 
 List<Map<String, dynamic>> _meetingHistoryEntries(Map<String, dynamic> d) {
@@ -6405,10 +4585,6 @@ DateTime? _globalTsToDate(dynamic ts) {
   } catch (_) {
     return null;
   }
-}
-
-int _evidenceCount(Map<String, dynamic> d) {
-  return _evidenceUrls(d).length;
 }
 
 List<String> _evidenceUrls(Map<String, dynamic> d) {
@@ -6549,7 +4725,7 @@ Future<void> _openEvidenceViewer(
 
   showDialog<void>(
     context: context,
-    barrierColor: Colors.black.withOpacity(0.75),
+    barrierColor: Colors.black.withValues(alpha: 0.75),
     builder: (_) => _EvidenceViewerDialog(
       urls: resolved,
       initialIndex: initialIndex.clamp(0, resolved.length - 1),
@@ -6593,7 +4769,9 @@ class _EvidenceViewerDialogState extends State<_EvidenceViewerDialog> {
     return Dialog(
       backgroundColor: Colors.black,
       insetPadding: const EdgeInsets.all(14),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(AppRadii.xl),
+      ),
       child: SizedBox(
         width: dialogWidth,
         height: dialogHeight,
@@ -6615,7 +4793,7 @@ class _EvidenceViewerDialogState extends State<_EvidenceViewerDialog> {
                     onPressed: () => Navigator.of(context).pop(),
                     icon: const Icon(Icons.close_rounded, color: Colors.white),
                     style: IconButton.styleFrom(
-                      backgroundColor: Colors.white.withOpacity(0.16),
+                      backgroundColor: Colors.white.withValues(alpha: 0.16),
                     ),
                   ),
                 ],
@@ -6644,7 +4822,7 @@ class _EvidenceViewerDialogState extends State<_EvidenceViewerDialog> {
                             ),
                           );
                         },
-                        errorBuilder: (_, __, ___) => const Column(
+                        errorBuilder: (context, error, stackTrace) => const Column(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
                             Icon(
@@ -6683,7 +4861,7 @@ class _EvidenceViewerDialogState extends State<_EvidenceViewerDialog> {
                   padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
                   scrollDirection: Axis.horizontal,
                   itemCount: widget.urls.length,
-                  separatorBuilder: (_, __) => const SizedBox(width: 8),
+                  separatorBuilder: (_, index) => const SizedBox(width: 8),
                   itemBuilder: (_, i) {
                     final active = i == _current;
                     return InkWell(
@@ -6709,12 +4887,13 @@ class _EvidenceViewerDialogState extends State<_EvidenceViewerDialog> {
                           widget.urls[i],
                           fit: BoxFit.cover,
                           webHtmlElementStrategy: WebHtmlElementStrategy.prefer,
-                          errorBuilder: (_, __, ___) => const Center(
-                            child: Icon(
-                              Icons.broken_image_outlined,
-                              color: Colors.white54,
-                            ),
-                          ),
+                          errorBuilder: (context, error, stackTrace) =>
+                              const Center(
+                                child: Icon(
+                                  Icons.broken_image_outlined,
+                                  color: Colors.white54,
+                                ),
+                              ),
                         ),
                       ),
                     );
@@ -6779,7 +4958,7 @@ class _ResolvedEvidenceImage extends StatelessWidget {
               ),
             );
           },
-          errorBuilder: (_, __, ___) => const Center(
+          errorBuilder: (context, error, stackTrace) => const Center(
             child: Icon(
               Icons.broken_image_outlined,
               color: hintColor,

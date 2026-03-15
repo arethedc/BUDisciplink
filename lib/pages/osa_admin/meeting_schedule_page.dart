@@ -2,6 +2,8 @@ import 'package:apps/services/osa_meeting_schedule_service.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import '../shared/widgets/app_layout_tokens.dart';
+import 'widgets/osa_common_widgets.dart';
 
 enum _GenerateMode { cancel, resetAndGenerate }
 
@@ -379,7 +381,10 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
       builder: (context) {
         return Dialog(
           backgroundColor: Colors.transparent,
-          insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
+          insetPadding: const EdgeInsets.symmetric(
+            horizontal: 16,
+            vertical: 20,
+          ),
           child: StatefulBuilder(
             builder: (context, setModalState) {
               Future<void> pickTime(bool isStart) async {
@@ -413,7 +418,9 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                 decoration: BoxDecoration(
                   color: Colors.white,
                   borderRadius: BorderRadius.circular(18),
-                  border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+                  border: Border.all(
+                    color: Colors.black.withValues(alpha: 0.08),
+                  ),
                   boxShadow: [
                     BoxShadow(
                       color: Colors.black.withValues(alpha: 0.12),
@@ -471,7 +478,9 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                           icon: const Icon(Icons.close_rounded),
                           color: _hint,
                           style: IconButton.styleFrom(
-                            backgroundColor: Colors.black.withValues(alpha: 0.04),
+                            backgroundColor: Colors.black.withValues(
+                              alpha: 0.04,
+                            ),
                           ),
                         ),
                       ],
@@ -605,7 +614,9 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                                 end,
                               );
                               if (validationError != null) {
-                                setModalState(() => modalError = validationError);
+                                setModalState(
+                                  () => modalError = validationError,
+                                );
                                 return;
                               }
 
@@ -633,14 +644,16 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                                   if (!duplicate) {
                                     list.add({'start': start, 'end': end});
                                     list.sort(
-                                      (a, b) => a['start']!.compareTo(b['start']!),
+                                      (a, b) =>
+                                          a['start']!.compareTo(b['start']!),
                                     );
                                     _weeklyBlockedWindows[day] = list;
                                   }
                                 }
                                 _blockedHourStartCtrl.text = '12:00';
                                 _blockedHourEndCtrl.text = '13:00';
-                                for (final day in _blockedHourDaySelection.keys) {
+                                for (final day
+                                    in _blockedHourDaySelection.keys) {
                                   _blockedHourDaySelection[day] = false;
                                 }
                               });
@@ -706,7 +719,8 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
   _buildRecurringBlockedHourGroups() {
     final grouped = <String, Map<String, dynamic>>{};
     for (final day in _blockedHourDaySelection.keys) {
-      final windows = _weeklyBlockedWindows[day] ?? const <Map<String, String>>[];
+      final windows =
+          _weeklyBlockedWindows[day] ?? const <Map<String, String>>[];
       for (final window in windows) {
         final start = (window['start'] ?? '').toString().trim();
         final end = (window['end'] ?? '').toString().trim();
@@ -738,7 +752,9 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
     }).toList();
 
     out.sort((a, b) {
-      final startCmp = _timeToMinutes(a.start).compareTo(_timeToMinutes(b.start));
+      final startCmp = _timeToMinutes(
+        a.start,
+      ).compareTo(_timeToMinutes(b.start));
       if (startCmp != 0) return startCmp;
       return _timeToMinutes(a.end).compareTo(_timeToMinutes(b.end));
     });
@@ -914,7 +930,7 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
             side: BorderSide(color: Colors.black.withValues(alpha: 0.08)),
           ),
           hourMinuteShape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.circular(AppRadii.md),
             side: BorderSide(color: _primary.withValues(alpha: 0.20)),
           ),
           hourMinuteColor: _bg,
@@ -1045,7 +1061,10 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
       builder: (context) {
         return Dialog(
           backgroundColor: Colors.transparent,
-          insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
+          insetPadding: const EdgeInsets.symmetric(
+            horizontal: 16,
+            vertical: 20,
+          ),
           child: StatefulBuilder(
             builder: (context, setModalState) {
               final canAdd = _isSelectableBlockedDate(
@@ -1065,7 +1084,9 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                 decoration: BoxDecoration(
                   color: Colors.white,
                   borderRadius: BorderRadius.circular(18),
-                  border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+                  border: Border.all(
+                    color: Colors.black.withValues(alpha: 0.08),
+                  ),
                   boxShadow: [
                     BoxShadow(
                       color: Colors.black.withValues(alpha: 0.12),
@@ -1123,7 +1144,9 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                           icon: const Icon(Icons.close_rounded),
                           color: _hint,
                           style: IconButton.styleFrom(
-                            backgroundColor: Colors.black.withValues(alpha: 0.04),
+                            backgroundColor: Colors.black.withValues(
+                              alpha: 0.04,
+                            ),
                           ),
                         ),
                       ],
@@ -1138,7 +1161,9 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                           return Chip(
                             label: Text(
                               label,
-                              style: const TextStyle(fontWeight: FontWeight.w800),
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w800,
+                              ),
                             ),
                             backgroundColor: Colors.white,
                             side: BorderSide(
@@ -1184,7 +1209,7 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                       width: double.infinity,
                       decoration: BoxDecoration(
                         color: Colors.white,
-                        borderRadius: BorderRadius.circular(12),
+                        borderRadius: BorderRadius.circular(AppRadii.md),
                         border: Border.all(
                           color: Colors.black.withValues(alpha: 0.08),
                         ),
@@ -1321,9 +1346,9 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                           child: FilledButton(
                             onPressed: finalDates.isEmpty
                                 ? null
-                                : () => Navigator.of(context).pop(
-                                    List<DateTime>.from(finalDates),
-                                  ),
+                                : () => Navigator.of(
+                                    context,
+                                  ).pop(List<DateTime>.from(finalDates)),
                             style: FilledButton.styleFrom(
                               backgroundColor: _primary,
                               padding: const EdgeInsets.symmetric(vertical: 12),
@@ -1335,7 +1360,9 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                               finalDates.length == 1
                                   ? 'Add 1 Date'
                                   : 'Add ${finalDates.length} Dates',
-                              style: const TextStyle(fontWeight: FontWeight.w900),
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w900,
+                              ),
                             ),
                           ),
                         ),
@@ -1580,7 +1607,7 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                 const Divider(height: 1),
                 Expanded(
                   child: Padding(
-                    padding: const EdgeInsets.all(16),
+                    padding: const EdgeInsets.all(AppSpacing.md),
                     child: isDesktopSplit
                         ? Row(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1626,6 +1653,11 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
   }
 
   Widget _buildTopBar({required bool showTabs}) {
+    final viewport = MediaQuery.sizeOf(context);
+    final compactDesktopHeader =
+        viewport.width >= 900 &&
+        viewport.width <= 1450 &&
+        viewport.height <= 900;
     final activeDays = _enabledDays.values.where((v) => v).length;
     final activeLabel = (_activeSchoolYearLabel ?? '').trim();
     final activeTerm = (_activeTermId ?? '').trim();
@@ -1637,76 +1669,87 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                widget.title,
-                style: const TextStyle(
-                  fontSize: 28,
-                  fontWeight: FontWeight.w900,
-                  color: _primary,
-                  letterSpacing: -0.5,
+          if (!compactDesktopHeader) ...[
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  widget.title,
+                  style: const TextStyle(
+                    fontSize: 28,
+                    fontWeight: FontWeight.w900,
+                    color: _primary,
+                    letterSpacing: -0.5,
+                  ),
                 ),
-              ),
-              const Text(
-                'Configure weekly availability and generate 1-hour student booking slots.',
-                style: TextStyle(
-                  color: _hint,
-                  fontWeight: FontWeight.w700,
-                  fontSize: 14,
+                const Text(
+                  'Configure weekly availability and generate 1-hour student booking slots.',
+                  style: TextStyle(
+                    color: _hint,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 14,
+                  ),
                 ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
+              ],
+            ),
+            const SizedBox(height: 10),
+          ],
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             child: Row(
               children: [
-                _statChip(
-                  'Active SY',
-                  activeLabel.isEmpty ? 'Not set' : activeLabel,
+                OsaStatChip(
+                  label: 'Active SY',
+                  value: activeLabel.isEmpty ? 'Not set' : activeLabel,
+                  primaryColor: _primary,
+                  hintColor: _hint,
+                  textColor: _text,
                 ),
                 const SizedBox(width: 8),
-                _statChip(
-                  'Active Term',
-                  activeTerm.isEmpty ? 'Not set' : activeTerm,
+                OsaStatChip(
+                  label: 'Active Term',
+                  value: activeTerm.isEmpty ? 'Not set' : activeTerm,
+                  primaryColor: _primary,
+                  hintColor: _hint,
+                  textColor: _text,
                 ),
                 const SizedBox(width: 8),
-                _statChip('Active days', '$activeDays / 5'),
+                OsaStatChip(
+                  label: 'Active days',
+                  value: '$activeDays / 5',
+                  primaryColor: _primary,
+                  hintColor: _hint,
+                  textColor: _text,
+                ),
                 const SizedBox(width: 8),
-                _statChip('Slot duration', '60 mins'),
+                OsaStatChip(
+                  label: 'Slot duration',
+                  value: '60 mins',
+                  primaryColor: _primary,
+                  hintColor: _hint,
+                  textColor: _text,
+                ),
                 if (_lastGeneratedCount != null) ...[
                   const SizedBox(width: 8),
-                  _statChip('Last generation', '$_lastGeneratedCount slots'),
+                  OsaStatChip(
+                    label: 'Last generation',
+                    value: '$_lastGeneratedCount slots',
+                    primaryColor: _primary,
+                    hintColor: _hint,
+                    textColor: _text,
+                  ),
                 ],
               ],
             ),
           ),
           const SizedBox(height: 10),
           if (activeLabel.isEmpty || activeTerm.isEmpty)
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: Colors.amber.withValues(alpha: 0.15),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: Colors.amber.withValues(alpha: 0.45)),
-              ),
-              child: const Text(
-                'No active Academic Year/Term found. Set one in Academic Settings first.',
-                style: TextStyle(
-                  color: Color(0xFF7A5B00),
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
+            const OsaWarningBanner(
+              text:
+                  'No active Academic Year/Term found. Set one in Academic Settings first.',
             ),
           const SizedBox(height: 10),
-          if (showTabs) ...[
-            _buildMainTabBar(),
-            const SizedBox(height: 10),
-          ],
+          if (showTabs) ...[_buildMainTabBar(), const SizedBox(height: 10)],
         ],
       ),
     );
@@ -1714,58 +1757,18 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
 
   Widget _buildMainTabBar() {
     final selectedIndex = _mainTab == _ScheduleMainTab.templateSetup ? 0 : 1;
-    return DefaultTabController(
-      key: ValueKey(_mainTab),
-      length: 2,
-      initialIndex: selectedIndex,
-      child: Material(
-        color: Colors.white,
-        child: TabBar(
-          labelColor: _primary,
-          unselectedLabelColor: Colors.black54,
-          indicatorColor: _primary,
-          indicatorWeight: 2,
-          indicatorSize: TabBarIndicatorSize.tab,
-          dividerColor: Colors.black.withValues(alpha: 0.08),
-          onTap: (index) {
-            final next = index == 0
-                ? _ScheduleMainTab.templateSetup
-                : _ScheduleMainTab.openSlots;
-            if (next == _mainTab) return;
-            setState(() => _mainTab = next);
-          },
-          tabs: const [
-            Tab(text: 'Template Setup'),
-            Tab(text: 'Open Slots'),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _statChip(String label, String value) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      decoration: BoxDecoration(
-        color: _primary.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: _primary.withValues(alpha: 0.16)),
-      ),
-      child: RichText(
-        text: TextSpan(
-          style: const TextStyle(fontFamily: 'Roboto'),
-          children: [
-            TextSpan(
-              text: '$label: ',
-              style: const TextStyle(color: _hint, fontWeight: FontWeight.w700),
-            ),
-            TextSpan(
-              text: value,
-              style: const TextStyle(color: _text, fontWeight: FontWeight.w900),
-            ),
-          ],
-        ),
-      ),
+    return OsaPrimaryTabBar(
+      controllerKey: ValueKey(_mainTab),
+      tabs: const ['Template Setup', 'Open Slots'],
+      selectedIndex: selectedIndex,
+      primaryColor: _primary,
+      onTap: (index) {
+        final next = index == 0
+            ? _ScheduleMainTab.templateSetup
+            : _ScheduleMainTab.openSlots;
+        if (next == _mainTab) return;
+        setState(() => _mainTab = next);
+      },
     );
   }
 
@@ -1774,13 +1777,9 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
         (_activeSchoolYearId ?? '').trim().isNotEmpty &&
         (_activeTermId ?? '').trim().isNotEmpty;
 
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
-      ),
+    return OsaPanelCard(
+      padding: const EdgeInsets.all(AppSpacing.md),
+      radius: AppRadii.xl,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -1917,26 +1916,10 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
     );
   }
 
-  BoxDecoration _buildSectionCardDecoration() {
-    return BoxDecoration(
-      color: Colors.white,
-      borderRadius: BorderRadius.circular(14),
-      border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
-      boxShadow: [
-        BoxShadow(
-          color: Colors.black.withValues(alpha: 0.02),
-          blurRadius: 8,
-          offset: const Offset(0, 4),
-        ),
-      ],
-    );
-  }
-
   Widget _buildWeeklyAvailabilitySection() {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: _buildSectionCardDecoration(),
+    return OsaPanelCard(
+      padding: const EdgeInsets.all(AppSpacing.sm),
+      withShadow: true,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -1971,10 +1954,9 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
         ? '${DateFormat('MMM d, yyyy').format(effectiveStart!)} - ${DateFormat('MMM d, yyyy').format(_activeTermEnd!)}'
         : 'No active term range found';
 
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: _buildSectionCardDecoration(),
+    return OsaPanelCard(
+      padding: const EdgeInsets.all(AppSpacing.sm),
+      withShadow: true,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -2106,10 +2088,9 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
     );
     final items = _buildRecurringBlockedHourGroups();
 
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: _buildSectionCardDecoration(),
+    return OsaPanelCard(
+      padding: const EdgeInsets.all(AppSpacing.sm),
+      withShadow: true,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -2230,10 +2211,7 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
               children: [
                 _buildRecurringHourHeaderCell('Blocked Time'),
                 _buildRecurringHourHeaderCell('Days'),
-                _buildRecurringHourHeaderCell(
-                  'Action',
-                  align: TextAlign.right,
-                ),
+                _buildRecurringHourHeaderCell('Action', align: TextAlign.right),
               ],
             ),
             ...items.map((item) {
@@ -2369,7 +2347,10 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
               ),
               children: [
                 Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 8,
+                  ),
                   child: Row(
                     children: [
                       Expanded(
@@ -2472,7 +2453,10 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
     );
   }
 
-  Widget _buildWeeklyHeaderCell(String text, {TextAlign align = TextAlign.left}) {
+  Widget _buildWeeklyHeaderCell(
+    String text, {
+    TextAlign align = TextAlign.left,
+  }) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       child: Text(
@@ -2541,15 +2525,17 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
   }) {
     return InkWell(
       onTap: enabled ? onTap : null,
-      borderRadius: BorderRadius.circular(12),
+      borderRadius: BorderRadius.circular(AppRadii.md),
       child: InputDecorator(
         decoration: InputDecoration(
           labelText: label,
           filled: true,
           fillColor: enabled ? Colors.white : Colors.grey[100],
-          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(AppRadii.md),
+          ),
           enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.circular(AppRadii.md),
             borderSide: BorderSide(color: Colors.black.withValues(alpha: 0.12)),
           ),
           focusedBorder: const OutlineInputBorder(
@@ -2582,13 +2568,9 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
     return LayoutBuilder(
       builder: (context, slotLayout) {
         final isCompact = slotLayout.maxWidth < 780;
-        return Container(
+        return OsaPanelCard(
           padding: EdgeInsets.all(isCompact ? 12 : 16),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
-          ),
+          radius: AppRadii.xl,
           child: !canQuerySlots
               ? const Center(
                   child: Text(
@@ -2596,7 +2578,9 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                     style: TextStyle(color: _hint, fontWeight: FontWeight.w700),
                   ),
                 )
-              : StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              : StreamBuilder<
+                  List<QueryDocumentSnapshot<Map<String, dynamic>>>
+                >(
                   stream: _svc.streamOpenSlots(
                     schoolYearId: sy,
                     termId: term,
@@ -2619,7 +2603,7 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                     }
 
                     final now = DateTime.now();
-                    final docs = snapshot.data!.docs.where((doc) {
+                    final docs = snapshot.data!.where((doc) {
                       final start = (doc.data()['startAt'] as Timestamp?)
                           ?.toDate();
                       return start != null && !start.isBefore(now);
@@ -2691,11 +2675,22 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                           spacing: 8,
                           runSpacing: 8,
                           children: [
-                            _statChip('Open slots', '${docs.length}'),
+                            OsaStatChip(
+                              label: 'Open slots',
+                              value: '${docs.length}',
+                              primaryColor: _primary,
+                              hintColor: _hint,
+                              textColor: _text,
+                            ),
                             if (firstOpen != null)
-                              _statChip(
-                                'First slot',
-                                DateFormat('MMM d, h:mm a').format(firstOpen),
+                              OsaStatChip(
+                                label: 'First slot',
+                                value: DateFormat(
+                                  'MMM d, h:mm a',
+                                ).format(firstOpen),
+                                primaryColor: _primary,
+                                hintColor: _hint,
+                                textColor: _text,
                               ),
                           ],
                         ),
@@ -2721,7 +2716,9 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                                       padding: const EdgeInsets.all(10),
                                       decoration: BoxDecoration(
                                         color: _bg,
-                                        borderRadius: BorderRadius.circular(12),
+                                        borderRadius: BorderRadius.circular(
+                                          AppRadii.md,
+                                        ),
                                         border: Border.all(
                                           color: Colors.black.withValues(
                                             alpha: 0.08,
@@ -2947,7 +2944,7 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 decoration: BoxDecoration(
                   color: _primary.withValues(alpha: 0.10),
-                  borderRadius: BorderRadius.circular(999),
+                  borderRadius: BorderRadius.circular(AppRadii.pill),
                 ),
                 child: const Text(
                   'Open',

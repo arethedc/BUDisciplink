@@ -9,109 +9,11 @@ import '../osa_admin/osa_dashboard.dart';
 import '../professor/professor_dashboard.dart';
 import '../student/student_dashboard.dart';
 import '../super_admin/super_admin_dashboard.dart';
+import 'widgets/app_branding.dart';
 
 class WelcomeScreen extends StatelessWidget {
   const WelcomeScreen({super.key});
 
-  static final RegExp _schoolYearRegex = RegExp(
-    r'(20\d{2})\s*-\s*(20\d{2})',
-    caseSensitive: false,
-  );
-
-  String? _normalizeSchoolYearLabel(String raw) {
-    final value = raw.trim();
-    if (value.isEmpty) return null;
-
-    final match = _schoolYearRegex.firstMatch(value);
-    if (match != null) {
-      final start = match.group(1);
-      final end = match.group(2);
-      if (start != null && end != null) {
-        return 'S.Y. $start-$end';
-      }
-    }
-
-    final lower = value.toLowerCase();
-    if (lower.startsWith('s.y.') || lower.startsWith('sy ')) {
-      return value;
-    }
-    return null;
-  }
-
-  String? _extractSchoolYearFromHandbookMeta(Map<String, dynamic>? data) {
-    if (data == null) return null;
-
-    final candidates = [
-      data['activeSchoolYearLabel'],
-      data['schoolYearLabel'],
-      data['academicYearLabel'],
-      data['activeVersionLabel'],
-      data['activeVersionId'],
-    ];
-
-    for (final candidate in candidates) {
-      final normalized = _normalizeSchoolYearLabel((candidate ?? '').toString());
-      if (normalized != null) return normalized;
-    }
-    return null;
-  }
-
-  String? _extractSchoolYearFromActiveAcademic(
-    QuerySnapshot<Map<String, dynamic>>? snap,
-  ) {
-    if (snap == null || snap.docs.isEmpty) return null;
-    final doc = snap.docs.first;
-    final data = doc.data();
-    return _normalizeSchoolYearLabel(
-      (data['label'] ?? data['schoolYearLabel'] ?? doc.id).toString(),
-    );
-  }
-
-  Widget _schoolYearLabel(double fontSize) {
-    const styleColor = Color(0xFF1B5E20);
-    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance
-          .collection('handbook_meta')
-          .doc('current')
-          .snapshots(),
-      builder: (context, handbookSnap) {
-        final handbookLabel = _extractSchoolYearFromHandbookMeta(
-          handbookSnap.data?.data(),
-        );
-        if (handbookLabel != null) {
-          return Text(
-            handbookLabel,
-            style: TextStyle(
-              fontSize: fontSize,
-              fontWeight: FontWeight.w700,
-              color: styleColor,
-            ),
-          );
-        }
-
-        return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-          stream: FirebaseFirestore.instance
-              .collection('academic_years')
-              .where('status', isEqualTo: 'active')
-              .limit(1)
-              .snapshots(),
-          builder: (context, academicSnap) {
-            final activeLabel = _extractSchoolYearFromActiveAcademic(
-              academicSnap.data,
-            );
-            return Text(
-              activeLabel ?? 'S.Y. --',
-              style: TextStyle(
-                fontSize: fontSize,
-                fontWeight: FontWeight.w700,
-                color: styleColor,
-              ),
-            );
-          },
-        );
-      },
-    );
-  }
 
   Widget _devNavButton(BuildContext context, String label, Widget page) {
     return OutlinedButton(
@@ -150,8 +52,8 @@ class WelcomeScreen extends StatelessWidget {
                 ? 520.0
                 : (isTablet ? 460.0 : double.infinity);
 
-            final logoSize = isDesktop ? 150.0 : (isTablet ? 140.0 : 130.0);
-            final titleSize = isDesktop ? 34.0 : (isTablet ? 32.0 : 30.0);
+            final logoSize = isDesktop ? 350.0 : (isTablet ? 200.0 : 180.0);
+            final titleSize = (w * 0.075).clamp(24.0, 42.0);
             final subSize = isDesktop ? 15.0 : 14.0;
             final bodySize = isDesktop ? 13.5 : 12.5;
             final buttonHeight = isDesktop ? 56.0 : 52.0;
@@ -172,36 +74,40 @@ class WelcomeScreen extends StatelessWidget {
                       SizedBox(
                         width: logoSize,
                         height: logoSize,
-                        child: Image.asset(
-                          "lib/assets/bu_logo.png",
-                          fit: BoxFit.contain,
+                        child: AppBranding.logo(fit: BoxFit.contain),
+                      ),
+
+
+                      Transform.translate(
+                        offset: const Offset(0, -30),
+                        child: Text(
+                          "Baliuag University DiscipLink",
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: titleSize,
+                            height: 1.08,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: 0.4,
+                            color: primaryGreen,
+                            shadows: const [
+                              Shadow(
+                                offset: Offset(0, 1),
+                                blurRadius: 2,
+                                color: Color(0x26000000),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
 
-                      const SizedBox(height: 18),
+        
+                      const SizedBox(height: 2),
+
 
                       Text(
-                        "College Student\nDigital\nHandbook",
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          fontSize: titleSize,
-                          height: 1.1,
-                          fontWeight: FontWeight.w800,
-                          color: primaryGreen,
-                        ),
-                      ),
-
-                      const SizedBox(height: 10),
-
-                      _schoolYearLabel(subSize),
-
-                      const SizedBox(height: 14),
-
-                      Text(
-                        "Welcome to your comprehensive digital\n"
-                        "companion for the academic year. Access all\n"
-                        "your college resources, schedules, and\n"
-                        "important information in one place.",
+                     "Your unified platform for student discipline,\n"
+                      "counseling referrals, appointments, and case tracking\n"
+                      "at Baliuag University.",
                         textAlign: TextAlign.center,
                         style: TextStyle(
                           fontSize: bodySize,
@@ -285,70 +191,6 @@ class WelcomeScreen extends StatelessWidget {
                       ),
                       const SizedBox(height: 14),
 
-                      if (kDebugMode) ...[
-                        const SizedBox(height: 10),
-                        const Divider(height: 24),
-                        const Text(
-                          "Quick Role Access (Debug)",
-                          style: TextStyle(
-                            fontSize: 12.5,
-                            fontWeight: FontWeight.w800,
-                            color: primaryGreen,
-                          ),
-                        ),
-                        const SizedBox(height: 10),
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          alignment: WrapAlignment.center,
-                          children: [
-                            _devNavButton(
-                              context,
-                              "Student",
-                              const StudentDashboard(),
-                            ),
-                            _devNavButton(
-                              context,
-                              "Professor",
-                              const ProfessorDashboard(),
-                            ),
-                            _devNavButton(context, "OSA", const OsaDashboard()),
-                            _devNavButton(
-                              context,
-                              "Counseling",
-                              const CounselingDashboard(),
-                            ),
-                            _devNavButton(
-                              context,
-                              "Guard",
-                              const GuardDashboard(),
-                            ),
-                            _devNavButton(
-                              context,
-                              "Super Admin",
-                              const SuperAdminDashboard(),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          "Debug-only shortcuts, bypass auth.",
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            fontSize: 10.5,
-                            color: primaryGreen.withValues(alpha: 0.75),
-                          ),
-                        ),
-                      ],
-
-                      Text(
-                        "By continuing, you agree to our Terms of Service and\nPrivacy Policy",
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          fontSize: isDesktop ? 11 : 10,
-                          color: primaryGreen,
-                        ),
-                      ),
                     ],
                   ),
                 ),
@@ -360,5 +202,3 @@ class WelcomeScreen extends StatelessWidget {
     );
   }
 }
-
-

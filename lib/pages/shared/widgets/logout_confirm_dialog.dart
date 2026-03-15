@@ -19,21 +19,6 @@ Future<bool> showLogoutConfirmDialog(BuildContext context) async {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Container(
-                width: 52,
-                height: 52,
-                decoration: BoxDecoration(
-                  color: _primary.withValues(alpha: 0.10),
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: _primary.withValues(alpha: 0.18)),
-                ),
-                child: const Icon(
-                  Icons.logout_rounded,
-                  color: _primary,
-                  size: 26,
-                ),
-              ),
-              const SizedBox(height: 14),
               const Text(
                 'Confirm Logout',
                 style: TextStyle(

@@ -1713,7 +1713,7 @@ class _BookMeetingSlotDialogState extends State<_BookMeetingSlotDialog> {
                   ],
                 ),
               )
-            : StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+            : StreamBuilder<List<QueryDocumentSnapshot<Map<String, dynamic>>>>(
                 stream: _svc.streamOpenSlots(
                   schoolYearId: widget.schoolYearId,
                   termId: widget.termId,
@@ -1748,7 +1748,7 @@ class _BookMeetingSlotDialogState extends State<_BookMeetingSlotDialog> {
                   }
 
                   final docs =
-                      snapshot.data!.docs.where((slotDoc) {
+                      snapshot.data!.where((slotDoc) {
                         final data = slotDoc.data();
                         final start = (data['startAt'] as Timestamp?)?.toDate();
                         if (start == null) return false;
@@ -2529,9 +2529,10 @@ String _categoryLabelFromCase(Map<String, dynamic> data) {
   final currentCategory = pick(const ['categoryNameSnapshot', 'categoryName']);
   if (currentCategory.isNotEmpty) return currentCategory;
 
-  final reportedCategory = pick(
-    const ['reportedCategoryNameSnapshot', 'reportedCategoryName'],
-  );
+  final reportedCategory = pick(const [
+    'reportedCategoryNameSnapshot',
+    'reportedCategoryName',
+  ]);
   if (reportedCategory.isNotEmpty) return reportedCategory;
 
   final fallback = _safeStr(

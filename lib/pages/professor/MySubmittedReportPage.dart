@@ -1,4 +1,6 @@
-﻿import 'package:cloud_firestore/cloud_firestore.dart';
+import 'dart:async';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -13,37 +15,63 @@ class MySubmittedCasesPage extends StatefulWidget {
 }
 
 class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
-  // âœ… Same theme as TeacherReportScreen
-  static const bg = Color(0xFFF6FAF6);
+  // Ã¢Å“â€¦ Same theme as TeacherReportScreen
+  static const bg = Colors.white;
   static const primaryColor = Color(0xFF1B5E20);
   static const textDark = Color(0xFF1F2A1F);
   static const hintColor = Color(0xFF6D7F62);
 
   // Tabs
-  int _tab = 0; // 0 = All, 1 = Recent
+  int _tab = 0; // 0 = Violation, 1 = Counselling
   String? _filterMonthKey;
   String? _filterStatus;
   String? _selectedId;
   final ScrollController _listScrollController = ScrollController();
-  String? _streamUid;
-  Stream<QuerySnapshot<Map<String, dynamic>>>? _reportsStream;
+  String? _violationStreamUid;
+  String? _counselingStreamUid;
+  Stream<QuerySnapshot<Map<String, dynamic>>>? _violationReportsStream;
+  Stream<QuerySnapshot<Map<String, dynamic>>>? _counselingReportsStream;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _violationCountSub;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _counselingCountSub;
+  final ValueNotifier<int> _violationCount = ValueNotifier<int>(0);
+  final ValueNotifier<int> _counselingCount = ValueNotifier<int>(0);
   final Map<String, Future<String>> _studentProgramFutureCache =
       <String, Future<String>>{};
 
   @override
   void dispose() {
+    _violationCountSub?.cancel();
+    _counselingCountSub?.cancel();
+    _violationCount.dispose();
+    _counselingCount.dispose();
     _listScrollController.dispose();
     super.dispose();
   }
 
-  void _ensureReportsStream(String uid) {
-    if (_streamUid == uid && _reportsStream != null) return;
-    _streamUid = uid;
-    _reportsStream = FirebaseFirestore.instance
+  void _ensureViolationReportsStream(String uid) {
+    if (_violationStreamUid == uid && _violationReportsStream != null) return;
+    _violationStreamUid = uid;
+    _violationReportsStream = FirebaseFirestore.instance
         .collection('violation_cases')
         .where('reportedByUid', isEqualTo: uid)
-        .orderBy('createdAt', descending: true)
         .snapshots();
+    _violationCountSub?.cancel();
+    _violationCountSub = _violationReportsStream!.listen((snapshot) {
+      _violationCount.value = snapshot.size;
+    });
+  }
+
+  void _ensureCounselingReportsStream(String uid) {
+    if (_counselingStreamUid == uid && _counselingReportsStream != null) return;
+    _counselingStreamUid = uid;
+    _counselingReportsStream = FirebaseFirestore.instance
+        .collection('counseling_cases')
+        .where('referredByUid', isEqualTo: uid)
+        .snapshots();
+    _counselingCountSub?.cancel();
+    _counselingCountSub = _counselingReportsStream!.listen((snapshot) {
+      _counselingCount.value = snapshot.size;
+    });
   }
 
   // -------------------------
@@ -60,26 +88,56 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
 
   String _fmtShort(DateTime d) {
     const months = [
-      "Jan","Feb","Mar","Apr","May","Jun",
-      "Jul","Aug","Sep","Oct","Nov","Dec"
+      "Jan",
+      "Feb",
+      "Mar",
+      "Apr",
+      "May",
+      "Jun",
+      "Jul",
+      "Aug",
+      "Sep",
+      "Oct",
+      "Nov",
+      "Dec",
     ];
     return "${months[d.month - 1]} ${d.day}, ${d.year}";
   }
 
   String _fmtLong(DateTime d) {
     const months = [
-      "January","February","March","April","May","June",
-      "July","August","September","October","November","December"
+      "January",
+      "February",
+      "March",
+      "April",
+      "May",
+      "June",
+      "July",
+      "August",
+      "September",
+      "October",
+      "November",
+      "December",
     ];
     return "${months[d.month - 1]} ${d.day}, ${d.year}";
   }
 
-  String _fmtTsLong(DateTime d) => DateFormat('MMM d, yyyy â€¢ h:mm a').format(d);
+  String _fmtTsLong(DateTime d) => DateFormat('MMM d, yyyy - h:mm a').format(d);
 
   String _monthKey(DateTime d) {
     const months = [
-      "January","February","March","April","May","June",
-      "July","August","September","October","November","December"
+      "January",
+      "February",
+      "March",
+      "April",
+      "May",
+      "June",
+      "July",
+      "August",
+      "September",
+      "October",
+      "November",
+      "December",
     ];
     return "${months[d.month - 1]} ${d.year}";
   }
@@ -91,9 +149,18 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
     final year = int.tryParse(parts[1]) ?? 0;
 
     const map = {
-      "January": 1, "February": 2, "March": 3, "April": 4,
-      "May": 5, "June": 6, "July": 7, "August": 8,
-      "September": 9, "October": 10, "November": 11, "December": 12,
+      "January": 1,
+      "February": 2,
+      "March": 3,
+      "April": 4,
+      "May": 5,
+      "June": 6,
+      "July": 7,
+      "August": 8,
+      "September": 9,
+      "October": 10,
+      "November": 11,
+      "December": 12,
     };
     final m = map[month] ?? 0;
     return year * 100 + m;
@@ -112,10 +179,7 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
 
   List<String> _stringList(dynamic value) {
     if (value is Iterable) {
-      return value
-          .map((e) => _str(e))
-          .where((e) => e.isNotEmpty)
-          .toList();
+      return value.map((e) => _str(e)).where((e) => e.isNotEmpty).toList();
     }
     return const <String>[];
   }
@@ -125,13 +189,13 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
     required String fallbackProgram,
   }) {
     final fallback = _str(fallbackProgram);
-    if (fallback.isNotEmpty && fallback != '—' && fallback != '--') {
+    if (fallback.isNotEmpty && fallback != 'â€”' && fallback != '--') {
       return Future<String>.value(fallback);
     }
 
     final uid = _str(studentUid);
     if (uid.isEmpty) {
-      return Future<String>.value('—');
+      return Future<String>.value('â€”');
     }
 
     return _studentProgramFutureCache.putIfAbsent(uid, () async {
@@ -149,7 +213,7 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
             userData['programId'] ??
             userData['program'],
       );
-      return fromProfile.isEmpty ? '—' : fromProfile;
+      return fromProfile.isEmpty ? 'â€”' : fromProfile;
     });
   }
 
@@ -172,11 +236,16 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
     final s = _normalizeStatus(raw);
 
     if (s.contains('unresolved')) return _ReportStatus.unresolved;
-    if (s.contains('resolved') || s.contains('done')) return _ReportStatus.resolved;
-    if (s.contains('action') && s.contains('set')) return _ReportStatus.actionSet;
-    if (s.contains('under review') || s.contains('review')) return _ReportStatus.underReview;
-    if (s.contains('pending') || s.contains('submitted')) return _ReportStatus.pending;
-    if (s.contains('rejected') || s.contains('dismiss')) return _ReportStatus.rejected;
+    if (s.contains('resolved') || s.contains('done'))
+      return _ReportStatus.resolved;
+    if (s.contains('action') && s.contains('set'))
+      return _ReportStatus.actionSet;
+    if (s.contains('under review') || s.contains('review'))
+      return _ReportStatus.underReview;
+    if (s.contains('pending') || s.contains('submitted'))
+      return _ReportStatus.pending;
+    if (s.contains('rejected') || s.contains('dismiss'))
+      return _ReportStatus.rejected;
 
     return _ReportStatus.pending;
   }
@@ -188,10 +257,39 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
     if (s.contains('action') && s.contains('set')) {
       return 'Action Set';
     }
-    if (s.contains('under review') || s.contains('review')) return 'Under Review';
+    if (s.contains('under review') || s.contains('review'))
+      return 'Under Review';
     if (s.contains('submitted') || s.contains('pending')) return 'Under Review';
     if (s.contains('rejected') || s.contains('dismiss')) return 'Rejected';
     return _titleCase(s);
+  }
+
+  String _prettyCounselingType(String raw) {
+    final s = raw.trim().toLowerCase();
+    if (s == 'academic') return 'Academic';
+    if (s == 'personal') return 'Personal';
+    return s.isEmpty ? 'General' : _titleCase(s);
+  }
+
+  String _buildCounselingReasonSummary(Map<String, dynamic> reasons) {
+    final tags = <String>[];
+    if (_stringList(reasons['moodsBehaviors']).isNotEmpty ||
+        _str(reasons['otherMood']).isNotEmpty) {
+      tags.add('Emotional and Behavior');
+    }
+    if (_stringList(reasons['schoolConcerns']).isNotEmpty ||
+        _str(reasons['otherSchool']).isNotEmpty) {
+      tags.add('Academic and School');
+    }
+    if (_stringList(reasons['relationships']).isNotEmpty ||
+        _str(reasons['otherRelationship']).isNotEmpty) {
+      tags.add('Peer and Relationship');
+    }
+    if (_stringList(reasons['homeConcerns']).isNotEmpty ||
+        _str(reasons['otherHome']).isNotEmpty) {
+      tags.add('Family and Home');
+    }
+    return tags.isEmpty ? 'No checklist selected' : tags.join(', ');
   }
 
   Future<void> _openFilters(List<_SubmittedReport> all) async {
@@ -253,7 +351,9 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
     );
   }
 
-  Map<String, List<_SubmittedReport>> _groupByMonth(List<_SubmittedReport> list) {
+  Map<String, List<_SubmittedReport>> _groupByMonth(
+    List<_SubmittedReport> list,
+  ) {
     final map = <String, List<_SubmittedReport>>{};
     for (final r in list) {
       final k = _monthKey(r.submittedAt);
@@ -262,23 +362,37 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
     return map;
   }
 
+  String _displayReportCode(_SubmittedReport r) {
+    if (r.caseCode.trim().isNotEmpty) return r.caseCode;
+    if (r.kind == _ReportKind.counseling) {
+      final prefix = r.id.length >= 6 ? r.id.substring(0, 6) : r.id;
+      return 'CR-${prefix.toUpperCase()}';
+    }
+    return r.id;
+  }
+
   String _filterSummary() {
     if (_filterMonthKey == null && _filterStatus == null) return "";
     final parts = <String>[];
     if (_filterMonthKey != null) parts.add(_filterMonthKey!);
     if (_filterStatus != null) parts.add(_filterStatus!);
-    return parts.join(" â€¢ ");
+    return parts.join(" - ");
   }
 
   @override
   Widget build(BuildContext context) {
     final uid = FirebaseAuth.instance.currentUser?.uid;
 
-    if (uid == null) return const Scaffold(body: Center(child: Text('Not logged in.')));
-    _ensureReportsStream(uid);
+    if (uid == null)
+      return const Scaffold(body: Center(child: Text('Not logged in.')));
+    _ensureViolationReportsStream(uid);
+    _ensureCounselingReportsStream(uid);
+    final activeStream = _tab == 0
+        ? _violationReportsStream
+        : _counselingReportsStream;
 
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: _reportsStream,
+      stream: activeStream,
       builder: (context, snap) {
         if (snap.hasError) return Center(child: Text('Error: ${snap.error}'));
         final docs = snap.data?.docs;
@@ -287,36 +401,88 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
         }
         final all = docs.map((doc) {
           final d = doc.data();
+          if (_tab == 0) {
+            final rawStatus = (d['status'] ?? 'Submitted').toString();
+            final incidentAt = _tsToDate(d['incidentAt']);
+            final createdAt = _tsToDate(d['createdAt']);
+            final submittedAt = createdAt ?? incidentAt ?? DateTime.now();
+            final caseCode = _str(d['caseCode']);
+            final concern = _prettyConcern(
+              (d['concern'] ?? d['reportedConcernType']).toString(),
+            );
+            final category =
+                (d['categoryNameSnapshot'] ??
+                        d['reportedCategoryNameSnapshot'] ??
+                        d['reportedCategoryName'] ??
+                        '')
+                    .toString()
+                    .trim();
+            final violation =
+                (d['typeNameSnapshot'] ??
+                        d['violationNameSnapshot'] ??
+                        d['reportedTypeNameSnapshot'] ??
+                        'Violation')
+                    .toString()
+                    .trim();
+            final scheduledAt = _tsToDate(d['scheduledAt']);
+            final meetingStatus = _str(d['meetingStatus']);
+            final meetingRequired = d['meetingRequired'] == true;
+            final finalSeverity = _str(d['finalSeverity']);
+            final actionType = _str(d['actionType']);
+            final reporterName = _str(d['reportedByName']);
+            final reporterRole = _toTitleCaseText(_str(d['reportedByRole']));
+            final evidenceUrls = _stringList(d['evidenceUrls']);
+            final program = _str(
+              d['programId'] ??
+                  d['studentProgramId'] ??
+                  d['studentProgram'] ??
+                  d['program'],
+            );
+
+            return _SubmittedReport(
+              id: doc.id,
+              caseCode: caseCode,
+              studentUid: _str(d['studentUid']),
+              studentName: _str(d['studentName']),
+              studentId: _str(d['studentNo']),
+              program: program.isEmpty ? '—' : program,
+              concern: concern.isEmpty ? '—' : concern,
+              category: category.isEmpty ? '—' : category,
+              violation: violation.isEmpty ? 'Violation' : violation,
+              incidentAt: incidentAt ?? submittedAt,
+              submittedAt: submittedAt,
+              location: _str(d['location']).isEmpty ? '—' : _str(d['location']),
+              status: _mapStatus(rawStatus),
+              statusText: _displayStatus(rawStatus),
+              description: _str(d['description']).isEmpty
+                  ? '—'
+                  : _str(d['description']),
+              facultyNote: _str(d['meetingFacultyNote']),
+              sanctionType: _str(d['sanctionType']),
+              finalSeverity: finalSeverity,
+              actionType: actionType,
+              meetingRequired: meetingRequired,
+              meetingStatus: meetingStatus,
+              scheduledAt: scheduledAt,
+              meetingLocation: _str(d['meetingLocation']),
+              reporterName: reporterName,
+              reporterRole: reporterRole,
+              evidenceUrls: evidenceUrls,
+              kind: _ReportKind.violation,
+            );
+          }
+
           final rawStatus = (d['status'] ?? 'Submitted').toString();
-          final incidentAt = _tsToDate(d['incidentAt']);
+          final referralDate = _tsToDate(d['referralDate']);
           final createdAt = _tsToDate(d['createdAt']);
-          final submittedAt = createdAt ?? incidentAt ?? DateTime.now();
-          final caseCode = _str(d['caseCode']);
-          final concern = _prettyConcern(
-            (d['concern'] ?? d['reportedConcernType']).toString(),
+          final submittedAt = createdAt ?? referralDate ?? DateTime.now();
+          final counselingType = _prettyCounselingType(
+            _str(d['counselingType']),
           );
-          final category =
-              (d['categoryNameSnapshot'] ??
-                      d['reportedCategoryNameSnapshot'] ??
-                      d['reportedCategoryName'] ??
-                      '')
-                  .toString()
-                  .trim();
-          final violation =
-              (d['typeNameSnapshot'] ??
-                      d['violationNameSnapshot'] ??
-                      d['reportedTypeNameSnapshot'] ??
-                      'Violation')
-                  .toString()
-                  .trim();
-          final scheduledAt = _tsToDate(d['scheduledAt']);
-          final meetingStatus = _str(d['meetingStatus']);
-          final meetingRequired = d['meetingRequired'] == true;
-          final finalSeverity = _str(d['finalSeverity']);
-          final actionType = _str(d['actionType']);
-          final reporterName = _str(d['reportedByName']);
-          final reporterRole = _toTitleCaseText(_str(d['reportedByRole']));
-          final evidenceUrls = _stringList(d['evidenceUrls']);
+          final reasons =
+              (d['reasons'] as Map<String, dynamic>?) ?? <String, dynamic>{};
+          final reasonSummary = _buildCounselingReasonSummary(reasons);
+          final comments = _str(d['comments']);
           final program = _str(
             d['programId'] ??
                 d['studentProgramId'] ??
@@ -326,43 +492,42 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
 
           return _SubmittedReport(
             id: doc.id,
-            caseCode: caseCode,
+            caseCode: _str(d['caseCode']),
             studentUid: _str(d['studentUid']),
             studentName: _str(d['studentName']),
             studentId: _str(d['studentNo']),
             program: program.isEmpty ? '—' : program,
-            concern: concern.isEmpty ? '—' : concern,
-            category: category.isEmpty ? '—' : category,
-            violation: violation.isEmpty ? 'Violation' : violation,
-            incidentAt: incidentAt ?? submittedAt,
+            concern: 'Counselling Referral',
+            category: counselingType.isEmpty ? 'General' : counselingType,
+            violation: reasonSummary,
+            incidentAt: referralDate ?? submittedAt,
             submittedAt: submittedAt,
-            location: _str(d['location']).isEmpty ? '—' : _str(d['location']),
+            location: '—',
             status: _mapStatus(rawStatus),
             statusText: _displayStatus(rawStatus),
-            description:
-                _str(d['description']).isEmpty ? '—' : _str(d['description']),
-            facultyNote: _str(d['meetingFacultyNote']),
-            sanctionType: _str(d['sanctionType']),
-            finalSeverity: finalSeverity,
-            actionType: actionType,
-            meetingRequired: meetingRequired,
-            meetingStatus: meetingStatus,
-            scheduledAt: scheduledAt,
+            description: comments.isEmpty ? '—' : comments,
+            facultyNote: reasonSummary,
+            sanctionType: '',
+            finalSeverity: '',
+            actionType: '',
+            meetingRequired: false,
+            meetingStatus: _str(d['meetingStatus']),
+            scheduledAt: _tsToDate(d['scheduledAt']),
             meetingLocation: _str(d['meetingLocation']),
-            reporterName: reporterName,
-            reporterRole: reporterRole,
-            evidenceUrls: evidenceUrls,
+            reporterName: _str(d['referredBy']),
+            reporterRole: _toTitleCaseText(_str(d['referredByRole'])),
+            evidenceUrls: const <String>[],
+            kind: _ReportKind.counseling,
           );
         }).toList();
+        all.sort((a, b) => b.submittedAt.compareTo(a.submittedAt));
 
         // filter logic
         List<_SubmittedReport> list = all;
-        if (_tab == 1) {
-          final cutoff = DateTime.now().subtract(const Duration(days: 7));
-          list = all.where((r) => r.submittedAt.isAfter(cutoff)).toList();
-        }
         if (_filterMonthKey != null) {
-          list = list.where((r) => _monthKey(r.submittedAt) == _filterMonthKey).toList();
+          list = list
+              .where((r) => _monthKey(r.submittedAt) == _filterMonthKey)
+              .toList();
         }
         if (_filterStatus != null) {
           list = list.where((r) => r.statusText == _filterStatus).toList();
@@ -388,14 +553,17 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
           }
         }
         final shouldShowDesktopSplit = desktopWide;
-        final shouldShowDetails = shouldShowDesktopSplit && selectedReport != null;
+        final shouldShowDetails =
+            shouldShowDesktopSplit && selectedReport != null;
 
         return Scaffold(
           backgroundColor: bg,
           body: ModernTableLayout(
             header: ModernTableHeader(
               title: 'My Reports',
-              subtitle: 'View and track your submitted violation cases',
+              subtitle: _tab == 0
+                  ? 'View and track your submitted violation cases'
+                  : 'View and track your submitted counselling referrals',
               searchBar: const SizedBox(),
               tabs: DefaultTabController(
                 length: 2,
@@ -411,25 +579,54 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
                     setState(() {
                       _tab = index;
                       _selectedId = null;
+                      _filterMonthKey = null;
+                      _filterStatus = null;
                     });
                   },
-                  tabs: const [
-                    Tab(text: 'History'),
-                    Tab(text: 'Recent (7 days)'),
+                  tabs: [
+                    Tab(
+                      child: _buildTabLabelWithCount(
+                        'Violation',
+                        _violationCount,
+                      ),
+                    ),
+                    Tab(
+                      child: _buildTabLabelWithCount(
+                        'Counselling',
+                        _counselingCount,
+                      ),
+                    ),
                   ],
                 ),
               ),
               filters: [
-                _buildFilterChip('Month', _filterMonthKey ?? 'All', _getAvailableMonths(all), (v) {
-                  setState(() => _filterMonthKey = v == 'All' ? null : v);
-                }),
-                _buildFilterChip('Status', _filterStatus ?? 'All', ['All', 'Under Review', 'Action Set', 'Resolved', 'Unresolved', 'Rejected'], (v) {
-                  setState(() => _filterStatus = v == 'All' ? null : v);
-                }),
+                _buildFilterChip(
+                  'Month',
+                  _filterMonthKey ?? 'All',
+                  _getAvailableMonths(all),
+                  (v) {
+                    setState(() => _filterMonthKey = v == 'All' ? null : v);
+                  },
+                ),
+                _buildViolationStatusFilterChip(
+                  reports: all,
+                  current: _filterStatus,
+                  onSelected: (next) {
+                    setState(() => _filterStatus = next);
+                  },
+                ),
               ],
-                  ),
+            ),
             body: list.isEmpty
-                ? const Center(child: Text('No reports found.', style: TextStyle(color: hintColor, fontWeight: FontWeight.bold)))
+                ? const Center(
+                    child: Text(
+                      'No reports found.',
+                      style: TextStyle(
+                        color: hintColor,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  )
                 : ListView.builder(
                     key: const PageStorageKey('prof_my_reports_list'),
                     controller: _listScrollController,
@@ -443,8 +640,15 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
                         children: [
                           Padding(
                             padding: const EdgeInsets.symmetric(vertical: 16),
-                            child: Text(month.toUpperCase(),
-                                style: const TextStyle(fontWeight: FontWeight.w900, color: hintColor, letterSpacing: 1.5, fontSize: 13)),
+                            child: Text(
+                              month.toUpperCase(),
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w900,
+                                color: hintColor,
+                                letterSpacing: 1.5,
+                                fontSize: 13,
+                              ),
+                            ),
                           ),
                           ...monthReports.map((r) {
                             final isSelected = _selectedId == r.id;
@@ -454,7 +658,8 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
                               onTap: () {
                                 if (desktopWide) {
                                   setState(
-                                    () => _selectedId = isSelected ? null : r.id,
+                                    () =>
+                                        _selectedId = isSelected ? null : r.id,
                                   );
                                   return;
                                 }
@@ -483,22 +688,111 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
     return ['All', ...set];
   }
 
-  Widget _buildFilterChip(String label, String current, List<String> items, ValueChanged<String> onSelected) {
+  Widget _buildTabLabelWithCount(String label, ValueNotifier<int> counter) {
+    return ValueListenableBuilder<int>(
+      valueListenable: counter,
+      builder: (context, value, _) => Text('$label ($value)'),
+    );
+  }
+
+  Widget _buildViolationStatusFilterChip({
+    required List<_SubmittedReport> reports,
+    required String? current,
+    required ValueChanged<String?> onSelected,
+  }) {
+    const orderedStatuses = <String>[
+      'Under Review',
+      'Action Set',
+      'Resolved',
+      'Unresolved',
+      'Rejected',
+    ];
+
+    final counts = <String, int>{for (final key in orderedStatuses) key: 0};
+    for (final report in reports) {
+      final status = report.statusText;
+      if (counts.containsKey(status)) {
+        counts[status] = (counts[status] ?? 0) + 1;
+      }
+    }
+
+    final activeCount = current == null
+        ? reports.length
+        : (counts[current] ?? 0);
+    final currentLabel = current ?? 'All';
+
     return PopupMenuButton<String>(
-      onSelected: onSelected,
-      itemBuilder: (context) => items.map((item) => PopupMenuItem(value: item, child: Text(item))).toList(),
+      onSelected: (value) => onSelected(value == 'All' ? null : value),
+      itemBuilder: (context) => [
+        const PopupMenuItem(value: 'All', child: Text('All')),
+        ...orderedStatuses.map(
+          (status) => PopupMenuItem(value: status, child: Text(status)),
+        ),
+      ],
       child: Container(
         margin: const EdgeInsets.only(right: 8),
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         decoration: BoxDecoration(
-          color: current == 'All' ? Colors.transparent : primaryColor.withOpacity(0.1),
+          color: current == null
+              ? Colors.transparent
+              : primaryColor.withOpacity(0.1),
           borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: current == 'All' ? Colors.grey[300]! : primaryColor),
+          border: Border.all(
+            color: current == null ? Colors.grey[300]! : primaryColor,
+          ),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text('$label: $current', style: TextStyle(color: current == 'All' ? textDark : primaryColor, fontWeight: FontWeight.bold, fontSize: 13)),
+            Text(
+              'Filter ($activeCount): $currentLabel',
+              style: TextStyle(
+                color: current == null ? textDark : primaryColor,
+                fontWeight: FontWeight.bold,
+                fontSize: 13,
+              ),
+            ),
+            const Icon(Icons.arrow_drop_down, size: 18),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFilterChip(
+    String label,
+    String current,
+    List<String> items,
+    ValueChanged<String> onSelected,
+  ) {
+    return PopupMenuButton<String>(
+      onSelected: onSelected,
+      itemBuilder: (context) => items
+          .map((item) => PopupMenuItem(value: item, child: Text(item)))
+          .toList(),
+      child: Container(
+        margin: const EdgeInsets.only(right: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: current == 'All'
+              ? Colors.transparent
+              : primaryColor.withOpacity(0.1),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: current == 'All' ? Colors.grey[300]! : primaryColor,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              '$label: $current',
+              style: TextStyle(
+                color: current == 'All' ? textDark : primaryColor,
+                fontWeight: FontWeight.bold,
+                fontSize: 13,
+              ),
+            ),
             const Icon(Icons.arrow_drop_down, size: 18),
           ],
         ),
@@ -540,7 +834,7 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
                   Row(
                     children: [
                       Text(
-                        r.caseCode.isEmpty ? r.id : r.caseCode,
+                        _displayReportCode(r),
                         style: const TextStyle(
                           fontWeight: FontWeight.w900,
                           color: primaryColor,
@@ -560,11 +854,10 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
                     ),
                   ),
                   Text(
-                    '${r.concern} • ${r.violation}',
-                    style: const TextStyle(
-                      color: hintColor,
-                      fontSize: 13,
-                    ),
+                    r.kind == _ReportKind.counseling
+                        ? 'Counselling | ${r.category}'
+                        : '${r.concern} | ${r.violation}',
+                    style: const TextStyle(color: hintColor, fontSize: 13),
                   ),
                   Text(
                     _fmtShort(r.submittedAt),
@@ -600,14 +893,16 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
             padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
             child: Row(
               children: [
-                _caseCodeBadge(report.caseCode.isEmpty ? report.id : report.caseCode),
+                _caseCodeBadge(_displayReportCode(report)),
                 const SizedBox(width: 12),
-                const Expanded(
+                Expanded(
                   child: Text(
-                    'Case Details',
+                    report.kind == _ReportKind.counseling
+                        ? 'Referral Details'
+                        : 'Case Details',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
+                    style: const TextStyle(
                       color: textDark,
                       fontWeight: FontWeight.w900,
                       fontSize: 16,
@@ -650,19 +945,24 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
             children: [
               Row(
                 children: [
-                  _caseCodeBadge(r.caseCode.isEmpty ? r.id : r.caseCode),
+                  _caseCodeBadge(_displayReportCode(r)),
                   const SizedBox(width: 10),
-                  const Expanded(
+                  Expanded(
                     child: Text(
-                      'Case Details',
-                      style: TextStyle(
+                      r.kind == _ReportKind.counseling
+                          ? 'Referral Details'
+                          : 'Case Details',
+                      style: const TextStyle(
                         fontSize: 18,
                         fontWeight: FontWeight.w900,
                         color: textDark,
                       ),
                     ),
                   ),
-                  IconButton(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.close)),
+                  IconButton(
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close),
+                  ),
                 ],
               ),
               const Divider(),
@@ -675,6 +975,10 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
   }
 
   Widget _buildReadOnlyCaseDetailsBody(_SubmittedReport report) {
+    if (report.kind == _ReportKind.counseling) {
+      return _buildCounselingDetailsBody(report);
+    }
+
     final isUnderReview =
         report.status == _ReportStatus.pending ||
         report.status == _ReportStatus.underReview;
@@ -837,10 +1141,7 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
                   const SizedBox(height: 8),
                 ],
                 if (report.actionType.isNotEmpty) ...[
-                  _readOnlyKv(
-                    'Action',
-                    _toTitleCaseText(report.actionType),
-                  ),
+                  _readOnlyKv('Action', _toTitleCaseText(report.actionType)),
                   const SizedBox(height: 8),
                 ],
                 if (report.sanctionType.isNotEmpty)
@@ -866,10 +1167,7 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
                 ),
                 if (report.scheduledAt != null) ...[
                   const SizedBox(height: 8),
-                  _readOnlyKv(
-                    'Scheduled At',
-                    _fmtTsLong(report.scheduledAt!),
-                  ),
+                  _readOnlyKv('Scheduled At', _fmtTsLong(report.scheduledAt!)),
                 ],
               ],
             ),
@@ -898,6 +1196,74 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
             ),
           ),
         ],
+      ],
+    );
+  }
+
+  Widget _buildCounselingDetailsBody(_SubmittedReport report) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _ReadOnlyDetailCard(
+          title: 'Student Information',
+          child: Column(
+            children: [
+              _readOnlyKv('Student', report.studentName),
+              const SizedBox(height: 8),
+              _readOnlyKv('Student No', report.studentId),
+              const SizedBox(height: 8),
+              _readOnlyProgramKv(report),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        _ReadOnlyDetailCard(
+          title: 'Referral Summary',
+          child: Column(
+            children: [
+              _readOnlyKv('Referral Type', report.category),
+              const SizedBox(height: 8),
+              _readOnlyKv('Submitted At', _fmtTsLong(report.submittedAt)),
+              const SizedBox(height: 8),
+              _readOnlyKv('Status', report.statusText),
+              if (report.reporterName.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                _readOnlyKv(
+                  'Referred By',
+                  report.reporterRole.isEmpty
+                      ? report.reporterName
+                      : '${report.reporterName} (${report.reporterRole})',
+                ),
+              ],
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        _ReadOnlyDetailCard(
+          title: 'Notes',
+          child: Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.black.withOpacity(0.03),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.black.withOpacity(0.08)),
+            ),
+            child: Text(
+              report.description,
+              style: const TextStyle(
+                color: textDark,
+                fontWeight: FontWeight.w600,
+                height: 1.35,
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        _ReadOnlyDetailCard(
+          title: 'Concern Checklist',
+          child: _readOnlyKv('Selected Areas', report.facultyNote),
+        ),
       ],
     );
   }
@@ -938,7 +1304,7 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
         ),
         Expanded(
           child: Text(
-            value.isEmpty ? '—' : value,
+            value.isEmpty ? 'â€”' : value,
             style: const TextStyle(
               color: textDark,
               fontWeight: FontWeight.w700,
@@ -960,7 +1326,7 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
       initialData: report.program,
       builder: (context, snapshot) {
         final program = _str(snapshot.data);
-        return _readOnlyKv('Program', program.isEmpty ? '—' : program);
+        return _readOnlyKv('Program', program.isEmpty ? 'â€”' : program);
       },
     );
   }
@@ -977,10 +1343,7 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
     if (urls.isEmpty) {
       return const Text(
         'No evidence attached.',
-        style: TextStyle(
-          color: hintColor,
-          fontWeight: FontWeight.w700,
-        ),
+        style: TextStyle(color: hintColor, fontWeight: FontWeight.w700),
       );
     }
 
@@ -1109,8 +1472,25 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          SizedBox(width: 120, child: Text(label, style: const TextStyle(color: hintColor, fontWeight: FontWeight.bold))),
-          Expanded(child: Text(value, style: const TextStyle(fontWeight: FontWeight.w900, color: textDark))),
+          SizedBox(
+            width: 120,
+            child: Text(
+              label,
+              style: const TextStyle(
+                color: hintColor,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: const TextStyle(
+                fontWeight: FontWeight.w900,
+                color: textDark,
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -1119,9 +1499,13 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
   Widget _buildStatusBadge(String status) {
     final s = status.toLowerCase().trim();
     final bool isResolved = s.contains('resolved') && !s.contains('unresolved');
-    final bool isUnderReview = s.contains('review') || s.contains('submitted') || s.contains('pending');
+    final bool isUnderReview =
+        s.contains('review') ||
+        s.contains('submitted') ||
+        s.contains('pending');
     final bool isUnresolved = s.contains('unresolved');
-    final bool isActionSet = s.contains('action set') || s.contains('with meeting');
+    final bool isActionSet =
+        s.contains('action set') || s.contains('with meeting');
     final bool isRejected = s.contains('rejected') || s.contains('dismiss');
 
     Color fill = Colors.black.withOpacity(0.04);
@@ -1292,7 +1676,11 @@ class _TabsRow extends StatelessWidget {
             ),
             child: Row(
               children: [
-                const Icon(Icons.filter_alt_rounded, color: primaryColor, size: 18),
+                const Icon(
+                  Icons.filter_alt_rounded,
+                  color: primaryColor,
+                  size: 18,
+                ),
                 SizedBox(width: 10 * scale),
                 Expanded(
                   child: Text(
@@ -1352,7 +1740,9 @@ class _TabChip extends StatelessWidget {
           color: selected ? primaryColor.withOpacity(0.14) : Colors.white,
           borderRadius: BorderRadius.circular(999),
           border: Border.all(
-            color: selected ? primaryColor.withOpacity(0.50) : Colors.black.withOpacity(0.12),
+            color: selected
+                ? primaryColor.withOpacity(0.50)
+                : Colors.black.withOpacity(0.12),
           ),
         ),
         child: Row(
@@ -1409,7 +1799,10 @@ class _MonthHeader extends StatelessWidget {
           ),
         ),
         Container(
-          padding: EdgeInsets.symmetric(horizontal: 10 * scale, vertical: 6 * scale),
+          padding: EdgeInsets.symmetric(
+            horizontal: 10 * scale,
+            vertical: 6 * scale,
+          ),
           decoration: BoxDecoration(
             color: Colors.white.withOpacity(0.75),
             borderRadius: BorderRadius.circular(999),
@@ -1429,7 +1822,7 @@ class _MonthHeader extends StatelessWidget {
   }
 }
 
-// âœ… Wrap layout (no Grid overflow)
+// Ã¢Å“â€¦ Wrap layout (no Grid overflow)
 class _ReportsWrap extends StatelessWidget {
   final double scale;
   final int crossAxisCount;
@@ -1508,7 +1901,9 @@ class _ReportCard extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    report.studentName.isEmpty ? "â€”" : report.studentName,
+                    report.studentName.isEmpty
+                        ? "Ã¢â‚¬â€"
+                        : report.studentName,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       color: textDark,
@@ -1544,7 +1939,11 @@ class _ReportCard extends StatelessWidget {
                           fontSize: (12.0 * scale).clamp(12.0, 13.6),
                         ),
                       ),
-                      _StatusPill(scale: scale, status: report.status, label: report.statusText),
+                      _StatusPill(
+                        scale: scale,
+                        status: report.status,
+                        label: report.statusText,
+                      ),
                     ],
                   ),
                 ],
@@ -1586,11 +1985,18 @@ class _ReportCard extends StatelessWidget {
                     IconButton(
                       onPressed: () => Navigator.pop(context),
                       icon: const Icon(Icons.close_rounded),
-                    )
+                    ),
                   ],
                 ),
                 const SizedBox(height: 8),
-                _detailRow("Case Code", report.caseCode.isEmpty ? report.id : report.caseCode),
+                _detailRow(
+                  "Case Code",
+                  report.caseCode.isNotEmpty
+                      ? report.caseCode
+                      : report.kind == _ReportKind.counseling
+                      ? 'CR-${(report.id.length >= 6 ? report.id.substring(0, 6) : report.id).toUpperCase()}'
+                      : report.id,
+                ),
                 _detailRow("Student", report.studentName),
                 _detailRow("Student No", report.studentId),
                 _detailRow("Program", report.program),
@@ -1609,7 +2015,10 @@ class _ReportCard extends StatelessWidget {
                 const SizedBox(height: 10),
                 Text(
                   "Description",
-                  style: TextStyle(color: hintColor, fontWeight: FontWeight.w900),
+                  style: TextStyle(
+                    color: hintColor,
+                    fontWeight: FontWeight.w900,
+                  ),
                 ),
                 const SizedBox(height: 6),
                 Container(
@@ -1622,14 +2031,20 @@ class _ReportCard extends StatelessWidget {
                   ),
                   child: Text(
                     report.description,
-                    style: TextStyle(color: textDark, fontWeight: FontWeight.w700),
+                    style: TextStyle(
+                      color: textDark,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                 ),
                 if (report.facultyNote.trim().isNotEmpty) ...[
                   const SizedBox(height: 12),
                   Text(
                     "OSA Note to Faculty",
-                    style: TextStyle(color: hintColor, fontWeight: FontWeight.w900),
+                    style: TextStyle(
+                      color: hintColor,
+                      fontWeight: FontWeight.w900,
+                    ),
                   ),
                   const SizedBox(height: 6),
                   Container(
@@ -1642,7 +2057,10 @@ class _ReportCard extends StatelessWidget {
                     ),
                     child: Text(
                       report.facultyNote,
-                      style: TextStyle(color: textDark, fontWeight: FontWeight.w700),
+                      style: TextStyle(
+                        color: textDark,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                   ),
                 ],
@@ -1660,7 +2078,10 @@ class _ReportCard extends StatelessWidget {
                     ),
                     child: const Text(
                       "Close",
-                      style: TextStyle(fontWeight: FontWeight.w900, color: Colors.white),
+                      style: TextStyle(
+                        fontWeight: FontWeight.w900,
+                        color: Colors.white,
+                      ),
                     ),
                   ),
                 ),
@@ -1691,7 +2112,7 @@ class _ReportCard extends StatelessWidget {
           ),
           Expanded(
             child: Text(
-              value.isEmpty ? "â€”" : value,
+              value.isEmpty ? "Ã¢â‚¬â€" : value,
               style: TextStyle(
                 color: textDark,
                 fontWeight: FontWeight.w800,
@@ -1706,22 +2127,42 @@ class _ReportCard extends StatelessWidget {
 
   static String _fmtShort(DateTime d) {
     const months = [
-      "Jan","Feb","Mar","Apr","May","Jun",
-      "Jul","Aug","Sep","Oct","Nov","Dec"
+      "Jan",
+      "Feb",
+      "Mar",
+      "Apr",
+      "May",
+      "Jun",
+      "Jul",
+      "Aug",
+      "Sep",
+      "Oct",
+      "Nov",
+      "Dec",
     ];
     return "${months[d.month - 1]} ${d.day}, ${d.year}";
   }
 
   static String _fmtLong(DateTime d) {
     const months = [
-      "January","February","March","April","May","June",
-      "July","August","September","October","November","December"
+      "January",
+      "February",
+      "March",
+      "April",
+      "May",
+      "June",
+      "July",
+      "August",
+      "September",
+      "October",
+      "November",
+      "December",
     ];
     return "${months[d.month - 1]} ${d.day}, ${d.year}";
   }
 
   static String _fmtTsLong(DateTime d) =>
-      DateFormat('MMM d, yyyy â€¢ h:mm a').format(d);
+      DateFormat('MMM d, yyyy - h:mm a').format(d);
 }
 
 // ===================== STATUS PILL =====================
@@ -1742,7 +2183,10 @@ class _StatusPill extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       constraints: BoxConstraints(maxWidth: 120 * scale),
-      padding: EdgeInsets.symmetric(horizontal: 10 * scale, vertical: 6 * scale),
+      padding: EdgeInsets.symmetric(
+        horizontal: 10 * scale,
+        vertical: 6 * scale,
+      ),
       decoration: BoxDecoration(
         color: status.dotColor.withOpacity(0.12),
         borderRadius: BorderRadius.circular(999),
@@ -1781,11 +2225,14 @@ class _EmptyState extends StatelessWidget {
       ),
       child: Column(
         children: [
-          Icon(Icons.description_outlined,
-              size: (34 * scale).clamp(34.0, 40.0), color: Colors.black45),
+          Icon(
+            Icons.description_outlined,
+            size: (34 * scale).clamp(34.0, 40.0),
+            color: Colors.black45,
+          ),
           SizedBox(height: 8 * scale),
           Text(
-            "You havenâ€™t submitted any reports yet.",
+            "You havenÃ¢â‚¬â„¢t submitted any reports yet.",
             textAlign: TextAlign.center,
             style: TextStyle(
               color: hintColor,
@@ -1827,8 +2274,11 @@ class _EmptyFilteredState extends StatelessWidget {
       ),
       child: Column(
         children: [
-          Icon(Icons.filter_alt_off_rounded,
-              size: (34 * scale).clamp(34.0, 40.0), color: Colors.black45),
+          Icon(
+            Icons.filter_alt_off_rounded,
+            size: (34 * scale).clamp(34.0, 40.0),
+            color: Colors.black45,
+          ),
           SizedBox(height: 8 * scale),
           Text(
             "No reports match your filter.",
@@ -1919,8 +2369,10 @@ class _FilterSheetState extends State<_FilterSheet> {
         const SizedBox(height: 10),
         Align(
           alignment: Alignment.centerLeft,
-          child: Text("By Month",
-              style: TextStyle(color: hintColor, fontWeight: FontWeight.w900)),
+          child: Text(
+            "By Month",
+            style: TextStyle(color: hintColor, fontWeight: FontWeight.w900),
+          ),
         ),
         const SizedBox(height: 8),
         Wrap(
@@ -1943,8 +2395,10 @@ class _FilterSheetState extends State<_FilterSheet> {
         const SizedBox(height: 14),
         Align(
           alignment: Alignment.centerLeft,
-          child: Text("By Status",
-              style: TextStyle(color: hintColor, fontWeight: FontWeight.w900)),
+          child: Text(
+            "By Status",
+            style: TextStyle(color: hintColor, fontWeight: FontWeight.w900),
+          ),
         ),
         const SizedBox(height: 8),
         Wrap(
@@ -1973,10 +2427,14 @@ class _FilterSheetState extends State<_FilterSheet> {
                 style: OutlinedButton.styleFrom(
                   foregroundColor: primaryColor,
                   side: BorderSide(color: primaryColor.withOpacity(0.45)),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
                 ),
-                child: const Text("Clear",
-                    style: TextStyle(fontWeight: FontWeight.w900)),
+                child: const Text(
+                  "Clear",
+                  style: TextStyle(fontWeight: FontWeight.w900),
+                ),
               ),
             ),
             const SizedBox(width: 12),
@@ -1986,11 +2444,16 @@ class _FilterSheetState extends State<_FilterSheet> {
                 style: ElevatedButton.styleFrom(
                   backgroundColor: primaryColor,
                   elevation: 0,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
                 ),
                 child: const Text(
                   "Apply",
-                  style: TextStyle(fontWeight: FontWeight.w900, color: Colors.white),
+                  style: TextStyle(
+                    fontWeight: FontWeight.w900,
+                    color: Colors.white,
+                  ),
                 ),
               ),
             ),
@@ -2026,7 +2489,9 @@ class _PickChip extends StatelessWidget {
           color: selected ? primaryColor.withOpacity(0.14) : Colors.white,
           borderRadius: BorderRadius.circular(999),
           border: Border.all(
-            color: selected ? primaryColor.withOpacity(0.50) : Colors.black.withOpacity(0.12),
+            color: selected
+                ? primaryColor.withOpacity(0.50)
+                : Colors.black.withOpacity(0.12),
           ),
         ),
         child: Text(
@@ -2082,6 +2547,8 @@ extension _ReportStatusX on _ReportStatus {
   }
 }
 
+enum _ReportKind { violation, counseling }
+
 class _SubmittedReport {
   final String id;
   final String caseCode;
@@ -2107,6 +2574,7 @@ class _SubmittedReport {
   final String reporterName;
   final String reporterRole;
   final List<String> evidenceUrls;
+  final _ReportKind kind;
   final _ReportStatus status;
   final String statusText;
 
@@ -2135,6 +2603,7 @@ class _SubmittedReport {
     required this.reporterName,
     required this.reporterRole,
     required this.evidenceUrls,
+    required this.kind,
     required this.status,
     required this.statusText,
   });

@@ -1,11 +1,16 @@
 import 'package:apps/pages/professor/violation_report_page.dart';
 import 'package:apps/pages/professor/MySubmittedReportPage.dart';
 import 'package:apps/pages/shared/handbook/handbook_ai_assistant_sheet.dart';
-import 'package:apps/pages/shared/handbook/handbook_sections_screen.dart';
+import 'package:apps/pages/shared/handbook/hb_handbook_page.dart';
 import 'package:apps/pages/shared/notifications/app_notifications_ui.dart';
 import 'package:apps/pages/shared/profile/unified_profile_page.dart';
 import 'package:apps/pages/shared/welcome_screen_page.dart';
+import 'package:apps/pages/shared/widgets/app_branding.dart';
+import 'package:apps/pages/shared/widgets/app_theme_tokens.dart';
 import 'package:apps/pages/shared/widgets/logout_confirm_dialog.dart';
+import 'package:apps/pages/shared/widgets/responsive_layout_tokens.dart';
+import 'package:apps/pages/shared/widgets/role_shell_scaffold.dart';
+import 'package:apps/pages/shared/widgets/unsaved_changes_guard.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -23,21 +28,26 @@ class ProfessorDashboard extends StatefulWidget {
 class _ProfessorDashboardState extends State<ProfessorDashboard> {
   int _currentIndex = 0;
   bool _showDesktopNotifications = false;
+  final _violationUnsaved = UnsavedChangesController();
+  final _counselingUnsaved = UnsavedChangesController();
 
   // ================== THEME (same as StudentDashboard) ==================
-  static const bg = Color(0xFFF6FAF6);
-  static const primary = Color(0xFF1B5E20);
-  static const hint = Color(0xFF6D7F62);
-  static const textDark = Color(0xFF1F2A1F);
-  static const surface = Color(0xFFFFFFFF);
+  static const bg = AppColors.background;
+  static const primary = AppColors.primary;
+  static const hint = AppColors.hint;
+  static const textDark = AppColors.textDark;
+  static const surface = AppColors.surface;
 
   // ================== PAGES ==================
-  final List<Widget> _pages = const [
-    ProfessorHomePage(),
-    HandbookSectionsScreen(),
-    ViolationReportPage(),
-    MySubmittedCasesPage(),
-    ProfessorCounselingPage(),
+  List<Widget> get _pages => [
+    const ProfessorHomePage(),
+    const HbHandbookPage(),
+    ViolationReportPage(
+      onOpenMyReportsInShell: () => _go(3),
+      unsavedChangesController: _violationUnsaved,
+    ),
+    const MySubmittedCasesPage(),
+    ProfessorCounselingPage(unsavedChangesController: _counselingUnsaved),
   ];
 
   final List<_NavItem> _navItems = const [
@@ -66,6 +76,8 @@ class _ProfessorDashboardState extends State<ProfessorDashboard> {
   }
 
   Future<void> _logout() async {
+    final canLeave = await _confirmLeaveCurrentPage();
+    if (!mounted || !canLeave) return;
     final confirmed = await showLogoutConfirmDialog(context);
     if (!mounted || !confirmed) return;
     await FirebaseAuth.instance.signOut();
@@ -78,9 +90,47 @@ class _ProfessorDashboardState extends State<ProfessorDashboard> {
     );
   }
 
-  void _go(int i) => setState(() => _currentIndex = i);
+  UnsavedChangesController? _controllerForIndex(int index) {
+    switch (index) {
+      case 2:
+        return _violationUnsaved;
+      case 4:
+        return _counselingUnsaved;
+      default:
+        return null;
+    }
+  }
+
+  Future<bool> _confirmLeaveCurrentPage() async {
+    final controller = _controllerForIndex(_currentIndex);
+    if (controller == null || !controller.isDirty) return true;
+
+    final leave = await showUnsavedChangesDialog(
+      context,
+      title: 'Leave current form?',
+      message:
+          'You have unsaved changes on this form. If you continue, your draft will be discarded.',
+    );
+    if (leave) {
+      controller.discardChanges();
+    }
+    return leave;
+  }
+
+  void _go(int i) {
+    _goAsync(i);
+  }
+
+  Future<void> _goAsync(int i) async {
+    if (i == _currentIndex) return;
+    final canLeave = await _confirmLeaveCurrentPage();
+    if (!mounted || !canLeave) return;
+    setState(() => _currentIndex = i);
+  }
 
   Future<void> _openProfile() async {
+    final canLeave = await _confirmLeaveCurrentPage();
+    if (!mounted || !canLeave) return;
     await Navigator.of(
       context,
     ).push(MaterialPageRoute(builder: (_) => const UnifiedProfilePage()));
@@ -97,6 +147,8 @@ class _ProfessorDashboardState extends State<ProfessorDashboard> {
   }
 
   Future<void> _openNotificationsPage() async {
+    final canLeave = await _confirmLeaveCurrentPage();
+    if (!mounted || !canLeave) return;
     _closeDesktopNotifications();
     await Navigator.of(
       context,
@@ -131,6 +183,13 @@ class _ProfessorDashboardState extends State<ProfessorDashboard> {
   }
 
   @override
+  void dispose() {
+    _violationUnsaved.dispose();
+    _counselingUnsaved.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
@@ -157,178 +216,86 @@ class _ProfessorDashboardState extends State<ProfessorDashboard> {
 
         return LayoutBuilder(
           builder: (context, constraints) {
-            final w = constraints.maxWidth;
+            final shell = ResponsiveLayoutTokens.resolveShellLayout(
+              width: constraints.maxWidth,
+              height: constraints.maxHeight,
+            );
 
-            // ✅ same responsiveness rule as student dashboard
-            final bool isDesktop = w >= 900;
-            final bool isPhoneOrTablet = !isDesktop;
+            final menuPanel = _MenuPanel(
+              currentIndex: _currentIndex,
+              navItems: _navItems,
+              primary: primary,
+              hint: hint,
+              textDark: textDark,
+              surface: surface,
+              onSelect: _go,
+              onProfile: _openProfile,
+              onSettings: () {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text("Settings tapped")),
+                );
+              },
+              onLogout: _logout,
+              accountTitle: accountTitle,
+              accountEmail: accountEmail,
+              accountName: accountName,
+            );
 
-            return Scaffold(
+            return RoleShellScaffold(
               backgroundColor: bg,
-
-              // ✅ Drawer only for phone/tablet
-              drawer: isPhoneOrTablet
-                  ? Drawer(
-                      child: _MenuPanel(
-                        currentIndex: _currentIndex,
-                        navItems: _navItems,
-                        primary: primary,
-                        hint: hint,
-                        textDark: textDark,
-                        surface: surface,
-                        onSelect: (i) {
-                          Navigator.of(context).maybePop();
-                          _go(i);
-                        },
-                        onProfile: () {
-                          Navigator.of(context).maybePop();
-                          _openProfile();
-                        },
-                        onSettings: () {
-                          Navigator.of(context).maybePop();
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text("Settings tapped")),
-                          );
-                        },
-                        onLogout: () {
-                          Navigator.of(context).maybePop();
-                          _logout();
-                        },
-                        accountTitle: accountTitle,
-                        accountEmail: accountEmail,
-                        accountName: accountName,
-                      ),
-                    )
-                  : null,
-
-              body: Row(
-                children: [
-                  // ✅ Permanent sidebar on desktop
-                  if (isDesktop)
-                    SizedBox(
-                      width: 260,
-                      child: Material(
-                        color: surface,
-                        child: _MenuPanel(
-                          currentIndex: _currentIndex,
-                          navItems: _navItems,
-                          primary: primary,
-                          hint: hint,
-                          textDark: textDark,
-                          surface: surface,
-                          onSelect: _go,
-                          onProfile: () {
-                            _openProfile();
-                          },
-                          onSettings: () {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text("Settings tapped")),
-                            );
-                          },
-                          onLogout: _logout,
-                          accountTitle: accountTitle,
-                          accountEmail: accountEmail,
-                          accountName: accountName,
-                        ),
-                      ),
-                    ),
-
-                  // ✅ Main content
-                  Expanded(
-                    child: Stack(
-                      children: [
-                        Positioned.fill(
-                          child: Column(
-                            children: [
-                              // ✅ Shared header controlled by dashboard
-                              Builder(
-                                builder: (ctx) {
-                                  return Container(
-                                    height: kToolbarHeight,
-                                    width: double.infinity,
-                                    color: primary,
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 12,
-                                    ),
-                                    child: Row(
-                                      children: [
-                                        if (isPhoneOrTablet)
-                                          IconButton(
-                                            icon: const Icon(
-                                              Icons.menu_rounded,
-                                              color: Colors.white,
-                                            ),
-                                            onPressed: () =>
-                                                Scaffold.of(ctx).openDrawer(),
-                                          )
-                                        else
-                                          const SizedBox(width: 8),
-                                        Expanded(
-                                          child: Text(
-                                            _pageTitle(),
-                                            overflow: TextOverflow.ellipsis,
-                                            style: const TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 20,
-                                              fontWeight: FontWeight.w700,
-                                            ),
-                                          ),
-                                        ),
-                                        IconButton(
-                                          icon: const Icon(
-                                            Icons.notifications_none_rounded,
-                                            color: Colors.white,
-                                          ),
-                                          onPressed: () {
-                                            if (isDesktop) {
-                                              _toggleDesktopNotifications();
-                                              return;
-                                            }
-                                            _openNotificationsPage();
-                                          },
-                                        ),
-                                      ],
-                                    ),
-                                  );
-                                },
-                              ),
-
-                              // ✅ Page content (keeps tab state)
-                              Expanded(
-                                child: IndexedStack(
-                                  index: _currentIndex,
-                                  children: _pages,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        if (isDesktop && _showDesktopNotifications) ...[
-                          Positioned.fill(
-                            child: GestureDetector(
-                              behavior: HitTestBehavior.translucent,
-                              onTap: _closeDesktopNotifications,
-                            ),
-                          ),
-                          Positioned(
-                            top: kToolbarHeight + 8,
-                            right: 14,
-                            child: DesktopNotificationsPanel(
-                              uid: user.uid,
-                              onClose: _closeDesktopNotifications,
-                              onSeeAll: _openNotificationsPage,
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
-                ],
+              title: _pageTitle(),
+              usesDrawerSidebar: shell.usesDrawerSidebar,
+              showPermanentSidebar: shell.showPermanentSidebar,
+              drawer: Drawer(
+                child: _MenuPanel(
+                  currentIndex: _currentIndex,
+                  navItems: _navItems,
+                  primary: primary,
+                  hint: hint,
+                  textDark: textDark,
+                  surface: surface,
+                  onSelect: (i) {
+                    Navigator.of(context).maybePop();
+                    _go(i);
+                  },
+                  onProfile: () {
+                    Navigator.of(context).maybePop();
+                    _openProfile();
+                  },
+                  onSettings: () {
+                    Navigator.of(context).maybePop();
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text("Settings tapped")),
+                    );
+                  },
+                  onLogout: () {
+                    Navigator.of(context).maybePop();
+                    _logout();
+                  },
+                  accountTitle: accountTitle,
+                  accountEmail: accountEmail,
+                  accountName: accountName,
+                ),
               ),
-
-              // ✅ Bottom nav only for phone/tablet
-              bottomNavigationBar: isPhoneOrTablet
-                  ? BottomNavigationBar(
+              sidebar: menuPanel,
+              content: IndexedStack(index: _currentIndex, children: _pages),
+              onNotificationsTap: () {
+                if (shell.isDesktop) {
+                  _toggleDesktopNotifications();
+                } else {
+                  _openNotificationsPage();
+                }
+              },
+              showDesktopOverlay: shell.isDesktop && _showDesktopNotifications,
+              onDismissDesktopOverlay: _closeDesktopNotifications,
+              desktopOverlay: DesktopNotificationsPanel(
+                uid: user.uid,
+                onClose: _closeDesktopNotifications,
+                onSeeAll: _openNotificationsPage,
+              ),
+              bottomNavigationBar: shell.isDesktop
+                  ? null
+                  : BottomNavigationBar(
                       currentIndex: _currentIndex,
                       type: BottomNavigationBarType.fixed,
                       selectedItemColor: primary,
@@ -343,10 +310,9 @@ class _ProfessorDashboardState extends State<ProfessorDashboard> {
                             ),
                           )
                           .toList(),
-                    )
-                  : null,
-
+                    ),
               floatingActionButton: FloatingActionButton(
+                heroTag: null,
                 backgroundColor: primary,
                 onPressed: () => showHandbookAiAssistantSheet(context),
                 child: const Icon(Icons.chat, color: Colors.white),
@@ -383,7 +349,6 @@ class _MenuPanel extends StatelessWidget {
   final VoidCallback onSettings;
   final VoidCallback onLogout;
 
-  // ✅ allow professor-specific header text without changing dashboard logic
   final String accountTitle;
   final String accountEmail;
   final String accountName;
@@ -409,143 +374,167 @@ class _MenuPanel extends StatelessWidget {
     return Container(
       color: surface,
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // ✅ Account header
-          Container(
-            padding: const EdgeInsets.fromLTRB(16, 42, 16, 18),
-            width: double.infinity,
-            decoration: BoxDecoration(
-              color: surface,
-              border: Border(
-                bottom: BorderSide(color: primary.withValues(alpha: 0.12)),
-              ),
-            ),
-            child: Row(
-              children: [
-                Icon(Icons.account_circle, size: 52, color: primary),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        accountName,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontWeight: FontWeight.w900,
-                          color: primary,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        accountEmail,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: hint,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        accountTitle,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: textDark.withValues(alpha: 0.70),
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-
-          const SizedBox(height: 10),
-
-          // ✅ Main nav
-          ...navItems.asMap().entries.map((entry) {
-            final i = entry.key;
-            final item = entry.value;
-            final active = currentIndex == i;
-
-            final Color iconColor = active
-                ? primary
-                : textDark.withValues(alpha: 0.85);
-            final Color textColor = active
-                ? primary
-                : textDark.withValues(alpha: 0.92);
-
-            return InkWell(
-              onTap: () => onSelect(i),
-              child: Container(
-                margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 12,
-                ),
-                decoration: BoxDecoration(
-                  color: active
-                      ? primary.withValues(alpha: 0.10)
-                      : Colors.transparent,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Row(
-                  children: [
-                    Icon(item.icon, color: iconColor),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        item.label,
-                        style: TextStyle(
-                          color: textColor,
-                          fontWeight: active
-                              ? FontWeight.w900
-                              : FontWeight.w700,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          }),
-
-          const Spacer(),
-
-          Divider(color: primary.withValues(alpha: 0.15), height: 18),
-
-          // ✅ Profile
-          InkWell(
-            onTap: onProfile,
-            child: Container(
-              margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(12),
-              ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 16, 12, 6),
+            child: Align(
+              alignment: Alignment.centerLeft,
               child: Row(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(
-                    Icons.person_outline_rounded,
-                    color: textDark.withValues(alpha: 0.85),
-                  ),
-                  const SizedBox(width: 12),
+                  AppBranding.logo(width: 28, height: 28),
+                  const SizedBox(width: 8),
                   Text(
-                    "Profile",
+                    'BUDiscipLink',
                     style: TextStyle(
-                      color: textDark.withValues(alpha: 0.92),
-                      fontWeight: FontWeight.w800,
+                      color: primary,
+                      fontWeight: FontWeight.w900,
+                      fontSize: 15,
+                      letterSpacing: 0.2,
                     ),
                   ),
                 ],
               ),
             ),
           ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 14),
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(14),
+                onTap: onProfile,
+                child: Ink(
+                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+                  decoration: BoxDecoration(
+                    color: primary.withValues(alpha: 0.80),
+                    borderRadius: BorderRadius.circular(14),
+                    boxShadow: [
+                      BoxShadow(
+                        color: primary.withValues(alpha: 0.22),
+                        blurRadius: 10,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 44,
+                        height: 44,
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.16),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: const Icon(
+                          Icons.person_outline_rounded,
+                          size: 24,
+                          color: Colors.white,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              accountName,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w900,
+                                color: Colors.white,
+                                fontSize: 14,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              accountEmail,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                color: Colors.white.withValues(alpha: 0.90),
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              accountTitle,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                color: Colors.white.withValues(alpha: 0.92),
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Expanded(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.only(top: 10, bottom: 16),
+              child: Column(
+                children: [
+                  ...navItems.asMap().entries.map((entry) {
+                    final i = entry.key;
+                    final item = entry.value;
+                    final active = currentIndex == i;
 
-          // ✅ Settings
+                    final Color iconColor = active
+                        ? primary
+                        : textDark.withValues(alpha: 0.85);
+                    final Color textColor = active
+                        ? primary
+                        : textDark.withValues(alpha: 0.92);
+
+                    return InkWell(
+                      onTap: () => onSelect(i),
+                      child: Container(
+                        margin: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 4,
+                        ),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 12,
+                        ),
+                        decoration: BoxDecoration(
+                          color: active
+                              ? primary.withValues(alpha: 0.10)
+                              : Colors.transparent,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(item.icon, color: iconColor),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                item.label,
+                                style: TextStyle(
+                                  color: textColor,
+                                  fontWeight: active
+                                      ? FontWeight.w900
+                                      : FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  }),
+                ],
+              ),
+            ),
+          ),
+          Divider(color: primary.withValues(alpha: 0.15), height: 18),
           InkWell(
             onTap: onSettings,
             child: Container(
@@ -562,7 +551,7 @@ class _MenuPanel extends StatelessWidget {
                   ),
                   const SizedBox(width: 12),
                   Text(
-                    "Settings",
+                    'Settings',
                     style: TextStyle(
                       color: textDark.withValues(alpha: 0.92),
                       fontWeight: FontWeight.w800,
@@ -572,10 +561,6 @@ class _MenuPanel extends StatelessWidget {
               ),
             ),
           ),
-
-          Divider(color: primary.withValues(alpha: 0.15), height: 18),
-
-          // ✅ Logout
           InkWell(
             onTap: onLogout,
             child: Container(
@@ -589,7 +574,7 @@ class _MenuPanel extends StatelessWidget {
                   Icon(Icons.logout_rounded, color: Colors.red),
                   SizedBox(width: 12),
                   Text(
-                    "Logout",
+                    'Logout',
                     style: TextStyle(
                       color: Colors.red,
                       fontWeight: FontWeight.w900,

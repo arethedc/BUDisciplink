@@ -1,8 +1,12 @@
-import 'package:apps/pages/shared/handbook/handbook_sections_screen.dart';
+import 'package:apps/pages/shared/handbook/hb_handbook_page.dart';
 import 'package:apps/pages/shared/handbook/handbook_ai_assistant_sheet.dart';
+import 'package:apps/pages/shared/notifications/app_notifications_ui.dart';
 import 'package:apps/pages/shared/profile/unified_profile_page.dart';
 import 'package:apps/pages/shared/welcome_screen_page.dart';
+import 'package:apps/pages/shared/widgets/app_theme_tokens.dart';
 import 'package:apps/pages/shared/widgets/logout_confirm_dialog.dart';
+import 'package:apps/pages/shared/widgets/responsive_layout_tokens.dart';
+import 'package:apps/pages/shared/widgets/role_shell_scaffold.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -25,16 +29,16 @@ class _StudentDashboardState extends State<StudentDashboard> {
   bool _showDesktopNotifications = false;
 
   // ================== THEME (keep Dashboard 2) ==================
-  static const bg = Color(0xFFF6FAF6);
-  static const primary = Color(0xFF1B5E20);
-  static const hint = Color(0xFF6D7F62);
-  static const textDark = Color(0xFF1F2A1F);
-  static const surface = Color(0xFFFFFFFF);
+  static const bg = AppColors.background;
+  static const primary = AppColors.primary;
+  static const hint = AppColors.hint;
+  static const textDark = AppColors.textDark;
+  static const surface = AppColors.surface;
 
   // ================== PAGES ==================
   final List<Widget> _pages = const [
     StudentHomePage(),
-    HandbookSectionsScreen(),
+    HbHandbookPage(),
     StudentViolationsPage(),
     StudentCounselingPage(),
   ];
@@ -142,179 +146,84 @@ class _StudentDashboardState extends State<StudentDashboard> {
 
         return LayoutBuilder(
           builder: (context, constraints) {
-            final w = constraints.maxWidth;
+            final shell = ResponsiveLayoutTokens.resolveShellLayout(
+              width: constraints.maxWidth,
+              height: constraints.maxHeight,
+            );
 
-            // ✅ better responsiveness:
-            // phone < 700, tablet 700-899 (still drawer+bottom nav), desktop >= 900 (sidebar)
-            final bool isDesktop = w >= 900;
-            final bool isPhoneOrTablet = !isDesktop;
+            final menuPanel = _MenuPanel(
+              currentIndex: _currentIndex,
+              navItems: _navItems,
+              primary: primary,
+              hint: hint,
+              textDark: textDark,
+              surface: surface,
+              onSelect: _go,
+              onProfile: _openProfile,
+              onSettings: () {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text("Settings tapped")),
+                );
+              },
+              onLogout: _logout,
+              accountName: accountName,
+              accountEmail: accountEmail,
+            );
 
-            return Scaffold(
+            return RoleShellScaffold(
               backgroundColor: bg,
-
-              // ✅ Drawer only for phone/tablet
-              drawer: isPhoneOrTablet
-                  ? Drawer(
-                      child: _MenuPanel(
-                        currentIndex: _currentIndex,
-                        navItems: _navItems,
-                        primary: primary,
-                        hint: hint,
-                        textDark: textDark,
-                        surface: surface,
-                        onSelect: (i) {
-                          Navigator.of(context).maybePop(); // close drawer
-                          _go(i);
-                        },
-                        onProfile: () {
-                          Navigator.of(context).maybePop();
-                          _openProfile();
-                        },
-                        onSettings: () {
-                          Navigator.of(context).maybePop();
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text("Settings tapped")),
-                          );
-                        },
-                        onLogout: () {
-                          Navigator.of(context).maybePop();
-                          _logout();
-                        },
-                        accountName: accountName,
-                        accountEmail: accountEmail,
-                      ),
-                    )
-                  : null,
-
-              body: Row(
-                children: [
-                  // ✅ Permanent sidebar on desktop
-                  if (isDesktop)
-                    SizedBox(
-                      width: 260,
-                      child: Material(
-                        color: surface,
-                        child: _MenuPanel(
-                          currentIndex: _currentIndex,
-                          navItems: _navItems,
-                          primary: primary,
-                          hint: hint,
-                          textDark: textDark,
-                          surface: surface,
-                          onSelect: _go,
-                          onProfile: () {
-                            _openProfile();
-                          },
-                          onSettings: () {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text("Settings tapped")),
-                            );
-                          },
-                          onLogout: _logout,
-                          accountName: accountName,
-                          accountEmail: accountEmail,
-                        ),
-                      ),
-                    ),
-
-                  // ✅ Main content
-                  Expanded(
-                    child: Stack(
-                      children: [
-                        Positioned.fill(
-                          child: Column(
-                            children: [
-                              // ✅ One shared header controlled by dashboard (title changes per tab)
-                              Builder(
-                                builder: (ctx) {
-                                  return Container(
-                                    height: kToolbarHeight,
-                                    width: double.infinity,
-                                    color: primary,
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 12,
-                                    ),
-                                    child: Row(
-                                      children: [
-                                        if (isPhoneOrTablet)
-                                          IconButton(
-                                            icon: const Icon(
-                                              Icons.menu_rounded,
-                                              color: Colors.white,
-                                            ),
-                                            onPressed: () =>
-                                                Scaffold.of(ctx).openDrawer(),
-                                          )
-                                        else
-                                          const SizedBox(width: 8),
-
-                                        Expanded(
-                                          child: Text(
-                                            _pageTitle(),
-                                            overflow: TextOverflow.ellipsis,
-                                            style: const TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 20,
-                                              fontWeight: FontWeight.w700,
-                                            ),
-                                          ),
-                                        ),
-
-                                        IconButton(
-                                          icon: const Icon(
-                                            Icons.notifications_none_rounded,
-                                            color: Colors.white,
-                                          ),
-                                          onPressed: () {
-                                            if (isDesktop) {
-                                              _toggleDesktopNotifications();
-                                              return;
-                                            }
-                                            _openNotificationsPage();
-                                          },
-                                        ),
-                                      ],
-                                    ),
-                                  );
-                                },
-                              ),
-
-                              // ✅ Page content (keeps tab state)
-                              Expanded(
-                                child: IndexedStack(
-                                  index: _currentIndex,
-                                  children: _pages,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        if (isDesktop && _showDesktopNotifications) ...[
-                          Positioned.fill(
-                            child: GestureDetector(
-                              behavior: HitTestBehavior.translucent,
-                              onTap: _closeDesktopNotifications,
-                            ),
-                          ),
-                          Positioned(
-                            top: kToolbarHeight + 8,
-                            right: 14,
-                            child: _DesktopNotificationsPanel(
-                              uid: user.uid,
-                              onClose: _closeDesktopNotifications,
-                              onSeeAll: _openNotificationsPage,
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
-                ],
+              title: _pageTitle(),
+              usesDrawerSidebar: shell.usesDrawerSidebar,
+              showPermanentSidebar: shell.showPermanentSidebar,
+              drawer: Drawer(
+                child: _MenuPanel(
+                  currentIndex: _currentIndex,
+                  navItems: _navItems,
+                  primary: primary,
+                  hint: hint,
+                  textDark: textDark,
+                  surface: surface,
+                  onSelect: (i) {
+                    Navigator.of(context).maybePop();
+                    _go(i);
+                  },
+                  onProfile: () {
+                    Navigator.of(context).maybePop();
+                    _openProfile();
+                  },
+                  onSettings: () {
+                    Navigator.of(context).maybePop();
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text("Settings tapped")),
+                    );
+                  },
+                  onLogout: () {
+                    Navigator.of(context).maybePop();
+                    _logout();
+                  },
+                  accountName: accountName,
+                  accountEmail: accountEmail,
+                ),
               ),
-
-              // ✅ Bottom nav only for phone/tablet
-              bottomNavigationBar: isPhoneOrTablet
-                  ? BottomNavigationBar(
+              sidebar: menuPanel,
+              content: IndexedStack(index: _currentIndex, children: _pages),
+              onNotificationsTap: () {
+                if (shell.isDesktop) {
+                  _toggleDesktopNotifications();
+                } else {
+                  _openNotificationsPage();
+                }
+              },
+              showDesktopOverlay: shell.isDesktop && _showDesktopNotifications,
+              onDismissDesktopOverlay: _closeDesktopNotifications,
+              desktopOverlay: DesktopNotificationsPanel(
+                uid: user.uid,
+                onClose: _closeDesktopNotifications,
+                onSeeAll: _openNotificationsPage,
+              ),
+              bottomNavigationBar: shell.isDesktop
+                  ? null
+                  : BottomNavigationBar(
                       currentIndex: _currentIndex,
                       type: BottomNavigationBarType.fixed,
                       selectedItemColor: primary,
@@ -329,10 +238,9 @@ class _StudentDashboardState extends State<StudentDashboard> {
                             ),
                           )
                           .toList(),
-                    )
-                  : null,
-
+                    ),
               floatingActionButton: FloatingActionButton(
+                heroTag: null,
                 backgroundColor: primary,
                 onPressed: () => showHandbookAiAssistantSheet(context),
                 child: const Icon(Icons.chat, color: Colors.white),
@@ -576,321 +484,4 @@ class _MenuPanel extends StatelessWidget {
       ),
     );
   }
-}
-
-class _DesktopNotificationsPanel extends StatefulWidget {
-  final String uid;
-  final VoidCallback onClose;
-  final Future<void> Function() onSeeAll;
-
-  const _DesktopNotificationsPanel({
-    required this.uid,
-    required this.onClose,
-    required this.onSeeAll,
-  });
-
-  @override
-  State<_DesktopNotificationsPanel> createState() =>
-      _DesktopNotificationsPanelState();
-}
-
-class _DesktopNotificationsPanelState
-    extends State<_DesktopNotificationsPanel> {
-  bool _showAll = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final stream = FirebaseFirestore.instance
-        .collection('users')
-        .doc(widget.uid)
-        .collection('notifications')
-        .orderBy('createdAt', descending: true)
-        .limit(80)
-        .snapshots();
-
-    return ConstrainedBox(
-      constraints: const BoxConstraints(
-        maxWidth: 430,
-        minWidth: 380,
-        maxHeight: 600,
-      ),
-      child: Material(
-        color: Colors.white,
-        elevation: 18,
-        borderRadius: BorderRadius.circular(16),
-        child: Container(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(
-              color: const Color(0xFF1B5E20).withValues(alpha: 0.22),
-            ),
-          ),
-          child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-            stream: stream,
-            builder: (context, snap) {
-              if (!snap.hasData) {
-                return const SizedBox(
-                  height: 260,
-                  child: Center(child: CircularProgressIndicator()),
-                );
-              }
-
-              final docs = snap.data!.docs;
-              final visible = _showAll ? docs : docs.take(5).toList();
-              final hasMore = docs.length > visible.length;
-
-              final newList = <QueryDocumentSnapshot<Map<String, dynamic>>>[];
-              final yesterdayList =
-                  <QueryDocumentSnapshot<Map<String, dynamic>>>[];
-              final olderList = <QueryDocumentSnapshot<Map<String, dynamic>>>[];
-
-              for (final doc in visible) {
-                final createdAt = _toDate(doc.data()['createdAt']);
-                if (_isToday(createdAt)) {
-                  newList.add(doc);
-                } else if (_isYesterday(createdAt)) {
-                  yesterdayList.add(doc);
-                } else {
-                  olderList.add(doc);
-                }
-              }
-
-              return Column(
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(14, 10, 8, 6),
-                    child: Row(
-                      children: [
-                        const Text(
-                          'Notifications',
-                          style: TextStyle(
-                            color: Color(0xFF1F2A1F),
-                            fontWeight: FontWeight.w900,
-                            fontSize: 16,
-                          ),
-                        ),
-                        const Spacer(),
-                        TextButton(
-                          onPressed: () async {
-                            await widget.onSeeAll();
-                          },
-                          child: const Text('See all'),
-                        ),
-                        IconButton(
-                          onPressed: widget.onClose,
-                          icon: const Icon(Icons.close_rounded),
-                          color: const Color(0xFF6D7F62),
-                          tooltip: 'Close',
-                        ),
-                      ],
-                    ),
-                  ),
-                  const Divider(height: 1),
-                  if (docs.isEmpty)
-                    const Expanded(
-                      child: Center(
-                        child: Text(
-                          'No notifications yet.',
-                          style: TextStyle(
-                            color: Color(0xFF6D7F62),
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                      ),
-                    )
-                  else
-                    Expanded(
-                      child: Scrollbar(
-                        thumbVisibility: true,
-                        child: ListView(
-                          padding: const EdgeInsets.all(10),
-                          children: [
-                            if (newList.isNotEmpty)
-                              _buildSection('New', newList),
-                            if (yesterdayList.isNotEmpty)
-                              _buildSection('Yesterday', yesterdayList),
-                            if (olderList.isNotEmpty)
-                              _buildSection('Other days', olderList),
-                            if (hasMore)
-                              Align(
-                                alignment: Alignment.centerLeft,
-                                child: TextButton.icon(
-                                  onPressed: () =>
-                                      setState(() => _showAll = true),
-                                  icon: const Icon(Icons.history_rounded),
-                                  label: const Text(
-                                    'See previous notifications',
-                                  ),
-                                ),
-                              ),
-                          ],
-                        ),
-                      ),
-                    ),
-                ],
-              );
-            },
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildSection(
-    String title,
-    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
-  ) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(4, 2, 4, 6),
-            child: Text(
-              title,
-              style: const TextStyle(
-                color: Color(0xFF6D7F62),
-                fontWeight: FontWeight.w900,
-                fontSize: 12,
-                letterSpacing: 0.2,
-              ),
-            ),
-          ),
-          ...docs.map(_buildNotificationTile),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildNotificationTile(
-    QueryDocumentSnapshot<Map<String, dynamic>> doc,
-  ) {
-    final d = doc.data();
-    final title = _safeText(d['title']).isEmpty
-        ? 'Notification'
-        : _safeText(d['title']);
-    final body = _safeText(d['body']);
-    final createdAt = _toDate(d['createdAt']);
-    final isUnread = _toDate(d['readAt']) == null;
-
-    return InkWell(
-      onTap: () async {
-        await _markReadIfNeeded(doc);
-      },
-      borderRadius: BorderRadius.circular(12),
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 8),
-        padding: const EdgeInsets.fromLTRB(10, 10, 10, 10),
-        decoration: BoxDecoration(
-          color: isUnread
-              ? const Color(0xFF1B5E20).withValues(alpha: 0.06)
-              : Colors.white,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: isUnread
-                ? const Color(0xFF1B5E20).withValues(alpha: 0.30)
-                : Colors.black.withValues(alpha: 0.08),
-          ),
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Icon(
-              isUnread
-                  ? Icons.notifications_active_rounded
-                  : Icons.notifications_none_rounded,
-              color: isUnread
-                  ? const Color(0xFF1B5E20)
-                  : const Color(0xFF6D7F62),
-              size: 18,
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: const Color(0xFF1F2A1F),
-                      fontWeight: isUnread ? FontWeight.w900 : FontWeight.w800,
-                      fontSize: 13,
-                    ),
-                  ),
-                  if (body.isNotEmpty) ...[
-                    const SizedBox(height: 4),
-                    Text(
-                      body,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Color(0xFF425742),
-                        fontWeight: FontWeight.w700,
-                        fontSize: 12,
-                        height: 1.2,
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-            const SizedBox(width: 8),
-            Text(
-              _fmtDesktopNotifTime(createdAt),
-              style: const TextStyle(
-                color: Color(0xFF6D7F62),
-                fontSize: 11,
-                fontWeight: FontWeight.w800,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _markReadIfNeeded(
-    QueryDocumentSnapshot<Map<String, dynamic>> doc,
-  ) async {
-    final d = doc.data();
-    if (_toDate(d['readAt']) != null) return;
-    try {
-      await doc.reference.update({'readAt': FieldValue.serverTimestamp()});
-    } catch (_) {}
-  }
-}
-
-String _safeText(dynamic value) => (value ?? '').toString().trim();
-
-DateTime? _toDate(dynamic value) {
-  if (value == null) return null;
-  if (value is Timestamp) return value.toDate();
-  return null;
-}
-
-bool _isSameDay(DateTime a, DateTime b) =>
-    a.year == b.year && a.month == b.month && a.day == b.day;
-
-bool _isToday(DateTime? dateTime) {
-  if (dateTime == null) return false;
-  return _isSameDay(dateTime, DateTime.now());
-}
-
-bool _isYesterday(DateTime? dateTime) {
-  if (dateTime == null) return false;
-  final yesterday = DateTime.now().subtract(const Duration(days: 1));
-  return _isSameDay(dateTime, yesterday);
-}
-
-String _fmtDesktopNotifTime(DateTime? dateTime) {
-  if (dateTime == null) return 'Now';
-  final diff = DateTime.now().difference(dateTime);
-  if (diff.inMinutes < 1) return 'Now';
-  if (diff.inMinutes < 60) return '${diff.inMinutes}m';
-  if (diff.inHours < 24) return '${diff.inHours}h';
-  if (_isYesterday(dateTime)) return 'Yesterday';
-  return '${dateTime.month}/${dateTime.day}';
 }

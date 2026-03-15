@@ -5,7 +5,9 @@ import 'package:flutter/material.dart';
 import '../shared/widgets/modern_table_layout.dart';
 
 class DepartmentViolationAlertsPage extends StatefulWidget {
-  const DepartmentViolationAlertsPage({super.key});
+  final String? initialSelectedCaseId;
+
+  const DepartmentViolationAlertsPage({super.key, this.initialSelectedCaseId});
 
   @override
   State<DepartmentViolationAlertsPage> createState() =>
@@ -29,10 +31,47 @@ class _DepartmentViolationAlertsPageState
   bool _savingNote = false;
 
   @override
+  void initState() {
+    super.initState();
+    _applyInitialSelectedCase(widget.initialSelectedCaseId, updateState: false);
+  }
+
+  @override
+  void didUpdateWidget(covariant DepartmentViolationAlertsPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final prev = (oldWidget.initialSelectedCaseId ?? '').trim();
+    final next = (widget.initialSelectedCaseId ?? '').trim();
+    if (prev == next) return;
+    _applyInitialSelectedCase(next, updateState: true);
+  }
+
+  @override
   void dispose() {
     _searchCtrl.dispose();
     _noteCtrl.dispose();
     super.dispose();
+  }
+
+  void _applyInitialSelectedCase(
+    String? rawCaseId, {
+    required bool updateState,
+  }) {
+    final caseId = (rawCaseId ?? '').trim();
+    if (updateState) {
+      setState(() {
+        if (caseId.isEmpty) {
+          _selectedCaseId = null;
+          return;
+        }
+        _scopeFilter = 'all';
+        _selectedCaseId = caseId;
+      });
+      return;
+    }
+
+    if (caseId.isEmpty) return;
+    _scopeFilter = 'all';
+    _selectedCaseId = caseId;
   }
 
   DateTime? _toDate(dynamic raw) {
@@ -140,7 +179,81 @@ class _DepartmentViolationAlertsPageState
     });
   }
 
-  Widget _scopeTabs() {
+  bool _matchesSearch({
+    required Map<String, dynamic> data,
+    required Map<String, String> studentNameByUid,
+    required String needle,
+  }) {
+    if (needle.isEmpty) return true;
+    final caseCode = _safeStr(data['caseCode']).toLowerCase();
+    final violation = _safeStr(
+      data['violationTypeLabel'] ??
+          data['violationNameSnapshot'] ??
+          data['violationName'],
+    ).toLowerCase();
+    final status = _safeStr(data['status']).toLowerCase();
+    final studentUid = _safeStr(data['studentUid']);
+    final student = _safeStr(studentNameByUid[studentUid]).toLowerCase();
+    return caseCode.contains(needle) ||
+        violation.contains(needle) ||
+        status.contains(needle) ||
+        student.contains(needle);
+  }
+
+  bool _matchesScope({
+    required Map<String, dynamic> data,
+    required String uid,
+    required String scope,
+    required DateTime weekStart,
+  }) {
+    final seen = _isSeenBy(data, uid);
+    final createdAt = _toDate(data['createdAt']) ?? _toDate(data['incidentAt']);
+
+    if (scope == 'new' && seen) return false;
+    if (scope == 'week') {
+      if (createdAt == null || createdAt.isBefore(weekStart)) return false;
+    }
+    return true;
+  }
+
+  Map<String, int> _scopeCounts({
+    required List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+    required Map<String, String> studentNameByUid,
+    required String uid,
+  }) {
+    final now = DateTime.now();
+    final weekStart = DateTime(
+      now.year,
+      now.month,
+      now.day,
+    ).subtract(Duration(days: now.weekday - 1));
+    final needle = _searchCtrl.text.trim().toLowerCase();
+
+    int countFor(String scope) {
+      return docs.where((doc) {
+        final d = doc.data();
+        return _matchesScope(
+              data: d,
+              uid: uid,
+              scope: scope,
+              weekStart: weekStart,
+            ) &&
+            _matchesSearch(
+              data: d,
+              studentNameByUid: studentNameByUid,
+              needle: needle,
+            );
+      }).length;
+    }
+
+    return <String, int>{
+      'new': countFor('new'),
+      'week': countFor('week'),
+      'all': countFor('all'),
+    };
+  }
+
+  Widget _scopeTabs(Map<String, int> counts) {
     return DefaultTabController(
       key: ValueKey(_scopeFilter),
       length: 3,
@@ -159,46 +272,10 @@ class _DepartmentViolationAlertsPageState
             _selectedCaseId = null;
           });
         },
-        tabs: const [
-          Tab(text: 'New / Unseen'),
-          Tab(text: 'This Week'),
-          Tab(text: 'All Alerts'),
-        ],
-      ),
-    );
-  }
-
-  Widget _statChip({
-    required String label,
-    required String value,
-    required Color color,
-  }) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.10),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: color.withValues(alpha: 0.24)),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            '$label: ',
-            style: TextStyle(
-              color: color,
-              fontWeight: FontWeight.w700,
-              fontSize: 12,
-            ),
-          ),
-          Text(
-            value,
-            style: TextStyle(
-              color: color,
-              fontWeight: FontWeight.w900,
-              fontSize: 12,
-            ),
-          ),
+        tabs: [
+          Tab(text: 'New / Unseen (${counts['new'] ?? 0})'),
+          Tab(text: 'This Week (${counts['week'] ?? 0})'),
+          Tab(text: 'All Alerts (${counts['all'] ?? 0})'),
         ],
       ),
     );
@@ -210,39 +287,26 @@ class _DepartmentViolationAlertsPageState
     required String uid,
   }) {
     final now = DateTime.now();
-    final weekStart = DateTime(now.year, now.month, now.day)
-        .subtract(Duration(days: now.weekday - 1));
+    final weekStart = DateTime(
+      now.year,
+      now.month,
+      now.day,
+    ).subtract(Duration(days: now.weekday - 1));
     final needle = _searchCtrl.text.trim().toLowerCase();
 
     final filtered = docs.where((doc) {
       final d = doc.data();
-      final seen = _isSeenBy(d, uid);
-      final createdAt = _toDate(d['createdAt']) ?? _toDate(d['incidentAt']);
-
-      if (_scopeFilter == 'new' && seen) return false;
-      if (_scopeFilter == 'week') {
-        if (createdAt == null || createdAt.isBefore(weekStart)) return false;
-      }
-
-      if (needle.isNotEmpty) {
-        final caseCode = _safeStr(d['caseCode']).toLowerCase();
-        final violation = _safeStr(
-          d['violationTypeLabel'] ??
-              d['violationNameSnapshot'] ??
-              d['violationName'],
-        ).toLowerCase();
-        final status = _safeStr(d['status']).toLowerCase();
-        final studentUid = _safeStr(d['studentUid']);
-        final student = _safeStr(studentNameByUid[studentUid]).toLowerCase();
-
-        if (!caseCode.contains(needle) &&
-            !violation.contains(needle) &&
-            !status.contains(needle) &&
-            !student.contains(needle)) {
-          return false;
-        }
-      }
-      return true;
+      return _matchesScope(
+            data: d,
+            uid: uid,
+            scope: _scopeFilter,
+            weekStart: weekStart,
+          ) &&
+          _matchesSearch(
+            data: d,
+            studentNameByUid: studentNameByUid,
+            needle: needle,
+          );
     }).toList();
 
     filtered.sort((a, b) {
@@ -266,9 +330,9 @@ class _DepartmentViolationAlertsPageState
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Marked as seen.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Marked as seen.')));
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -306,9 +370,9 @@ class _DepartmentViolationAlertsPageState
       }, SetOptions(merge: true));
       _noteCtrl.clear();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Department note saved.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Department note saved.')));
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -353,10 +417,7 @@ class _DepartmentViolationAlertsPageState
         const SizedBox(height: 4),
         Text(
           value.isEmpty ? '--' : value,
-          style: const TextStyle(
-            color: textDark,
-            fontWeight: FontWeight.w700,
-          ),
+          style: const TextStyle(color: textDark, fontWeight: FontWeight.w700),
         ),
       ],
     );
@@ -414,10 +475,7 @@ class _DepartmentViolationAlertsPageState
         ),
         child: Text(
           'No department notes yet.',
-          style: TextStyle(
-            color: hint,
-            fontWeight: FontWeight.w700,
-          ),
+          style: TextStyle(color: hint, fontWeight: FontWeight.w700),
         ),
       );
     }
@@ -501,9 +559,13 @@ class _DepartmentViolationAlertsPageState
   }) {
     final d = doc.data();
     final seen = _isSeenBy(d, currentUid);
-    final caseCode = _safeStr(d['caseCode']).isEmpty ? doc.id : _safeStr(d['caseCode']);
+    final caseCode = _safeStr(d['caseCode']).isEmpty
+        ? doc.id
+        : _safeStr(d['caseCode']);
     final violation = _safeStr(
-      d['violationTypeLabel'] ?? d['violationNameSnapshot'] ?? d['violationName'],
+      d['violationTypeLabel'] ??
+          d['violationNameSnapshot'] ??
+          d['violationName'],
     );
     final category = _safeStr(d['categoryNameSnapshot']);
     final statusRaw = _safeStr(d['status']);
@@ -515,7 +577,9 @@ class _DepartmentViolationAlertsPageState
     final correctionReason = _safeStr(
       (d['correction'] as Map<String, dynamic>?)?['latestReason'],
     );
-    final evidenceCount = d['evidenceUrls'] is List ? (d['evidenceUrls'] as List).length : 0;
+    final evidenceCount = d['evidenceUrls'] is List
+        ? (d['evidenceUrls'] as List).length
+        : 0;
 
     final body = Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -589,7 +653,8 @@ class _DepartmentViolationAlertsPageState
                     child: OutlinedButton.icon(
                       onPressed: seen || _savingSeen
                           ? null
-                          : () => _markSeen(ref: doc.reference, uid: currentUid),
+                          : () =>
+                                _markSeen(ref: doc.reference, uid: currentUid),
                       icon: _savingSeen
                           ? const SizedBox(
                               width: 14,
@@ -600,7 +665,9 @@ class _DepartmentViolationAlertsPageState
                       label: Text(seen ? 'Already Seen' : 'Mark as Seen'),
                       style: OutlinedButton.styleFrom(
                         foregroundColor: primary,
-                        side: BorderSide(color: primary.withValues(alpha: 0.35)),
+                        side: BorderSide(
+                          color: primary.withValues(alpha: 0.35),
+                        ),
                       ),
                     ),
                   ),
@@ -640,11 +707,11 @@ class _DepartmentViolationAlertsPageState
                   onPressed: _savingNote
                       ? null
                       : () => _saveDepartmentNote(
-                            ref: doc.reference,
-                            uid: currentUid,
-                            authorName: adminName,
-                            department: department,
-                          ),
+                          ref: doc.reference,
+                          uid: currentUid,
+                          authorName: adminName,
+                          department: department,
+                        ),
                   icon: _savingNote
                       ? const SizedBox(
                           width: 14,
@@ -666,10 +733,7 @@ class _DepartmentViolationAlertsPageState
           ),
         ),
         const SizedBox(height: 14),
-        _detailCard(
-          title: 'Recent Notes',
-          child: _buildNotesList(d),
-        ),
+        _detailCard(title: 'Recent Notes', child: _buildNotesList(d)),
       ],
     );
 
@@ -770,17 +834,16 @@ class _DepartmentViolationAlertsPageState
           return const Center(child: CircularProgressIndicator());
         }
         final adminData = adminSnap.data!.data() ?? <String, dynamic>{};
-        final department = _safeStr(adminData['employeeProfile']?['department']);
+        final department = _safeStr(
+          adminData['employeeProfile']?['department'],
+        );
         final adminName = _fullNameFromUser(adminData);
 
         if (department.isEmpty) {
           return Center(
             child: Text(
               'No department is assigned to your account.',
-              style: TextStyle(
-                color: hint,
-                fontWeight: FontWeight.w700,
-              ),
+              style: TextStyle(color: hint, fontWeight: FontWeight.w700),
             ),
           );
         }
@@ -808,10 +871,7 @@ class _DepartmentViolationAlertsPageState
               return Center(
                 child: Text(
                   'No students found for department $department.',
-                  style: TextStyle(
-                    color: hint,
-                    fontWeight: FontWeight.w700,
-                  ),
+                  style: TextStyle(color: hint, fontWeight: FontWeight.w700),
                 ),
               );
             }
@@ -835,6 +895,11 @@ class _DepartmentViolationAlertsPageState
                   studentNameByUid: studentsByUid,
                   uid: currentUser.uid,
                 );
+                final scopeCounts = _scopeCounts(
+                  docs: allCases,
+                  studentNameByUid: studentsByUid,
+                  uid: currentUser.uid,
+                );
 
                 QueryDocumentSnapshot<Map<String, dynamic>>? selectedDoc;
                 if (_selectedCaseId != null) {
@@ -851,9 +916,6 @@ class _DepartmentViolationAlertsPageState
                   });
                 }
 
-                final newCount = filtered
-                    .where((doc) => !_isSeenBy(doc.data(), currentUser.uid))
-                    .length;
                 final width = MediaQuery.sizeOf(context).width;
                 final useDesktopTable = width >= 900;
                 final showSideDetails = width >= 1100;
@@ -880,21 +942,9 @@ class _DepartmentViolationAlertsPageState
                           contentPadding: EdgeInsets.zero,
                         ),
                       ),
-                      tabs: _scopeTabs(),
+                      tabs: _scopeTabs(scopeCounts),
                       filters: [
-                        _statChip(
-                          label: 'Total',
-                          value: '${filtered.length}',
-                          color: const Color(0xFF455A64),
-                        ),
-                        const SizedBox(width: 8),
-                        _statChip(
-                          label: 'New',
-                          value: '$newCount',
-                          color: const Color(0xFFD97706),
-                        ),
                         if (_hasActiveFilter()) ...[
-                          const SizedBox(width: 12),
                           TextButton.icon(
                             onPressed: _clearFilters,
                             icon: const Icon(Icons.filter_list_off, size: 16),
@@ -918,8 +968,10 @@ class _DepartmentViolationAlertsPageState
                         : _buildDetailPane(
                             doc: selectedDoc,
                             studentName:
-                                studentsByUid[_safeStr(selectedDoc.data()['studentUid'])] ??
-                                    '--',
+                                studentsByUid[_safeStr(
+                                  selectedDoc.data()['studentUid'],
+                                )] ??
+                                '--',
                             currentUid: currentUser.uid,
                             adminName: adminName,
                             department: department,
@@ -961,10 +1013,7 @@ class _DepartmentViolationAlertsPageState
         child: Center(
           child: Text(
             'No alerts found for this filter.',
-            style: TextStyle(
-              color: hint,
-              fontWeight: FontWeight.w700,
-            ),
+            style: TextStyle(color: hint, fontWeight: FontWeight.w700),
           ),
         ),
       );
@@ -997,7 +1046,8 @@ class _DepartmentViolationAlertsPageState
             );
             final statusRaw = _safeStr(d['status']);
             final seen = _isSeenBy(d, currentUid);
-            final createdAt = _toDate(d['createdAt']) ?? _toDate(d['incidentAt']);
+            final createdAt =
+                _toDate(d['createdAt']) ?? _toDate(d['incidentAt']);
 
             return InkWell(
               borderRadius: BorderRadius.circular(14),
@@ -1013,7 +1063,9 @@ class _DepartmentViolationAlertsPageState
                 decoration: BoxDecoration(
                   color: Colors.white,
                   borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+                  border: Border.all(
+                    color: Colors.black.withValues(alpha: 0.08),
+                  ),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -1172,7 +1224,10 @@ class _DepartmentViolationAlertsPageState
                             ),
                           ),
                           DataCell(
-                            _chip(_statusLabel(statusRaw), _statusColor(statusRaw)),
+                            _chip(
+                              _statusLabel(statusRaw),
+                              _statusColor(statusRaw),
+                            ),
                           ),
                           DataCell(Text(_formatDate(createdAt))),
                           DataCell(

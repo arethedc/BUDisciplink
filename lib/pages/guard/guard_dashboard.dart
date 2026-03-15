@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import '../shared/handbook/handbook_sections_screen.dart';
+import '../shared/handbook/hb_handbook_page.dart';
 import '../shared/handbook/handbook_ai_assistant_sheet.dart';
 import '../shared/profile/unified_profile_page.dart';
 import '../shared/welcome_screen_page.dart';
+import '../shared/widgets/app_theme_tokens.dart';
 import '../shared/widgets/logout_confirm_dialog.dart';
+import '../shared/widgets/responsive_layout_tokens.dart';
+import '../shared/widgets/role_shell_scaffold.dart';
 
 class GuardDashboard extends StatefulWidget {
   const GuardDashboard({super.key});
@@ -17,7 +20,12 @@ class GuardDashboard extends StatefulWidget {
 class _GuardDashboardState extends State<GuardDashboard> {
   int _currentIndex = 0;
 
-  final List<Widget> _pages = const [HandbookSectionsScreen()];
+  static const bg = AppColors.background;
+  static const primary = AppColors.primary;
+  static const hint = AppColors.hint;
+  static const surface = AppColors.surface;
+
+  final List<Widget> _pages = const [HbHandbookPage()];
 
   final List<_NavItem> _navItems = const [
     _NavItem(Icons.home, 'Home'),
@@ -94,76 +102,29 @@ class _GuardDashboardState extends State<GuardDashboard> {
 
         return LayoutBuilder(
           builder: (context, constraints) {
-            final bool isDesktop = constraints.maxWidth >= 900;
+            final shell = ResponsiveLayoutTokens.resolveShellLayout(
+              width: constraints.maxWidth,
+              height: constraints.maxHeight,
+            );
             final int safeIndex = _pages.isEmpty
                 ? 0
                 : _currentIndex.clamp(0, _pages.length - 1);
 
-            return Scaffold(
-              // ✅ AppBar ONLY on mobile
-              appBar: isDesktop
+            return RoleShellScaffold(
+              backgroundColor: bg,
+              title: 'Student Portal',
+              usesDrawerSidebar: shell.usesDrawerSidebar,
+              showPermanentSidebar: shell.showPermanentSidebar,
+              drawer: _buildMobileDrawer(accountName, accountEmail),
+              sidebar: _buildSidebar(accountName, accountEmail),
+              sidebarWidth: 260,
+              content: IndexedStack(index: safeIndex, children: _pages),
+              bottomNavigationBar: shell.isDesktop
                   ? null
-                  : AppBar(
-                      backgroundColor: Colors.green,
-                      title: const Text(
-                        'Student Portal',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 20,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-
-              drawer: isDesktop
-                  ? null
-                  : _buildMobileDrawer(accountName, accountEmail),
-
-              body: Row(
-                children: [
-                  // ================= SIDEBAR (DESKTOP) =================
-                  if (isDesktop) _buildSidebar(accountName, accountEmail),
-
-                  // ================= MAIN CONTENT =================
-                  Expanded(
-                    child: Column(
-                      children: [
-                        // ✅ DESKTOP HEADER (PART OF LAYOUT, NOT OVERLAY)
-                        if (isDesktop)
-                          Container(
-                            height: kToolbarHeight,
-                            width: double.infinity,
-                            color: Colors.green,
-                            padding: const EdgeInsets.symmetric(horizontal: 16),
-                            alignment: Alignment.centerLeft,
-                            child: const Text(
-                              'Student Portal',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 20,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-
-                        // PAGE CONTENT
-                        Expanded(
-                          child: IndexedStack(
-                            index: safeIndex,
-                            children: _pages,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-
-              // ✅ Bottom nav ONLY on mobile
-              bottomNavigationBar: isDesktop ? null : _buildBottomNavigation(),
-
+                  : _buildBottomNavigation(),
               floatingActionButton: FloatingActionButton(
-                backgroundColor: Colors.green,
+                heroTag: null,
+                backgroundColor: primary,
                 onPressed: () => showHandbookAiAssistantSheet(context),
                 child: const Icon(Icons.chat),
               ),
@@ -217,7 +178,7 @@ class _GuardDashboardState extends State<GuardDashboard> {
     return Container(
       width: 260,
       decoration: BoxDecoration(
-        color: Colors.grey.shade100,
+        color: surface,
         border: Border(right: BorderSide(color: Colors.grey.shade300)),
       ),
       child: Column(
@@ -227,7 +188,7 @@ class _GuardDashboardState extends State<GuardDashboard> {
             padding: const EdgeInsets.all(16),
             child: Row(
               children: [
-                const Icon(Icons.account_circle, size: 48, color: Colors.green),
+                const Icon(Icons.account_circle, size: 48, color: primary),
                 const SizedBox(width: 12),
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -236,7 +197,7 @@ class _GuardDashboardState extends State<GuardDashboard> {
                       accountName,
                       style: const TextStyle(
                         fontWeight: FontWeight.bold,
-                        color: Colors.green,
+                        color: primary,
                       ),
                     ),
                     const SizedBox(height: 2),
@@ -305,8 +266,8 @@ class _GuardDashboardState extends State<GuardDashboard> {
           ? 0
           : _currentIndex.clamp(0, _pages.length - 1),
       type: BottomNavigationBarType.fixed,
-      selectedItemColor: Colors.green,
-      unselectedItemColor: Colors.grey,
+      selectedItemColor: primary,
+      unselectedItemColor: hint,
       onTap: _setIndex,
       items: _navItems
           .map(
@@ -328,14 +289,14 @@ class _GuardDashboardState extends State<GuardDashboard> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Icon(Icons.account_circle, size: 64, color: Colors.green),
+          const Icon(Icons.account_circle, size: 64, color: primary),
           const SizedBox(height: 12),
           Text(
             accountName,
             style: const TextStyle(
               fontSize: 18,
               fontWeight: FontWeight.bold,
-              color: Colors.green,
+              color: primary,
             ),
           ),
           const SizedBox(height: 4),
@@ -376,14 +337,14 @@ class _SidebarItem extends StatelessWidget {
     final color = isDanger
         ? Colors.red
         : isActive
-        ? Colors.green
+        ? AppColors.primary
         : Colors.black87;
 
     return InkWell(
       onTap: onTap,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        color: isActive ? Colors.green.withValues(alpha: 0.1) : null,
+        color: isActive ? AppColors.primary.withValues(alpha: 0.1) : null,
         child: Row(
           children: [
             Icon(icon, color: color),

@@ -2,6 +2,8 @@ import 'package:apps/models/handbook_topic_doc.dart';
 import 'package:apps/pages/shared/handbook/handbook_topic_content_screen.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import '../shared/widgets/app_layout_tokens.dart';
+import 'widgets/osa_common_widgets.dart';
 
 class HandbookManagePage extends StatefulWidget {
   const HandbookManagePage({super.key});
@@ -17,8 +19,6 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
   static const _textDark = Color(0xFF1F2A1F);
 
   final _db = FirebaseFirestore.instance;
-  final _sectionSearchCtrl = TextEditingController();
-  final _topicSearchCtrl = TextEditingController();
 
   int _manageTabIndex = 0;
   String? _activeVersionId;
@@ -43,8 +43,6 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
   bool _loadingTopics = false;
   String? _topicsError;
   final List<QueryDocumentSnapshot<Map<String, dynamic>>> _topicDocs = [];
-  String _sectionQuery = '';
-  String _topicQuery = '';
 
   @override
   void initState() {
@@ -54,22 +52,15 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
 
   @override
   void dispose() {
-    _sectionSearchCtrl.dispose();
-    _topicSearchCtrl.dispose();
     super.dispose();
-  }
-
-  bool _matchesQuery(String source, String query) {
-    final q = query.trim().toLowerCase();
-    if (q.isEmpty) return true;
-    return source.toLowerCase().contains(q);
   }
 
   int _countStatus(String status) {
     final normalized = _normalizeVersionStatus(status);
     return _versionOptions
         .where(
-          (id) => _normalizeVersionStatus(_versionStatusById[id] ?? 'draft') ==
+          (id) =>
+              _normalizeVersionStatus(_versionStatusById[id] ?? 'draft') ==
               normalized,
         )
         .length;
@@ -169,7 +160,8 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
         _versionLabelById
           ..clear()
           ..addAll(labelMap);
-        if (_editingVersionId == null || !_versionOptions.contains(_editingVersionId)) {
+        if (_editingVersionId == null ||
+            !_versionOptions.contains(_editingVersionId)) {
           _editingVersionId = _activeVersionId;
         }
         _editingVersionStatus = _editingVersionId == null
@@ -257,12 +249,10 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
   Future<void> _setActiveVersion(String nextVersion) async {
     final target = nextVersion.trim();
     if (target.isEmpty) return;
-    if (_normalizeVersionStatus(_versionStatusById[target] ?? '') != 'approved' &&
+    if (_normalizeVersionStatus(_versionStatusById[target] ?? '') !=
+            'approved' &&
         target != _activeVersionId) {
-      _showSnack(
-        'Only approved versions can be activated.',
-        isError: true,
-      );
+      _showSnack('Only approved versions can be activated.', isError: true);
       return;
     }
 
@@ -302,10 +292,6 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
     setState(() {
       _editingVersionId = versionId;
       _editingVersionStatus = _versionStatusById[versionId];
-      _sectionQuery = '';
-      _topicQuery = '';
-      _sectionSearchCtrl.clear();
-      _topicSearchCtrl.clear();
       _selectedSectionId = null;
       _selectedSectionCode = null;
       _selectedSectionTitle = null;
@@ -710,7 +696,7 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
       'code': values['code'],
       'title': values['title'],
       'order': nextOrder,
-      'isPublished': false,
+      'isPublished': true,
       'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
     });
@@ -718,7 +704,9 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
     _showSnack('Section added');
   }
 
-  Future<void> _editSection(QueryDocumentSnapshot<Map<String, dynamic>> doc) async {
+  Future<void> _editSection(
+    QueryDocumentSnapshot<Map<String, dynamic>> doc,
+  ) async {
     if (!_isEditingVersionEditable) {
       _showSnack(
         'This version is locked. Only Draft versions are editable.',
@@ -789,7 +777,9 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
       return;
     }
     final versionId = _editingVersionId;
-    if (versionId == null || versionId.isEmpty || _selectedSectionCode == null) {
+    if (versionId == null ||
+        versionId.isEmpty ||
+        _selectedSectionCode == null) {
       return;
     }
     final values = await _showTopicDialog();
@@ -803,7 +793,7 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
       'code': values['code'],
       'title': values['title'],
       'order': nextOrder,
-      'isPublished': false,
+      'isPublished': true,
       'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
     });
@@ -811,7 +801,9 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
     _showSnack('Topic added');
   }
 
-  Future<void> _editTopic(QueryDocumentSnapshot<Map<String, dynamic>> doc) async {
+  Future<void> _editTopic(
+    QueryDocumentSnapshot<Map<String, dynamic>> doc,
+  ) async {
     if (!_isEditingVersionEditable) {
       _showSnack(
         'This version is locked. Only Draft versions are editable.',
@@ -834,7 +826,9 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
     _showSnack('Topic updated');
   }
 
-  Future<void> _deleteTopic(QueryDocumentSnapshot<Map<String, dynamic>> doc) async {
+  Future<void> _deleteTopic(
+    QueryDocumentSnapshot<Map<String, dynamic>> doc,
+  ) async {
     if (!_isEditingVersionEditable) {
       _showSnack(
         'This version is locked. Only Draft versions are editable.',
@@ -850,30 +844,115 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
     _showSnack('Topic deleted');
   }
 
+  Widget _buildActionMenuEntry({
+    required IconData icon,
+    required String label,
+    Color? color,
+  }) {
+    return Row(
+      children: [
+        Icon(icon, size: 18, color: color),
+        const SizedBox(width: 8),
+        Text(label, style: TextStyle(color: color)),
+      ],
+    );
+  }
+
+  Widget _buildSectionActionMenu({
+    required QueryDocumentSnapshot<Map<String, dynamic>> doc,
+  }) {
+    return PopupMenuButton<String>(
+      tooltip: _isEditingVersionEditable
+          ? 'Section actions'
+          : 'Draft versions only',
+      enabled: _isEditingVersionEditable,
+      icon: Icon(
+        Icons.more_horiz_rounded,
+        color: _isEditingVersionEditable
+            ? _hint.withValues(alpha: 0.90)
+            : _hint.withValues(alpha: 0.45),
+      ),
+      onSelected: (value) async {
+        if (value == 'edit') {
+          await _editSection(doc);
+          return;
+        }
+        if (value == 'delete') {
+          await _deleteSection(doc);
+        }
+      },
+      itemBuilder: (context) => [
+        PopupMenuItem(
+          value: 'edit',
+          child: _buildActionMenuEntry(
+            icon: Icons.edit_rounded,
+            label: 'Edit section',
+          ),
+        ),
+        PopupMenuItem(
+          value: 'delete',
+          child: _buildActionMenuEntry(
+            icon: Icons.delete_outline_rounded,
+            label: 'Delete section',
+            color: Colors.red.shade700,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildTopicActionMenu({
+    required QueryDocumentSnapshot<Map<String, dynamic>> doc,
+  }) {
+    return PopupMenuButton<String>(
+      tooltip: _isEditingVersionEditable ? 'Topic actions' : 'Draft versions only',
+      enabled: _isEditingVersionEditable,
+      icon: Icon(
+        Icons.more_horiz_rounded,
+        color: _isEditingVersionEditable
+            ? _hint.withValues(alpha: 0.90)
+            : _hint.withValues(alpha: 0.45),
+      ),
+      onSelected: (value) async {
+        if (value == 'edit') {
+          await _editTopic(doc);
+          return;
+        }
+        if (value == 'delete') {
+          await _deleteTopic(doc);
+        }
+      },
+      itemBuilder: (context) => [
+        PopupMenuItem(
+          value: 'edit',
+          child: _buildActionMenuEntry(icon: Icons.edit_rounded, label: 'Edit topic'),
+        ),
+        PopupMenuItem(
+          value: 'delete',
+          child: _buildActionMenuEntry(
+            icon: Icons.delete_outline_rounded,
+            label: 'Delete topic',
+            color: Colors.red.shade700,
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _sectionPanel() {
     final docs = _sectionDocs;
-    final filteredDocs = docs
-        .where((doc) {
-          final data = doc.data();
-          final code = (data['code'] ?? '').toString();
-          final title = (data['title'] ?? '').toString();
-          return _matchesQuery('$code $title', _sectionQuery);
-        })
-        .toList();
-    final canReorder = _isEditingVersionEditable && _sectionQuery.trim().isEmpty;
+    final canReorder = _isEditingVersionEditable;
     if (_sectionsError != null) {
-      return _PanelError(title: 'Failed to load sections', details: _sectionsError!);
+      return _PanelError(
+        title: 'Failed to load sections',
+        details: _sectionsError!,
+      );
     }
     if (_loadingSections) {
       return const Center(child: CircularProgressIndicator());
     }
 
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
-      ),
+    return OsaPanelCard(
       padding: const EdgeInsets.all(14),
       child: Column(
         children: [
@@ -890,7 +969,9 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
                 ),
               ),
               FilledButton.icon(
-                onPressed: _isEditingVersionEditable ? () => _addSection(docs) : null,
+                onPressed: _isEditingVersionEditable
+                    ? () => _addSection(docs)
+                    : null,
                 style: FilledButton.styleFrom(backgroundColor: _primary),
                 icon: const Icon(Icons.add_rounded, size: 18),
                 label: const Text('Add'),
@@ -898,16 +979,10 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
             ],
           ),
           const SizedBox(height: 8),
-          _compactSearchField(
-            controller: _sectionSearchCtrl,
-            hintText: 'Search sections',
-            onChanged: (value) => setState(() => _sectionQuery = value),
-          ),
-          const SizedBox(height: 8),
           Row(
             children: [
               Text(
-                'Showing ${filteredDocs.length} of ${docs.length}',
+                'Total ${docs.length} sections',
                 style: const TextStyle(
                   color: _hint,
                   fontWeight: FontWeight.w700,
@@ -918,28 +993,26 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
           ),
           const SizedBox(height: 8),
           Expanded(
-            child: filteredDocs.isEmpty
+            child: docs.isEmpty
                 ? const Center(
                     child: Text(
-                      'No matching sections.',
+                      'No sections found.',
                       style: TextStyle(fontWeight: FontWeight.w700),
                     ),
                   )
                 : ReorderableListView.builder(
                     key: const PageStorageKey('handbook_manage_sections'),
-                    itemCount: filteredDocs.length,
-                    buildDefaultDragHandles: canReorder,
-                    onReorder: (oldIndex, newIndex) =>
-                        _onReorderSections(
-                          canReorder ? docs : filteredDocs,
-                          oldIndex,
-                          newIndex,
-                        ),
+                    itemCount: docs.length,
+                    buildDefaultDragHandles: false,
+                    onReorder: (oldIndex, newIndex) => _onReorderSections(
+                      docs,
+                      oldIndex,
+                      newIndex,
+                    ),
                     itemBuilder: (context, index) {
-                      final doc = filteredDocs[index];
+                      final doc = docs[index];
                       final data = doc.data();
                       final selected = _selectedSectionId == doc.id;
-                      final isPublished = data['isPublished'] == true;
                       final code = (data['code'] ?? '').toString();
                       final title = (data['title'] ?? '').toString();
                       return SizedBox(
@@ -948,111 +1021,91 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
                         child: Container(
                           margin: const EdgeInsets.only(bottom: 8),
                           child: InkWell(
-                          onTap: () {
-                            setState(() {
-                              _selectedSectionId = doc.id;
-                              _selectedSectionCode = code;
-                              _selectedSectionTitle = title;
-                              _topicQuery = '';
-                              _topicSearchCtrl.clear();
-                              _selectedTopicForContent = null;
-                            });
-                            _loadTopicsForSelectedSection();
-                          },
-                          borderRadius: BorderRadius.circular(12),
-                          child: Container(
-                            padding: const EdgeInsets.all(10),
-                            decoration: BoxDecoration(
-                              color: selected
-                                  ? _primary.withValues(alpha: 0.10)
-                                  : Colors.white,
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(
+                            onTap: () {
+                              setState(() {
+                                _selectedSectionId = doc.id;
+                                _selectedSectionCode = code;
+                                _selectedSectionTitle = title;
+                                _selectedTopicForContent = null;
+                              });
+                              _loadTopicsForSelectedSection();
+                            },
+                            borderRadius: BorderRadius.circular(AppRadii.md),
+                            child: Container(
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
                                 color: selected
-                                    ? _primary.withValues(alpha: 0.40)
-                                    : Colors.black.withValues(alpha: 0.10),
+                                    ? _primary.withValues(alpha: 0.10)
+                                    : Colors.white,
+                                borderRadius: BorderRadius.circular(
+                                  AppRadii.md,
+                                ),
+                                border: Border.all(
+                                  color: selected
+                                      ? _primary.withValues(alpha: 0.40)
+                                      : Colors.black.withValues(alpha: 0.10),
+                                ),
                               ),
-                            ),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Row(
-                                  children: [
-                                    const Padding(
-                                      padding: EdgeInsets.only(right: 8),
-                                      child: Icon(
-                                        Icons.drag_indicator_rounded,
-                                        color: _hint,
-                                      ),
-                                    ),
-                                    Text(
-                                      code,
-                                      style: const TextStyle(
-                                        color: _primary,
-                                        fontWeight: FontWeight.w900,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 8),
-                                    Expanded(
-                                      child: Text(
-                                        title,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      canReorder
+                                          ? ReorderableDragStartListener(
+                                              index: index,
+                                              child: const Padding(
+                                                padding: EdgeInsets.only(
+                                                  right: 8,
+                                                ),
+                                                child: Icon(
+                                                  Icons.drag_indicator,
+                                                  color: _hint,
+                                                ),
+                                              ),
+                                            )
+                                          : const Padding(
+                                              padding: EdgeInsets.only(
+                                                right: 8,
+                                              ),
+                                              child: Icon(
+                                                Icons.drag_indicator,
+                                                color: _hint,
+                                              ),
+                                            ),
+                                      Text(
+                                        code,
                                         style: const TextStyle(
-                                          color: _textDark,
-                                          fontWeight: FontWeight.w800,
+                                          color: _primary,
+                                          fontWeight: FontWeight.w900,
                                         ),
                                       ),
-                                    ),
-                                    _StatusPill(
-                                      text: isPublished ? 'Published' : 'Draft',
-                                      color: isPublished
-                                          ? _primary
-                                          : Colors.orange.shade700,
-                                    ),
-                                  ],
-                                ),
-                                const SizedBox(height: 6),
-                                Wrap(
-                                  spacing: 2,
-                                  children: [
-                                    IconButton(
-                                      tooltip: 'Edit section',
-                                      onPressed: _isEditingVersionEditable
-                                          ? () => _editSection(doc)
-                                          : null,
-                                      icon: const Icon(Icons.edit_rounded),
-                                    ),
-                                    IconButton(
-                                      tooltip: isPublished ? 'Unpublish' : 'Publish',
-                                      onPressed: _isEditingVersionEditable ? () async {
-                                        await doc.reference.update({
-                                          'isPublished': !isPublished,
-                                          'updatedAt': FieldValue.serverTimestamp(),
-                                        });
-                                        await _loadSections();
-                                      } : null,
-                                      icon: Icon(
-                                        isPublished
-                                            ? Icons.visibility_off_rounded
-                                            : Icons.visibility_rounded,
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: Text(
+                                          title,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                            color: _textDark,
+                                            fontWeight: FontWeight.w800,
+                                          ),
+                                        ),
                                       ),
-                                    ),
-                                    IconButton(
-                                      tooltip: 'Delete section',
-                                      onPressed: _isEditingVersionEditable
-                                          ? () => _deleteSection(doc)
-                                          : null,
-                                      icon: const Icon(
-                                        Icons.delete_outline_rounded,
-                                        color: Colors.red,
+                                    ],
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Row(
+                                    children: [
+                                      const Spacer(),
+                                      _buildSectionActionMenu(
+                                        doc: doc,
                                       ),
-                                    ),
-                                  ],
-                                ),
-                              ],
+                                    ],
+                                  ),
+                                ],
+                              ),
                             ),
-                          ),
                           ),
                         ),
                       );
@@ -1066,43 +1119,29 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
 
   Widget _topicsPanel() {
     if (_selectedSectionCode == null || _selectedSectionCode!.isEmpty) {
-      return Container(
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
-        ),
-        alignment: Alignment.center,
-        child: const Text(
-          'Select a section to manage topics.',
-          style: TextStyle(fontWeight: FontWeight.w800, color: _hint),
+      return const OsaPanelCard(
+        child: Center(
+          child: Text(
+            'Select a section to manage topics.',
+            style: TextStyle(fontWeight: FontWeight.w800, color: _hint),
+          ),
         ),
       );
     }
 
     if (_topicsError != null) {
-      return _PanelError(title: 'Failed to load topics', details: _topicsError!);
+      return _PanelError(
+        title: 'Failed to load topics',
+        details: _topicsError!,
+      );
     }
     if (_loadingTopics) {
       return const Center(child: CircularProgressIndicator());
     }
 
     final docs = _topicDocs;
-    final filteredDocs = docs
-        .where((doc) {
-          final data = doc.data();
-          final code = (data['code'] ?? '').toString();
-          final title = (data['title'] ?? '').toString();
-          return _matchesQuery('$code $title', _topicQuery);
-        })
-        .toList();
-    final canReorder = _isEditingVersionEditable && _topicQuery.trim().isEmpty;
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
-      ),
+    final canReorder = _isEditingVersionEditable;
+    return OsaPanelCard(
       padding: const EdgeInsets.all(14),
       child: Column(
         children: [
@@ -1134,7 +1173,9 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
                 ),
               ),
               FilledButton.icon(
-                onPressed: _isEditingVersionEditable ? () => _addTopic(docs) : null,
+                onPressed: _isEditingVersionEditable
+                    ? () => _addTopic(docs)
+                    : null,
                 style: FilledButton.styleFrom(backgroundColor: _primary),
                 icon: const Icon(Icons.add_rounded, size: 18),
                 label: const Text('Add'),
@@ -1142,16 +1183,10 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
             ],
           ),
           const SizedBox(height: 8),
-          _compactSearchField(
-            controller: _topicSearchCtrl,
-            hintText: 'Search topics',
-            onChanged: (value) => setState(() => _topicQuery = value),
-          ),
-          const SizedBox(height: 8),
           Row(
             children: [
               Text(
-                'Showing ${filteredDocs.length} of ${docs.length}',
+                'Total ${docs.length} topics',
                 style: const TextStyle(
                   color: _hint,
                   fontWeight: FontWeight.w700,
@@ -1162,28 +1197,26 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
           ),
           const SizedBox(height: 8),
           Expanded(
-            child: filteredDocs.isEmpty
+            child: docs.isEmpty
                 ? const Center(
                     child: Text(
-                      'No matching topics.',
+                      'No topics found.',
                       style: TextStyle(fontWeight: FontWeight.w700),
                     ),
                   )
                 : ReorderableListView.builder(
                     key: const PageStorageKey('handbook_manage_topics'),
-                    itemCount: filteredDocs.length,
-                    buildDefaultDragHandles: canReorder,
-                    onReorder: (oldIndex, newIndex) =>
-                        _onReorderTopics(
-                          canReorder ? docs : filteredDocs,
-                          oldIndex,
-                          newIndex,
-                        ),
+                    itemCount: docs.length,
+                    buildDefaultDragHandles: false,
+                    onReorder: (oldIndex, newIndex) => _onReorderTopics(
+                      docs,
+                      oldIndex,
+                      newIndex,
+                    ),
                     itemBuilder: (context, index) {
-                      final doc = filteredDocs[index];
+                      final doc = docs[index];
                       final data = doc.data();
                       final selected = _selectedTopicForContent?.id == doc.id;
-                      final isPublished = data['isPublished'] == true;
                       final code = (data['code'] ?? '').toString();
                       final title = (data['title'] ?? '').toString();
                       return SizedBox(
@@ -1191,110 +1224,91 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
                         width: double.infinity,
                         child: Container(
                           margin: const EdgeInsets.only(bottom: 8),
-                        child: InkWell(
-                          onTap: () {
-                            if (!mounted) return;
-                            setState(
-                              () =>
-                                  _selectedTopicForContent =
-                                      HandbookTopicDoc.fromDoc(doc),
-                            );
-                          },
-                          borderRadius: BorderRadius.circular(12),
-                          child: Container(
-                          padding: const EdgeInsets.all(10),
-                          decoration: BoxDecoration(
-                            color: selected
-                                ? _primary.withValues(alpha: 0.10)
-                                : Colors.white,
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(
-                              color: selected
-                                  ? _primary.withValues(alpha: 0.40)
-                                  : Colors.black.withValues(alpha: 0.10),
+                          child: InkWell(
+                            onTap: () {
+                              if (!mounted) return;
+                              setState(
+                                () => _selectedTopicForContent =
+                                    HandbookTopicDoc.fromDoc(doc),
+                              );
+                            },
+                            borderRadius: BorderRadius.circular(AppRadii.md),
+                            child: Container(
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: selected
+                                    ? _primary.withValues(alpha: 0.10)
+                                    : Colors.white,
+                                borderRadius: BorderRadius.circular(
+                                  AppRadii.md,
+                                ),
+                                border: Border.all(
+                                  color: selected
+                                      ? _primary.withValues(alpha: 0.40)
+                                      : Colors.black.withValues(alpha: 0.10),
+                                ),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      canReorder
+                                          ? ReorderableDragStartListener(
+                                              index: index,
+                                              child: const Padding(
+                                                padding: EdgeInsets.only(
+                                                  right: 8,
+                                                ),
+                                                child: Icon(
+                                                  Icons.drag_indicator,
+                                                  color: _hint,
+                                                ),
+                                              ),
+                                            )
+                                          : const Padding(
+                                              padding: EdgeInsets.only(
+                                                right: 8,
+                                              ),
+                                              child: Icon(
+                                                Icons.drag_indicator,
+                                                color: _hint,
+                                              ),
+                                            ),
+                                      Text(
+                                        code,
+                                        style: const TextStyle(
+                                          color: _primary,
+                                          fontWeight: FontWeight.w900,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: Text(
+                                          title,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                            color: _textDark,
+                                            fontWeight: FontWeight.w800,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Row(
+                                    children: [
+                                      const Spacer(),
+                                      _buildTopicActionMenu(
+                                        doc: doc,
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                children: [
-                                  const Padding(
-                                    padding: EdgeInsets.only(right: 8),
-                                    child: Icon(
-                                      Icons.drag_indicator_rounded,
-                                      color: _hint,
-                                    ),
-                                  ),
-                                  Text(
-                                    code,
-                                    style: const TextStyle(
-                                      color: _primary,
-                                      fontWeight: FontWeight.w900,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Text(
-                                      title,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                        color: _textDark,
-                                        fontWeight: FontWeight.w800,
-                                      ),
-                                    ),
-                                  ),
-                                  _StatusPill(
-                                    text: isPublished ? 'Published' : 'Draft',
-                                    color: isPublished
-                                        ? _primary
-                                        : Colors.orange.shade700,
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 6),
-                              Wrap(
-                                spacing: 2,
-                                children: [
-                                  IconButton(
-                                    tooltip: 'Edit topic',
-                                    onPressed: _isEditingVersionEditable
-                                        ? () => _editTopic(doc)
-                                        : null,
-                                    icon: const Icon(Icons.edit_rounded),
-                                  ),
-                                  IconButton(
-                                    tooltip: isPublished ? 'Unpublish' : 'Publish',
-                                    onPressed: _isEditingVersionEditable ? () async {
-                                      await doc.reference.update({
-                                        'isPublished': !isPublished,
-                                        'updatedAt': FieldValue.serverTimestamp(),
-                                      });
-                                      await _loadTopicsForSelectedSection();
-                                    } : null,
-                                    icon: Icon(
-                                      isPublished
-                                          ? Icons.visibility_off_rounded
-                                          : Icons.visibility_rounded,
-                                    ),
-                                  ),
-                                  IconButton(
-                                    tooltip: 'Delete topic',
-                                    onPressed: _isEditingVersionEditable
-                                        ? () => _deleteTopic(doc)
-                                        : null,
-                                    icon: const Icon(
-                                      Icons.delete_outline_rounded,
-                                      color: Colors.red,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ],
-                          ),
-                        ),
-                        ),
                         ),
                       );
                     },
@@ -1307,15 +1321,11 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
 
   Widget _contentPanel() {
     final selectedTopic = _selectedTopicForContent;
-    final versionLabel = _versionLabelById[_editingVersionId] ?? _editingVersionId ?? '--';
+    final versionLabel =
+        _versionLabelById[_editingVersionId] ?? _editingVersionId ?? '--';
     final statusLabel = _statusLabel(_editingVersionStatus ?? 'draft');
     final statusColor = _statusColor(_editingVersionStatus ?? 'draft');
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
-      ),
+    return OsaPanelCard(
       child: Column(
         children: [
           Padding(
@@ -1340,11 +1350,16 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
               padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
               child: Container(
                 width: double.infinity,
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 8,
+                ),
                 decoration: BoxDecoration(
                   color: const Color(0xFFF5F6F2),
                   borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+                  border: Border.all(
+                    color: Colors.black.withValues(alpha: 0.08),
+                  ),
                 ),
                 child: Text(
                   'This version is read-only. Switch to a Draft version to edit.',
@@ -1381,10 +1396,13 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
                     ),
                   )
                 : HandbookTopicContentScreen(
-                    key: ValueKey('manage_topic_${selectedTopic.id}_${_editingVersionId ?? ''}'),
+                    key: ValueKey(
+                      'manage_topic_${selectedTopic.id}_${_editingVersionId ?? ''}',
+                    ),
                     topic: selectedTopic,
                     manageMode: _isEditingVersionEditable,
-                    overrideTitle: 'Manage ${selectedTopic.code} ${selectedTopic.title}',
+                    overrideTitle:
+                        'Manage ${selectedTopic.code} ${selectedTopic.title}',
                     embedded: true,
                     onBack: () {
                       if (!mounted) return;
@@ -1407,37 +1425,12 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
     );
   }
 
-  Widget _compactSearchField({
-    required TextEditingController controller,
-    required String hintText,
-    required ValueChanged<String> onChanged,
-  }) {
-    return Container(
-      height: 40,
-      decoration: BoxDecoration(
-        color: const Color(0xFFF5F8F4),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
-      ),
-      child: TextField(
-        controller: controller,
-        onChanged: onChanged,
-        style: const TextStyle(
-          color: _textDark,
-          fontWeight: FontWeight.w700,
-          fontSize: 13,
-        ),
-        decoration: const InputDecoration(
-          border: InputBorder.none,
-          isDense: true,
-          contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          prefixIcon: Icon(Icons.search_rounded, size: 18, color: _hint),
-        ).copyWith(hintText: hintText),
-      ),
-    );
-  }
-
   Widget _pageHeader() {
+    final viewport = MediaQuery.sizeOf(context);
+    final compactDesktopHeader =
+        viewport.width >= 900 &&
+        viewport.width <= 1450 &&
+        viewport.height <= 900;
     final editingLabel =
         _versionLabelById[_editingVersionId] ?? _editingVersionId ?? '--';
     final editingStatus = _editingVersionStatus ?? 'draft';
@@ -1450,56 +1443,61 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            'Manage Handbook',
-            style: TextStyle(
-              fontSize: 28,
-              fontWeight: FontWeight.w900,
-              color: _primary,
-              letterSpacing: -0.5,
+          if (!compactDesktopHeader) ...[
+            const Text(
+              'Manage Handbook',
+              style: TextStyle(
+                fontSize: 28,
+                fontWeight: FontWeight.w900,
+                color: _primary,
+                letterSpacing: -0.5,
+              ),
             ),
-          ),
-          const Text(
-            'Manage sections, topics, and handbook version workflow.',
-            style: TextStyle(
-              color: _hint,
-              fontWeight: FontWeight.w700,
-              fontSize: 14,
+            const Text(
+              'Manage sections, topics, and handbook version workflow.',
+              style: TextStyle(
+                color: _hint,
+                fontWeight: FontWeight.w700,
+                fontSize: 14,
+              ),
             ),
-          ),
-          const SizedBox(height: 10),
+            const SizedBox(height: 10),
+          ],
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             child: Row(
               children: [
-                _topStatChip(
-                  'Active Version',
-                  _activeVersionLabel ?? _activeVersionId ?? '--',
+                OsaStatChip(
+                  label: 'Active Version',
+                  value: _activeVersionLabel ?? _activeVersionId ?? '--',
+                  primaryColor: _primary,
+                  hintColor: _hint,
+                  textColor: _textDark,
                 ),
                 const SizedBox(width: 8),
-                _topStatChip('Editing Version', editingLabel),
+                OsaStatChip(
+                  label: 'Editing Version',
+                  value: editingLabel,
+                  primaryColor: _primary,
+                  hintColor: _hint,
+                  textColor: _textDark,
+                ),
                 const SizedBox(width: 8),
-                _topStatChip('Editing Status', normalizedStatus),
+                OsaStatChip(
+                  label: 'Editing Status',
+                  value: normalizedStatus,
+                  primaryColor: _primary,
+                  hintColor: _hint,
+                  textColor: _textDark,
+                ),
               ],
             ),
           ),
           const SizedBox(height: 10),
           if (!_isEditingVersionEditable)
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: Colors.amber.withValues(alpha: 0.15),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: Colors.amber.withValues(alpha: 0.45)),
-              ),
-              child: const Text(
-                'Current editing version is locked. Switch to a Draft version to edit content.',
-                style: TextStyle(
-                  color: Color(0xFF7A5B00),
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
+            const OsaWarningBanner(
+              text:
+                  'Current editing version is locked. Switch to a Draft version to edit content.',
             ),
           const SizedBox(height: 10),
           _manageNavBar(),
@@ -1510,58 +1508,15 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
   }
 
   Widget _manageNavBar() {
-    return DefaultTabController(
-      key: ValueKey(_manageTabIndex),
-      length: 2,
-      initialIndex: _manageTabIndex,
-      child: Material(
-        color: Colors.white,
-        child: TabBar(
-          labelColor: _primary,
-          unselectedLabelColor: Colors.black54,
-          indicatorColor: _primary,
-          indicatorWeight: 2,
-          indicatorSize: TabBarIndicatorSize.tab,
-          dividerColor: Colors.black.withValues(alpha: 0.08),
-          onTap: (index) {
-            if (index == _manageTabIndex) return;
-            setState(() => _manageTabIndex = index);
-          },
-          tabs: const [
-            Tab(text: 'Manage Content'),
-            Tab(text: 'Version Workflow'),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _topStatChip(String label, String value) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      decoration: BoxDecoration(
-        color: _primary.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: _primary.withValues(alpha: 0.16)),
-      ),
-      child: RichText(
-        text: TextSpan(
-          style: const TextStyle(fontFamily: 'Roboto'),
-          children: [
-            TextSpan(
-              text: '$label: ',
-              style: const TextStyle(color: _hint, fontWeight: FontWeight.w700),
-            ),
-            TextSpan(
-              text: value,
-              style: const TextStyle(
-                color: _textDark,
-                fontWeight: FontWeight.w900,
-              ),
-            ),
-          ],
-        ),
-      ),
+    return OsaPrimaryTabBar(
+      controllerKey: ValueKey(_manageTabIndex),
+      tabs: const ['Manage Content', 'Version Workflow'],
+      selectedIndex: _manageTabIndex,
+      primaryColor: _primary,
+      onTap: (index) {
+        if (index == _manageTabIndex) return;
+        setState(() => _manageTabIndex = index);
+      },
     );
   }
 
@@ -1614,13 +1569,8 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
       alignment: Alignment.topCenter,
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 940),
-        child: Container(
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
-          ),
-          padding: const EdgeInsets.all(16),
+        child: OsaPanelCard(
+          padding: const EdgeInsets.all(AppSpacing.md),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -1644,7 +1594,8 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
                 crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
                   _StatusPill(
-                    text: 'Active: ${_activeVersionLabel ?? _activeVersionId ?? '--'}',
+                    text:
+                        'Active: ${_activeVersionLabel ?? _activeVersionId ?? '--'}',
                     color: _primary,
                   ),
                   StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
@@ -1712,7 +1663,9 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
                 runSpacing: 10,
                 children: [
                   FilledButton.icon(
-                    onPressed: _loadingVersionOptions ? null : _loadVersionOptions,
+                    onPressed: _loadingVersionOptions
+                        ? null
+                        : _loadVersionOptions,
                     style: FilledButton.styleFrom(backgroundColor: _primary),
                     icon: const Icon(Icons.refresh_rounded, size: 18),
                     label: const Text(
@@ -1722,7 +1675,10 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
                   ),
                   OutlinedButton.icon(
                     onPressed: _createVersionId,
-                    icon: const Icon(Icons.add_circle_outline_rounded, size: 18),
+                    icon: const Icon(
+                      Icons.add_circle_outline_rounded,
+                      size: 18,
+                    ),
                     label: const Text(
                       'Create Version',
                       style: TextStyle(fontWeight: FontWeight.w800),
@@ -1747,24 +1703,26 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
                         separatorBuilder: (_, _) => const SizedBox(height: 10),
                         itemBuilder: (context, index) {
                           final versionId = _versionOptions[index];
-                          final versionLabel = _versionLabelById[versionId] ?? versionId;
+                          final versionLabel =
+                              _versionLabelById[versionId] ?? versionId;
                           final status = _normalizeVersionStatus(
                             _versionStatusById[versionId] ?? 'draft',
                           );
                           final isActive = versionId == _activeVersionId;
                           final isEditing = versionId == _editingVersionId;
                           final statusColor = _statusColor(status);
-                          final canActivate = status == 'approved' &&
+                          final canActivate =
+                              status == 'approved' &&
                               !isActive &&
                               !_savingActiveVersion;
 
                           return Container(
-                            padding: const EdgeInsets.all(12),
+                            padding: const EdgeInsets.all(AppSpacing.sm),
                             decoration: BoxDecoration(
                               color: isActive
                                   ? _primary.withValues(alpha: 0.06)
                                   : Colors.white,
-                              borderRadius: BorderRadius.circular(12),
+                              borderRadius: BorderRadius.circular(AppRadii.md),
                               border: Border.all(
                                 color: isActive
                                     ? _primary.withValues(alpha: 0.30)
@@ -1816,8 +1774,12 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
                                   runSpacing: 8,
                                   children: [
                                     OutlinedButton.icon(
-                                      onPressed: () => _openVersionForContent(versionId),
-                                      icon: const Icon(Icons.edit_note_rounded, size: 18),
+                                      onPressed: () =>
+                                          _openVersionForContent(versionId),
+                                      icon: const Icon(
+                                        Icons.edit_note_rounded,
+                                        size: 18,
+                                      ),
                                       label: Text(
                                         status == 'draft'
                                             ? 'Manage Content'
@@ -1871,7 +1833,9 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
                                           'approved',
                                         ),
                                         style: FilledButton.styleFrom(
-                                          backgroundColor: const Color(0xFF0F766E),
+                                          backgroundColor: const Color(
+                                            0xFF0F766E,
+                                          ),
                                         ),
                                         icon: const Icon(
                                           Icons.task_alt_rounded,
@@ -1896,10 +1860,11 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
                                             ? const SizedBox(
                                                 width: 14,
                                                 height: 14,
-                                                child: CircularProgressIndicator(
-                                                  strokeWidth: 2,
-                                                  color: Colors.white,
-                                                ),
+                                                child:
+                                                    CircularProgressIndicator(
+                                                      strokeWidth: 2,
+                                                      color: Colors.white,
+                                                    ),
                                               )
                                             : const Icon(
                                                 Icons.publish_rounded,
@@ -1952,11 +1917,14 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
     if (_versionError != null) {
       return Center(
         child: Padding(
-          padding: const EdgeInsets.all(20),
+          padding: const EdgeInsets.all(AppSpacing.lg),
           child: Text(
             _versionError!,
             textAlign: TextAlign.center,
-            style: const TextStyle(color: Colors.red, fontWeight: FontWeight.w700),
+            style: const TextStyle(
+              color: Colors.red,
+              fontWeight: FontWeight.w700,
+            ),
           ),
         ),
       );
@@ -1965,7 +1933,9 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
     final screenWidth = MediaQuery.of(context).size.width;
     final isDesktop = screenWidth >= 1100;
 
-    if (_manageTabIndex == 0 && !isDesktop && _selectedTopicForContent != null) {
+    if (_manageTabIndex == 0 &&
+        !isDesktop &&
+        _selectedTopicForContent != null) {
       return Container(
         color: _bg,
         child: Column(
@@ -1974,7 +1944,7 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
             const Divider(height: 1),
             Expanded(
               child: Padding(
-                padding: const EdgeInsets.all(16),
+                padding: const EdgeInsets.all(AppSpacing.md),
                 child: _contentPanel(),
               ),
             ),
@@ -1991,18 +1961,18 @@ class _HandbookManagePageState extends State<HandbookManagePage> {
           const Divider(height: 1),
           Expanded(
             child: Padding(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.all(AppSpacing.md),
               child: _manageTabIndex == 1
                   ? _settingsPanel()
                   : (isDesktop
-                      ? Row(
-                          children: [
-                            SizedBox(width: 460, child: _sidebarPanel()),
-                            const SizedBox(width: 14),
-                            Expanded(child: _contentPanel()),
-                          ],
-                        )
-                      : _sidebarPanel()),
+                        ? Row(
+                            children: [
+                              SizedBox(width: 460, child: _sidebarPanel()),
+                              const SizedBox(width: 14),
+                              Expanded(child: _contentPanel()),
+                            ],
+                          )
+                        : _sidebarPanel()),
             ),
           ),
         ],
@@ -2023,7 +1993,7 @@ class _StatusPill extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(999),
+        borderRadius: BorderRadius.circular(AppRadii.pill),
         border: Border.all(color: color.withValues(alpha: 0.28)),
       ),
       child: Text(
@@ -2049,7 +2019,7 @@ class _PanelError extends StatelessWidget {
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(AppRadii.lg),
         border: Border.all(color: Colors.red.withValues(alpha: 0.25)),
       ),
       padding: const EdgeInsets.all(14),

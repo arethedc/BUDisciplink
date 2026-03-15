@@ -10,6 +10,7 @@ class HandbookNodeDoc {
   final List<String> tags;
   final String type;
   final int sortOrder;
+  final bool useSectionNumbering;
   final String status;
   final bool isVisible;
   final String handbookVersion;
@@ -28,6 +29,7 @@ class HandbookNodeDoc {
     required this.tags,
     required this.type,
     required this.sortOrder,
+    required this.useSectionNumbering,
     required this.status,
     required this.isVisible,
     required this.handbookVersion,
@@ -50,6 +52,7 @@ class HandbookNodeDoc {
     List<String>? tags,
     String? type,
     int? sortOrder,
+    bool? useSectionNumbering,
     String? status,
     bool? isVisible,
     String? handbookVersion,
@@ -68,6 +71,7 @@ class HandbookNodeDoc {
       tags: tags ?? this.tags,
       type: type ?? this.type,
       sortOrder: sortOrder ?? this.sortOrder,
+      useSectionNumbering: useSectionNumbering ?? this.useSectionNumbering,
       status: status ?? this.status,
       isVisible: isVisible ?? this.isVisible,
       handbookVersion: handbookVersion ?? this.handbookVersion,
@@ -82,6 +86,10 @@ class HandbookNodeDoc {
     final data = doc.data() ?? const <String, dynamic>{};
     final tagsRaw = (data['tags'] as List?) ?? const [];
     final attachmentRaw = (data['attachments'] as List?) ?? const [];
+    final useSectionNumberingRaw = data['useSectionNumbering'];
+    final useSectionNumbering = useSectionNumberingRaw is bool
+        ? useSectionNumberingRaw
+        : true;
 
     return HandbookNodeDoc(
       id: doc.id,
@@ -96,6 +104,7 @@ class HandbookNodeDoc {
           .toList(),
       type: (data['type'] ?? 'info').toString().trim(),
       sortOrder: (data['sortOrder'] ?? 0) as int,
+      useSectionNumbering: useSectionNumbering,
       status: (data['status'] ?? 'draft').toString().trim(),
       isVisible: (data['isVisible'] ?? true) as bool,
       handbookVersion: (data['handbookVersion'] ?? '').toString().trim(),
@@ -119,6 +128,7 @@ class HandbookNodeDoc {
       'tags': tags,
       'type': type,
       'sortOrder': sortOrder,
+      'useSectionNumbering': useSectionNumbering,
       'status': status,
       'isVisible': isVisible,
       'handbookVersion': handbookVersion,

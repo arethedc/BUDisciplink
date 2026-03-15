@@ -2,11 +2,14 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
-import '../shared/handbook/handbook_sections_screen.dart';
+import '../shared/handbook/hb_handbook_page.dart';
 import '../shared/notifications/app_notifications_ui.dart';
 import '../shared/profile/unified_profile_page.dart';
 import '../shared/welcome_screen_page.dart';
+import '../shared/widgets/app_theme_tokens.dart';
 import '../shared/widgets/logout_confirm_dialog.dart';
+import '../shared/widgets/responsive_layout_tokens.dart';
+import '../shared/widgets/role_shell_scaffold.dart';
 import 'counseling_meeting_schedule_page.dart';
 import 'archive/counseling_appointments_page.dart';
 import 'archive/counseling_home_page.dart';
@@ -23,15 +26,15 @@ class _CounselingDashboardState extends State<CounselingDashboard> {
   bool _settingsOpen = false;
   bool _showDesktopNotifications = false;
 
-  static const bg = Color(0xFFF6FAF6);
-  static const primary = Color(0xFF1B5E20);
-  static const hint = Color(0xFF6D7F62);
-  static const textDark = Color(0xFF1F2A1F);
-  static const surface = Color(0xFFFFFFFF);
+  static const bg = AppColors.background;
+  static const primary = AppColors.primary;
+  static const hint = AppColors.hint;
+  static const textDark = AppColors.textDark;
+  static const surface = AppColors.surface;
 
   List<Widget> get _pages => const [
     CounselingHomePage(),
-    HandbookSectionsScreen(),
+    HbHandbookPage(),
     CounselingAppointmentsPage(),
     CounselingMeetingSchedulePage(),
     UnifiedProfilePage(),
@@ -153,162 +156,86 @@ class _CounselingDashboardState extends State<CounselingDashboard> {
 
         return LayoutBuilder(
           builder: (context, constraints) {
-            final isDesktop = constraints.maxWidth >= 900;
-            final isPhoneOrTablet = !isDesktop;
+            final shell = ResponsiveLayoutTokens.resolveShellLayout(
+              width: constraints.maxWidth,
+              height: constraints.maxHeight,
+            );
 
-            return Scaffold(
+            final menuPanel = _CounselMenuPanel(
+              currentIndex: _currentIndex,
+              navItems: _navItems,
+              primary: primary,
+              hint: hint,
+              textDark: textDark,
+              surface: surface,
+              onSelect: _go,
+              onProfile: () => _go(4),
+              settingsOpen: _settingsOpen,
+              onToggleSettings: () =>
+                  setState(() => _settingsOpen = !_settingsOpen),
+              onSelectSettingsItem: _goSettings,
+              onLogout: _logout,
+              accountTitle: accountTitle,
+              accountEmail: accountEmail,
+              accountName: accountName,
+            );
+
+            return RoleShellScaffold(
               backgroundColor: bg,
-              drawer: isPhoneOrTablet
-                  ? Drawer(
-                      child: _CounselMenuPanel(
-                        currentIndex: _currentIndex,
-                        navItems: _navItems,
-                        primary: primary,
-                        hint: hint,
-                        textDark: textDark,
-                        surface: surface,
-                        onSelect: (i) {
-                          Navigator.of(context).maybePop();
-                          _go(i);
-                        },
-                        onProfile: () {
-                          Navigator.of(context).maybePop();
-                          _go(4);
-                        },
-                        settingsOpen: _settingsOpen,
-                        onToggleSettings: () =>
-                            setState(() => _settingsOpen = !_settingsOpen),
-                        onSelectSettingsItem: (pageIndex) {
-                          Navigator.of(context).maybePop();
-                          _goSettings(pageIndex);
-                        },
-                        onLogout: () {
-                          Navigator.of(context).maybePop();
-                          _logout();
-                        },
-                        accountTitle: accountTitle,
-                        accountEmail: accountEmail,
-                        accountName: accountName,
-                      ),
-                    )
-                  : null,
-              body: Row(
-                children: [
-                  if (isDesktop)
-                    SizedBox(
-                      width: 260,
-                      child: Material(
-                        color: surface,
-                        child: _CounselMenuPanel(
-                          currentIndex: _currentIndex,
-                          navItems: _navItems,
-                          primary: primary,
-                          hint: hint,
-                          textDark: textDark,
-                          surface: surface,
-                          onSelect: _go,
-                          onProfile: () => _go(4),
-                          settingsOpen: _settingsOpen,
-                          onToggleSettings: () =>
-                              setState(() => _settingsOpen = !_settingsOpen),
-                          onSelectSettingsItem: _goSettings,
-                          onLogout: _logout,
-                          accountTitle: accountTitle,
-                          accountEmail: accountEmail,
-                          accountName: accountName,
-                        ),
-                      ),
-                    ),
-                  Expanded(
-                    child: Stack(
-                      children: [
-                        Positioned.fill(
-                          child: Column(
-                            children: [
-                              Builder(
-                                builder: (ctx) {
-                                  return Container(
-                                    height: kToolbarHeight,
-                                    width: double.infinity,
-                                    color: primary,
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 12,
-                                    ),
-                                    child: Row(
-                                      children: [
-                                        if (isPhoneOrTablet)
-                                          IconButton(
-                                            icon: const Icon(
-                                              Icons.menu_rounded,
-                                              color: Colors.white,
-                                            ),
-                                            onPressed: () =>
-                                                Scaffold.of(ctx).openDrawer(),
-                                          )
-                                        else
-                                          const SizedBox(width: 8),
-                                        Expanded(
-                                          child: Text(
-                                            _pageTitle(),
-                                            overflow: TextOverflow.ellipsis,
-                                            style: const TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 20,
-                                              fontWeight: FontWeight.w700,
-                                            ),
-                                          ),
-                                        ),
-                                        IconButton(
-                                          icon: const Icon(
-                                            Icons.notifications_none_rounded,
-                                            color: Colors.white,
-                                          ),
-                                          onPressed: () {
-                                            if (isDesktop) {
-                                              _toggleDesktopNotifications();
-                                              return;
-                                            }
-                                            _openNotificationsPage();
-                                          },
-                                        ),
-                                      ],
-                                    ),
-                                  );
-                                },
-                              ),
-                              Expanded(
-                                child: IndexedStack(
-                                  index: _currentIndex,
-                                  children: _pages,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        if (isDesktop && _showDesktopNotifications) ...[
-                          Positioned.fill(
-                            child: GestureDetector(
-                              behavior: HitTestBehavior.translucent,
-                              onTap: _closeDesktopNotifications,
-                            ),
-                          ),
-                          Positioned(
-                            top: kToolbarHeight + 8,
-                            right: 14,
-                            child: DesktopNotificationsPanel(
-                              uid: user.uid,
-                              onClose: _closeDesktopNotifications,
-                              onSeeAll: _openNotificationsPage,
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
-                ],
+              title: _pageTitle(),
+              usesDrawerSidebar: shell.usesDrawerSidebar,
+              showPermanentSidebar: shell.showPermanentSidebar,
+              drawer: Drawer(
+                child: _CounselMenuPanel(
+                  currentIndex: _currentIndex,
+                  navItems: _navItems,
+                  primary: primary,
+                  hint: hint,
+                  textDark: textDark,
+                  surface: surface,
+                  onSelect: (i) {
+                    Navigator.of(context).maybePop();
+                    _go(i);
+                  },
+                  onProfile: () {
+                    Navigator.of(context).maybePop();
+                    _go(4);
+                  },
+                  settingsOpen: _settingsOpen,
+                  onToggleSettings: () =>
+                      setState(() => _settingsOpen = !_settingsOpen),
+                  onSelectSettingsItem: (pageIndex) {
+                    Navigator.of(context).maybePop();
+                    _goSettings(pageIndex);
+                  },
+                  onLogout: () {
+                    Navigator.of(context).maybePop();
+                    _logout();
+                  },
+                  accountTitle: accountTitle,
+                  accountEmail: accountEmail,
+                  accountName: accountName,
+                ),
               ),
-              bottomNavigationBar: isPhoneOrTablet
-                  ? BottomNavigationBar(
+              sidebar: menuPanel,
+              content: IndexedStack(index: _currentIndex, children: _pages),
+              onNotificationsTap: () {
+                if (shell.isDesktop) {
+                  _toggleDesktopNotifications();
+                } else {
+                  _openNotificationsPage();
+                }
+              },
+              showDesktopOverlay: shell.isDesktop && _showDesktopNotifications,
+              onDismissDesktopOverlay: _closeDesktopNotifications,
+              desktopOverlay: DesktopNotificationsPanel(
+                uid: user.uid,
+                onClose: _closeDesktopNotifications,
+                onSeeAll: _openNotificationsPage,
+              ),
+              bottomNavigationBar: shell.isDesktop
+                  ? null
+                  : BottomNavigationBar(
                       currentIndex: _currentIndex < _navItems.length
                           ? _currentIndex
                           : 0,
@@ -325,8 +252,7 @@ class _CounselingDashboardState extends State<CounselingDashboard> {
                             ),
                           )
                           .toList(),
-                    )
-                  : null,
+                    ),
             );
           },
         );

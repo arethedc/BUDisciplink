@@ -512,7 +512,7 @@ class _HandbookTopicContentScreenState
       floatingActionButton: widget.manageMode
           ? null
           : FloatingActionButton(
-              heroTag: 'handbook_topic_ai_fab',
+              heroTag: null,
               onPressed: () => showHandbookAiAssistantSheet(context),
               backgroundColor: _topBarColor,
               foregroundColor: Colors.white,

@@ -28,8 +28,7 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
   final _employeeNoCtrl = TextEditingController();
   final _departmentCtrl = TextEditingController();
 
-  bool _editing = false;
-  bool _saving = false;
+  final bool _editing = false;
   String _role = '';
   String _accountStatus = '';
   String _studentVerificationStatus = '';
@@ -240,76 +239,6 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
         );
       },
     );
-  }
-
-  Future<void> _saveProfile() async {
-    if (!_formKey.currentState!.validate()) return;
-
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) return;
-
-    setState(() => _saving = true);
-    try {
-      final firstName = _firstNameCtrl.text.trim();
-      final middleName = _middleNameCtrl.text.trim();
-      final lastName = _lastNameCtrl.text.trim();
-
-      final updates = <String, dynamic>{
-        'firstName': firstName,
-        'middleName': middleName.isEmpty ? null : middleName,
-        'lastName': lastName,
-        'displayName': '$firstName $lastName'.trim(),
-        'updatedAt': FieldValue.serverTimestamp(),
-      };
-
-      if (_isStudent) {
-        updates['studentProfile'] = {
-          'studentNo': _studentNoCtrl.text.trim().isEmpty
-              ? null
-              : _studentNoCtrl.text.trim(),
-          'collegeId': _collegeCtrl.text.trim().isEmpty
-              ? null
-              : _collegeCtrl.text.trim(),
-          'programId': _programCtrl.text.trim().isEmpty
-              ? null
-              : _programCtrl.text.trim(),
-          'yearLevel': int.tryParse(_yearLevelCtrl.text.trim()),
-        };
-      } else {
-        updates['employeeProfile'] = {
-          'employeeNo': _employeeNoCtrl.text.trim().isEmpty
-              ? null
-              : _employeeNoCtrl.text.trim(),
-          if (_roleNeedsDepartment)
-            'department': _departmentCtrl.text.trim().isEmpty
-                ? null
-                : _departmentCtrl.text.trim(),
-        };
-      }
-
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(uid)
-          .set(updates, SetOptions(merge: true));
-
-      if (!mounted) return;
-      setState(() => _editing = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Profile updated successfully.')),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Failed to update profile: $e')));
-    } finally {
-      if (mounted) setState(() => _saving = false);
-    }
-  }
-
-  void _discardChanges() {
-    if (_latestData != null) _loadFromDoc(_latestData!);
-    setState(() => _editing = false);
   }
 
   @override
@@ -646,80 +575,24 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
                             color: Colors.black.withValues(alpha: 0.08),
                           ),
                         ),
-                        child: Wrap(
-                          spacing: 10,
-                          runSpacing: 10,
-                          alignment: WrapAlignment.end,
+                        child: const Row(
                           children: [
-                            if (!_editing)
-                              FilledButton.icon(
-                                onPressed: () =>
-                                    setState(() => _editing = true),
-                                style: FilledButton.styleFrom(
-                                  backgroundColor: primary,
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 18,
-                                    vertical: 14,
-                                  ),
-                                ),
-                                icon: const Icon(Icons.edit_rounded, size: 18),
-                                label: const Text(
-                                  'Edit Profile',
-                                  style: TextStyle(fontWeight: FontWeight.w800),
+                            Icon(
+                              Icons.lock_outline_rounded,
+                              color: hint,
+                              size: 18,
+                            ),
+                            SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Profile editing is locked. Updates are only allowed during the pending approval review phase.',
+                                style: TextStyle(
+                                  color: hint,
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 12.5,
                                 ),
                               ),
-                            if (_editing) ...[
-                              OutlinedButton(
-                                onPressed: _saving ? null : _discardChanges,
-                                style: OutlinedButton.styleFrom(
-                                  foregroundColor: hint,
-                                  side: const BorderSide(color: hint),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 18,
-                                    vertical: 14,
-                                  ),
-                                ),
-                                child: const Text(
-                                  'Discard Changes',
-                                  style: TextStyle(fontWeight: FontWeight.w800),
-                                ),
-                              ),
-                              FilledButton.icon(
-                                onPressed: _saving ? null : _saveProfile,
-                                style: FilledButton.styleFrom(
-                                  backgroundColor: primary,
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 18,
-                                    vertical: 14,
-                                  ),
-                                ),
-                                icon: _saving
-                                    ? const SizedBox(
-                                        width: 16,
-                                        height: 16,
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2,
-                                          color: Colors.white,
-                                        ),
-                                      )
-                                    : const Icon(Icons.save_rounded, size: 18),
-                                label: Text(
-                                  _saving ? 'Saving...' : 'Save Changes',
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.w800,
-                                  ),
-                                ),
-                              ),
-                            ],
+                            ),
                           ],
                         ),
                       ),
