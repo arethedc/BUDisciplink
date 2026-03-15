@@ -12,12 +12,6 @@ class DefaultFirebaseOptions {
     );
   }
 
-  static const FirebaseOptions web = FirebaseOptions(
-    apiKey: 'AIzaSyD6gXLQsxiQ55ytoZmsgpwTfezWbMomn4Y',
-    authDomain: 'myapp-e5237.firebaseapp.com',
-    projectId: 'myapp-e5237',
-    storageBucket: 'myapp-e5237.firebasestorage.app',
-    messagingSenderId: '486417428487',
-    appId: '1:486417428487:web:bfd953553bcf5d49293aa2',
+=
   );
 }
