@@ -36,7 +36,7 @@ class AcademicSettingsService {
       tx.set(ref, {
         'label': label,
         'status': 'inactive',
-        'activeTermId': 'term1',
+        'activeTermId': '',
         'createdAt': now,
         'updatedAt': now,
       });
@@ -71,10 +71,17 @@ class AcademicSettingsService {
   }) async {
     final yearRef = _years.doc(syId);
     final now = FieldValue.serverTimestamp();
+    final hasCompleteSemesters = _hasCompleteValidTermDates(termDates);
+    final resolvedActiveTermId = hasCompleteSemesters
+        ? _resolveActiveTermIdByDate(
+            termDates: termDates,
+            fallback: activeTermId,
+          )
+        : '';
 
     await _db.runTransaction((tx) async {
       tx.set(yearRef, {
-        'activeTermId': activeTermId,
+        'activeTermId': resolvedActiveTermId,
         'updatedAt': now,
       }, SetOptions(merge: true));
 
@@ -86,6 +93,92 @@ class AcademicSettingsService {
         }, SetOptions(merge: true));
       }
     });
+  }
+
+  DateTime _dayOnly(DateTime value) =>
+      DateTime(value.year, value.month, value.day);
+
+  bool _sameDay(DateTime a, DateTime b) =>
+      a.year == b.year && a.month == b.month && a.day == b.day;
+
+  DateTime _dayAfter(DateTime value) =>
+      DateTime(value.year, value.month, value.day).add(const Duration(days: 1));
+
+  bool _hasCompleteValidTermDates(Map<String, TermDates> termDates) {
+    DateTime? startOf(String key) => termDates[key]?.startAt?.toDate();
+    DateTime? endOf(String key) => termDates[key]?.endAt?.toDate();
+
+    final t1s = startOf('term1');
+    final t1e = endOf('term1');
+    final t2s = startOf('term2');
+    final t2e = endOf('term2');
+    final t3s = startOf('term3');
+    final t3e = endOf('term3');
+
+    if (t1s == null ||
+        t1e == null ||
+        t2s == null ||
+        t2e == null ||
+        t3s == null ||
+        t3e == null) {
+      return false;
+    }
+
+    final t1Start = _dayOnly(t1s);
+    final t1End = _dayOnly(t1e);
+    final t2Start = _dayOnly(t2s);
+    final t2End = _dayOnly(t2e);
+    final t3Start = _dayOnly(t3s);
+    final t3End = _dayOnly(t3e);
+
+    if (!t1Start.isBefore(t1End)) return false;
+    if (!t2Start.isBefore(t2End)) return false;
+    if (!t3Start.isBefore(t3End)) return false;
+
+    if (!t1End.isBefore(t2Start)) return false;
+    if (!t2End.isBefore(t3Start)) return false;
+
+    if (!_sameDay(_dayAfter(t1End), t2Start)) return false;
+    if (!_sameDay(_dayAfter(t2End), t3Start)) return false;
+
+    return true;
+  }
+
+  String _resolveActiveTermIdByDate({
+    required Map<String, TermDates> termDates,
+    required String fallback,
+  }) {
+    final today = _dayOnly(DateTime.now());
+    final ranges = <_TermRange>[];
+    for (final entry in termDates.entries) {
+      final startTs = entry.value.startAt;
+      final endTs = entry.value.endAt;
+      if (startTs == null || endTs == null) continue;
+      final start = _dayOnly(startTs.toDate());
+      final end = _dayOnly(endTs.toDate());
+      if (end.isBefore(start)) continue;
+      ranges.add(_TermRange(id: entry.key, start: start, end: end));
+    }
+
+    if (ranges.isEmpty) return fallback;
+
+    ranges.sort((a, b) => a.start.compareTo(b.start));
+
+    for (final range in ranges) {
+      if ((today.isAtSameMomentAs(range.start) || today.isAfter(range.start)) &&
+          (today.isAtSameMomentAs(range.end) || today.isBefore(range.end))) {
+        return range.id;
+      }
+    }
+
+    if (today.isBefore(ranges.first.start)) return ranges.first.id;
+    if (today.isAfter(ranges.last.end)) return ranges.last.id;
+
+    for (final range in ranges) {
+      if (today.isBefore(range.start)) return range.id;
+    }
+
+    return fallback;
   }
 
   /// Set this SY active and mark all others inactive.
@@ -118,6 +211,66 @@ class AcademicSettingsService {
     await batch.commit();
   }
 
+  String _resolveTermSlot(String termDocId, Map<String, dynamic> data) {
+    final id = termDocId.toLowerCase().trim();
+    if (id == 'term1' || id == '1' || id.contains('1st')) return 'term1';
+    if (id == 'term2' || id == '2' || id.contains('2nd')) return 'term2';
+    if (id == 'term3' || id == '3' || id.contains('3rd')) return 'term3';
+
+    final order = data['order'];
+    if (order == 1 || order == '1') return 'term1';
+    if (order == 2 || order == '2') return 'term2';
+    if (order == 3 || order == '3') return 'term3';
+
+    final name = (data['name'] ?? '').toString().toLowerCase();
+    if (name.contains('1st') || name.contains('first')) return 'term1';
+    if (name.contains('2nd') || name.contains('second')) return 'term2';
+    if (name.contains('3rd') ||
+        name.contains('third') ||
+        name.contains('short')) {
+      return 'term3';
+    }
+    return '';
+  }
+
+  Future<String> syncActiveTermByDate(String syId) async {
+    final yearRef = _years.doc(syId);
+    final yearSnap = await yearRef.get();
+    if (!yearSnap.exists) {
+      throw Exception('School year not found: $syId');
+    }
+
+    final yearData = yearSnap.data() ?? const <String, dynamic>{};
+    final fallback = (yearData['activeTermId'] ?? 'term1').toString().trim();
+
+    final termsSnap = await yearRef.collection('terms').get();
+    final termDates = <String, TermDates>{};
+    for (final doc in termsSnap.docs) {
+      final data = doc.data();
+      final slot = _resolveTermSlot(doc.id, data);
+      if (slot.isEmpty) continue;
+      final startAt = data['startAt'] as Timestamp?;
+      final endAt = data['endAt'] as Timestamp?;
+      termDates[slot] = TermDates(startAt: startAt, endAt: endAt);
+    }
+
+    final resolvedActiveTermId = _hasCompleteValidTermDates(termDates)
+        ? _resolveActiveTermIdByDate(
+            termDates: termDates,
+            fallback: fallback.isEmpty ? 'term1' : fallback,
+          )
+        : '';
+
+    if (resolvedActiveTermId != fallback) {
+      await yearRef.set({
+        'activeTermId': resolvedActiveTermId,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    }
+
+    return resolvedActiveTermId;
+  }
+
   Future<Map<String, dynamic>?> getActiveSY() async {
     final q = await _years.where('status', isEqualTo: 'active').limit(1).get();
     if (q.docs.isEmpty) return null;
@@ -134,7 +287,12 @@ class AcademicSettingsService {
     }
 
     final syId = activeSY['id'] as String; // e.g., "2025-2026"
-    final activeTermId = (activeSY['activeTermId'] ?? 'term1').toString();
+    final activeTermId = (activeSY['activeTermId'] ?? '').toString().trim();
+    if (activeTermId.isEmpty) {
+      throw Exception(
+        'No active semester yet. Complete all semester dates in School Year & Semesters.',
+      );
+    }
 
     // Convert syId "2025-2026" to "2526"
     final syParts = syId.split('-');
@@ -189,4 +347,12 @@ class TermDates {
   final Timestamp? startAt;
   final Timestamp? endAt;
   const TermDates({required this.startAt, required this.endAt});
+}
+
+class _TermRange {
+  final String id;
+  final DateTime start;
+  final DateTime end;
+
+  const _TermRange({required this.id, required this.start, required this.end});
 }

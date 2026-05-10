@@ -1,13 +1,12 @@
+import 'dart:async';
+
 import 'package:apps/services/osa_meeting_schedule_service.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../shared/widgets/app_layout_tokens.dart';
 import 'widgets/osa_common_widgets.dart';
-
-enum _GenerateMode { cancel, resetAndGenerate }
-
-enum _ScheduleMainTab { templateSetup, openSlots }
+import 'package:apps/pages/shared/widgets/app_inline_notice.dart';
 
 class MeetingSchedulePage extends StatefulWidget {
   final OsaMeetingScheduleService? service;
@@ -24,14 +23,13 @@ class MeetingSchedulePage extends StatefulWidget {
 }
 
 class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
-  static const _bg = Color(0xFFF6FAF6);
+  static const _bg = Colors.white;
   static const _primary = Color(0xFF1B5E20);
   static const _hint = Color(0xFF6D7F62);
   static const _text = Color(0xFF1F2A1F);
 
   late final OsaMeetingScheduleService _svc;
   String? _activeSchoolYearId;
-  String? _activeSchoolYearLabel;
   String? _activeTermId;
   DateTime? _activeTermStart;
   DateTime? _activeTermEnd;
@@ -57,6 +55,11 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
     'fri': [],
   };
   int _contextLoadToken = 0;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>?
+  _activeAcademicYearSub;
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _activeTermDocSub;
+  String? _activeTermStreamYearId;
+  String? _activeTermStreamTermId;
 
   final Map<String, TextEditingController> _startCtrls = {
     'mon': TextEditingController(text: '08:00'),
@@ -88,9 +91,9 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
   };
 
   bool _saving = false;
-  bool _generating = false;
-  int? _lastGeneratedCount;
-  _ScheduleMainTab _mainTab = _ScheduleMainTab.templateSetup;
+  bool _showTemplateEditor = false;
+  bool _isEditingTemplate = false;
+  int _slotPresenceVersion = 0;
   bool _slotSelectionMode = false;
   final Set<String> _selectedOpenSlotIds = <String>{};
   bool _closingSelectedSlots = false;
@@ -99,11 +102,13 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
   void initState() {
     super.initState();
     _svc = widget.service ?? OsaMeetingScheduleService();
-    _loadActiveAcademicContext();
+    _listenActiveAcademicContext();
   }
 
   @override
   void dispose() {
+    _activeAcademicYearSub?.cancel();
+    _activeTermDocSub?.cancel();
     for (final ctrl in _startCtrls.values) {
       ctrl.dispose();
     }
@@ -115,16 +120,49 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
     super.dispose();
   }
 
-  Future<void> _loadActiveAcademicContext() async {
-    final token = ++_contextLoadToken;
-    final snap = await FirebaseFirestore.instance
+  void _listenActiveAcademicContext() {
+    _activeAcademicYearSub?.cancel();
+    _activeAcademicYearSub = FirebaseFirestore.instance
         .collection('academic_years')
         .where('status', isEqualTo: 'active')
         .limit(1)
-        .get();
-    if (!mounted || token != _contextLoadToken) return;
-    final activeDoc = snap.docs.isEmpty ? null : snap.docs.first;
-    await _applyActiveAcademicDoc(activeDoc);
+        .snapshots()
+        .listen((snap) {
+          final activeDoc = snap.docs.isEmpty ? null : snap.docs.first;
+          _applyActiveAcademicDoc(activeDoc);
+        });
+  }
+
+  void _bindActiveTermStream({
+    required DocumentReference<Map<String, dynamic>> schoolYearRef,
+    required String termId,
+  }) {
+    final normalizedTermId = termId.trim();
+    if (normalizedTermId.isEmpty) return;
+
+    final isSameBinding =
+        _activeTermStreamYearId == schoolYearRef.id &&
+        _activeTermStreamTermId == normalizedTermId &&
+        _activeTermDocSub != null;
+    if (isSameBinding) return;
+
+    _activeTermDocSub?.cancel();
+    _activeTermStreamYearId = schoolYearRef.id;
+    _activeTermStreamTermId = normalizedTermId;
+    _activeTermDocSub = schoolYearRef
+        .collection('terms')
+        .doc(normalizedTermId)
+        .snapshots()
+        .listen((termSnap) {
+          if (!mounted) return;
+          final termData = termSnap.data() ?? const <String, dynamic>{};
+          setState(() {
+            _activeTermStart = _toDate(termData['startAt']);
+            _activeTermEnd = _toDate(termData['endAt']);
+            _constrainBlockedDatesToActiveTerm();
+            _revalidateAllDays();
+          });
+        });
   }
 
   Future<void> _applyActiveAcademicDoc(
@@ -134,12 +172,17 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
     if (!mounted || token != _contextLoadToken) return;
 
     if (activeDoc == null) {
+      _activeTermDocSub?.cancel();
+      _activeTermDocSub = null;
+      _activeTermStreamYearId = null;
+      _activeTermStreamTermId = null;
       setState(() {
         _activeSchoolYearId = null;
-        _activeSchoolYearLabel = null;
         _activeTermId = null;
         _activeTermStart = null;
         _activeTermEnd = null;
+        _showTemplateEditor = false;
+        _isEditingTemplate = false;
         _blockedDateKeys.clear();
         _selectedOpenSlotIds.clear();
         for (final day in _weeklyBlockedWindows.keys) {
@@ -152,10 +195,11 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
 
     final data = activeDoc.data();
     final activeSchoolYearId = activeDoc.id;
-    final activeSchoolYearLabel = (data['label'] ?? activeDoc.id)
-        .toString()
-        .trim();
     final activeTermId = (data['activeTermId'] ?? 'term1').toString().trim();
+    _bindActiveTermStream(
+      schoolYearRef: activeDoc.reference,
+      termId: activeTermId,
+    );
 
     final template = await _svc.getTermScheduleTemplate(
       schoolYearId: activeSchoolYearId,
@@ -201,14 +245,15 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
 
     setState(() {
       _activeSchoolYearId = activeSchoolYearId;
-      _activeSchoolYearLabel = activeSchoolYearLabel;
       _activeTermId = activeTermId;
       final termData = termDoc.data() ?? {};
       _activeTermStart = _toDate(termData['startAt']);
       _activeTermEnd = _toDate(termData['endAt']);
+      _isEditingTemplate = false;
       _constrainBlockedDatesToActiveTerm();
       _revalidateAllDays();
       _selectedOpenSlotIds.clear();
+      _slotPresenceVersion++;
     });
   }
 
@@ -263,7 +308,7 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
     final hasError = _dayErrors.values.any((v) => v != null && v.isNotEmpty);
     if (hasError && mounted) {
       setState(() {});
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Please fix invalid day schedules before saving.'),
         ),
@@ -278,6 +323,7 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
     required String dayKey,
     required bool isStart,
   }) async {
+    if (!_isEditingTemplate) return;
     if (_enabledDays[dayKey] != true) return;
     final ctrl = isStart ? _startCtrls[dayKey]! : _endCtrls[dayKey]!;
     final initial =
@@ -368,6 +414,7 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
   }
 
   Future<void> _showRecurringBlockedHoursDialog() async {
+    if (!_isEditingTemplate) return;
     String start = '12:00';
     String end = '13:00';
 
@@ -660,7 +707,7 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
 
                               if (mounted) {
                                 Navigator.of(context).pop();
-                                ScaffoldMessenger.of(context).showSnackBar(
+                                AppScaffoldMessenger.of(context).showSnackBar(
                                   SnackBar(
                                     content: Text(
                                       'Recurring blocked hour added to ${selected.length} day(s).',
@@ -763,8 +810,14 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
 
   DateTime? _toDate(dynamic value) {
     if (value == null) return null;
-    if (value is Timestamp) return value.toDate();
-    if (value is DateTime) return value;
+    if (value is Timestamp) {
+      final local = value.toDate().toLocal();
+      return DateTime(local.year, local.month, local.day);
+    }
+    if (value is DateTime) {
+      final local = value.toLocal();
+      return DateTime(local.year, local.month, local.day);
+    }
     return null;
   }
 
@@ -825,11 +878,12 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
   }
 
   Future<void> _pickBlockedDate() async {
+    if (!_isEditingTemplate) return;
     if (_activeTermStart == null || _activeTermEnd == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text(
-            'Set start/end date for active term in Academic Settings first.',
+            'Set start/end date for active semester in School Year & Semesters first.',
           ),
         ),
       );
@@ -851,9 +905,11 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
       _activeTermEnd!.day,
     );
     if (lastDate.isBefore(effectiveFirstDate)) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Active term has no remaining future dates to block.'),
+          content: Text(
+            'Active semester has no remaining future dates to block.',
+          ),
         ),
       );
       return;
@@ -871,7 +927,7 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
       lastDate: lastDate,
     );
     if (initialAvailable == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('All remaining dates are already blocked.'),
         ),
@@ -1129,7 +1185,7 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                               ),
                               SizedBox(height: 2),
                               Text(
-                                'Choose a date within the active term range.',
+                                'Choose a date within the active semester range.',
                                 style: TextStyle(
                                   color: _hint,
                                   fontWeight: FontWeight.w700,
@@ -1398,13 +1454,55 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
         blockedDates: _blockedDates(),
         slotMinutes: 60,
       );
+      int? syncedCount;
+      int? visibleUpcomingCount;
+      Object? syncError;
+      if (_activeTermStart != null && _activeTermEnd != null) {
+        try {
+          syncedCount = await _syncUpcomingOpenSlots(
+            sy: sy,
+            term: term,
+            ensureTemplateExists: false,
+          );
+          visibleUpcomingCount = await _countVisibleUpcomingOpenSlots(
+            sy: sy,
+            term: term,
+          );
+          if (mounted) {
+            setState(() {
+              _selectedOpenSlotIds.clear();
+            });
+          }
+        } catch (e) {
+          syncError = e;
+        }
+      }
       if (!mounted) return;
-      ScaffoldMessenger.of(
+      if (mounted) {
+        setState(() {
+          _isEditingTemplate = false;
+          if ((syncedCount ?? 0) > 0) {
+            _showTemplateEditor = false;
+          }
+          _slotPresenceVersion++;
+        });
+      }
+      AppScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('Schedule template saved.')));
+      ).showSnackBar(
+        SnackBar(
+          content: Text(
+            syncError != null
+                ? 'Schedule template saved. Slot sync failed: $syncError'
+                : syncedCount == null
+                ? 'Schedule template saved.'
+                : 'Schedule template saved. Synced $syncedCount open slot(s). Showing $visibleUpcomingCount upcoming open slots.',
+          ),
+        ),
+      );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
+      AppScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Save failed: $e')));
     } finally {
@@ -1412,90 +1510,15 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
     }
   }
 
-  Future<_GenerateMode> _askGenerateMode({
+  Future<int> _syncUpcomingOpenSlots({
     required String sy,
     required String term,
-    required DateTime fromDate,
+    required bool ensureTemplateExists,
   }) async {
-    bool hasExisting = false;
-    try {
-      hasExisting = await _svc.hasSlotsForTerm(
-        schoolYearId: sy,
-        termId: term,
-        fromDate: fromDate,
-      );
-    } on FirebaseException catch (e) {
-      if (e.code != 'failed-precondition') rethrow;
-      hasExisting = false;
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'Slots check skipped due to missing index. Continuing generation.',
-            ),
-          ),
-        );
-      }
-    }
-    if (!hasExisting) return _GenerateMode.resetAndGenerate;
-
-    if (!mounted) return _GenerateMode.cancel;
-    final mode = await showDialog<_GenerateMode>(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text(
-            'Slots Already Exist',
-            style: TextStyle(fontWeight: FontWeight.w900),
-          ),
-          content: const Text(
-            'Upcoming slots for this active term already exist. '
-            'Do you want to reset upcoming open slots and generate a new schedule? '
-            'Booked/completed/missed meetings will not be changed.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, _GenerateMode.cancel),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () =>
-                  Navigator.pop(context, _GenerateMode.resetAndGenerate),
-              style: FilledButton.styleFrom(backgroundColor: _primary),
-              child: const Text('Reset + Generate'),
-            ),
-          ],
-        );
-      },
-    );
-
-    return mode ?? _GenerateMode.cancel;
-  }
-
-  Future<void> _generateSlots() async {
-    final sy = (_activeSchoolYearId ?? '').trim();
-    final term = (_activeTermId ?? '').trim();
-    if (sy.isEmpty || term.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'No active school year/term found in Academic Settings.',
-          ),
-        ),
-      );
-      return;
-    }
-    if (!_validateAllDaysWithFeedback()) return;
-
     if (_activeTermStart == null || _activeTermEnd == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Set start/end date for the active term in Academic Settings first.',
-          ),
-        ),
+      throw Exception(
+        'Set start/end date for the active semester in School Year & Semesters first.',
       );
-      return;
     }
 
     final rangeStart = DateTime(
@@ -1516,16 +1539,10 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
       59,
     );
     if (rangeEnd.isBefore(effectiveRangeStart)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('No future schedule dates available in active term.'),
-        ),
-      );
-      return;
+      return 0;
     }
 
-    setState(() => _generating = true);
-    try {
+    if (ensureTemplateExists) {
       final template = await _svc.getTermScheduleTemplate(
         schoolYearId: sy,
         termId: term,
@@ -1540,51 +1557,90 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
           slotMinutes: 60,
         );
       }
+    }
 
-      final generateMode = await _askGenerateMode(
-        sy: sy,
-        term: term,
-        fromDate: effectiveRangeStart,
-      );
-      if (generateMode == _GenerateMode.cancel) return;
+    return _svc.generateSlotsFromTemplate(
+      schoolYearId: sy,
+      termId: term,
+      rangeStart: effectiveRangeStart,
+      rangeEnd: rangeEnd,
+      replaceOpenSlots: true,
+      replaceOpenFrom: effectiveRangeStart,
+    );
+  }
 
-      final count = await _svc.generateSlotsFromTemplate(
+  Future<bool> _hasUpcomingGeneratedSlots({
+    required String sy,
+    required String term,
+  }) async {
+    if (_activeTermStart == null || _activeTermEnd == null) return false;
+    final todayStart = _todayStart();
+    final termStart = DateTime(
+      _activeTermStart!.year,
+      _activeTermStart!.month,
+      _activeTermStart!.day,
+    );
+    final fromDate = termStart.isBefore(todayStart) ? todayStart : termStart;
+    return _svc.hasSlotsForTerm(
+      schoolYearId: sy,
+      termId: term,
+      fromDate: fromDate,
+    );
+  }
+
+  Future<void> _discardTemplateChanges() async {
+    final activeSnap = await FirebaseFirestore.instance
+        .collection('academic_years')
+        .where('status', isEqualTo: 'active')
+        .limit(1)
+        .get();
+    if (activeSnap.docs.isEmpty) return;
+    await _applyActiveAcademicDoc(activeSnap.docs.first);
+    if (!mounted) return;
+    setState(() {
+      _isEditingTemplate = false;
+    });
+    AppScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Template changes discarded.')));
+  }
+
+  Future<int> _countVisibleUpcomingOpenSlots({
+    required String sy,
+    required String term,
+  }) async {
+    try {
+      final now = DateTime.now();
+      final hasTermRange = _activeTermStart != null && _activeTermEnd != null;
+      final termStart = hasTermRange
+          ? DateTime(
+              _activeTermStart!.year,
+              _activeTermStart!.month,
+              _activeTermStart!.day,
+            )
+          : now;
+      final termEnd = hasTermRange
+          ? DateTime(
+              _activeTermEnd!.year,
+              _activeTermEnd!.month,
+              _activeTermEnd!.day,
+              23,
+              59,
+              59,
+            )
+          : now.add(const Duration(days: 365));
+
+      final rangeStart = now.isAfter(termStart) ? now : termStart;
+      if (termEnd.isBefore(rangeStart)) return 0;
+
+      return await _svc.countOpenSlotsInRange(
         schoolYearId: sy,
         termId: term,
-        rangeStart: effectiveRangeStart,
-        rangeEnd: rangeEnd,
-        replaceOpenSlots: true,
-        replaceOpenFrom: effectiveRangeStart,
+        rangeStart: rangeStart,
+        rangeEnd: termEnd,
       );
-      if (!mounted) return;
-      setState(() {
-        _lastGeneratedCount = count;
-        _selectedOpenSlotIds.clear();
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            count == 0
-                ? 'No slots generated. Check day availability and active term dates.'
-                : 'Generated $count one-hour meeting slots.',
-          ),
-        ),
-      );
-    } on FirebaseException catch (e) {
-      if (!mounted) return;
-      final message = e.code == 'failed-precondition'
-          ? 'Generation failed: missing Firestore index. Open the error link in logs and create the required index.'
-          : 'Generation failed: ${e.message ?? e.code}';
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(message)));
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Generation failed: $e')));
-    } finally {
-      if (mounted) setState(() => _generating = false);
+    } catch (_) {
+      return 0;
     }
   }
 
@@ -1597,185 +1653,73 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
     return Scaffold(
       backgroundColor: _bg,
       body: SafeArea(
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final isDesktopSplit = constraints.maxWidth >= 1200;
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _buildTopBar(showTabs: !isDesktopSplit),
-                const Divider(height: 1),
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.all(AppSpacing.md),
-                    child: isDesktopSplit
-                        ? Row(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: [
-                              Expanded(child: _buildEditorCard()),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: _buildSlotsCard(
-                                  canQuerySlots: canQuerySlots,
-                                  sy: sy,
-                                  term: term,
-                                ),
-                              ),
-                            ],
-                          )
-                        : _mainTab == _ScheduleMainTab.templateSetup
-                        ? Align(
-                            alignment: Alignment.topCenter,
-                            child: ConstrainedBox(
-                              constraints: const BoxConstraints(maxWidth: 980),
-                              child: _buildEditorCard(),
-                            ),
-                          )
-                        : Align(
-                            alignment: Alignment.topCenter,
-                            child: ConstrainedBox(
-                              constraints: const BoxConstraints(maxWidth: 980),
-                              child: _buildSlotsCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (!canQuerySlots)
+              const Padding(
+                padding: EdgeInsets.fromLTRB(16, 12, 16, 8),
+                child: OsaWarningBanner(
+                  text:
+                      'No active School Year/Semester found. Set one in School Year & Semesters first.',
+                ),
+              ),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.all(AppSpacing.md),
+                child: Align(
+                  alignment: Alignment.topCenter,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 1080),
+                    child: !canQuerySlots
+                        ? _buildEditorCard(showBackToOpenSlots: false)
+                        : FutureBuilder<bool>(
+                            key: ValueKey('$sy|$term|$_slotPresenceVersion'),
+                            future: _hasUpcomingGeneratedSlots(sy: sy, term: term),
+                            builder: (context, snapshot) {
+                              if (!snapshot.hasData) {
+                                return const Center(
+                                  child: CircularProgressIndicator(),
+                                );
+                              }
+                              final hasGeneratedSlots = snapshot.data == true;
+                              final showTemplate =
+                                  !hasGeneratedSlots || _showTemplateEditor;
+                              if (showTemplate) {
+                                return _buildEditorCard(
+                                  showBackToOpenSlots: hasGeneratedSlots,
+                                );
+                              }
+                              return _buildSlotsCard(
                                 canQuerySlots: canQuerySlots,
                                 sy: sy,
                                 term: term,
-                              ),
-                            ),
+                                onOpenTemplate: () => setState(() {
+                                  _showTemplateEditor = true;
+                                  _isEditingTemplate = false;
+                                }),
+                                onReopenClosed: () => _showReopenClosedSlotsDialog(
+                                  sy: sy,
+                                  term: term,
+                                ),
+                              );
+                            },
                           ),
                   ),
                 ),
-              ],
-            );
-          },
+              ),
+            ),
+          ],
         ),
       ),
     );
   }
 
-  Widget _buildTopBar({required bool showTabs}) {
-    final viewport = MediaQuery.sizeOf(context);
-    final compactDesktopHeader =
-        viewport.width >= 900 &&
-        viewport.width <= 1450 &&
-        viewport.height <= 900;
-    final activeDays = _enabledDays.values.where((v) => v).length;
-    final activeLabel = (_activeSchoolYearLabel ?? '').trim();
-    final activeTerm = (_activeTermId ?? '').trim();
-
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
-      color: Colors.white,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (!compactDesktopHeader) ...[
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  widget.title,
-                  style: const TextStyle(
-                    fontSize: 28,
-                    fontWeight: FontWeight.w900,
-                    color: _primary,
-                    letterSpacing: -0.5,
-                  ),
-                ),
-                const Text(
-                  'Configure weekly availability and generate 1-hour student booking slots.',
-                  style: TextStyle(
-                    color: _hint,
-                    fontWeight: FontWeight.w700,
-                    fontSize: 14,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-          ],
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: [
-                OsaStatChip(
-                  label: 'Active SY',
-                  value: activeLabel.isEmpty ? 'Not set' : activeLabel,
-                  primaryColor: _primary,
-                  hintColor: _hint,
-                  textColor: _text,
-                ),
-                const SizedBox(width: 8),
-                OsaStatChip(
-                  label: 'Active Term',
-                  value: activeTerm.isEmpty ? 'Not set' : activeTerm,
-                  primaryColor: _primary,
-                  hintColor: _hint,
-                  textColor: _text,
-                ),
-                const SizedBox(width: 8),
-                OsaStatChip(
-                  label: 'Active days',
-                  value: '$activeDays / 5',
-                  primaryColor: _primary,
-                  hintColor: _hint,
-                  textColor: _text,
-                ),
-                const SizedBox(width: 8),
-                OsaStatChip(
-                  label: 'Slot duration',
-                  value: '60 mins',
-                  primaryColor: _primary,
-                  hintColor: _hint,
-                  textColor: _text,
-                ),
-                if (_lastGeneratedCount != null) ...[
-                  const SizedBox(width: 8),
-                  OsaStatChip(
-                    label: 'Last generation',
-                    value: '$_lastGeneratedCount slots',
-                    primaryColor: _primary,
-                    hintColor: _hint,
-                    textColor: _text,
-                  ),
-                ],
-              ],
-            ),
-          ),
-          const SizedBox(height: 10),
-          if (activeLabel.isEmpty || activeTerm.isEmpty)
-            const OsaWarningBanner(
-              text:
-                  'No active Academic Year/Term found. Set one in Academic Settings first.',
-            ),
-          const SizedBox(height: 10),
-          if (showTabs) ...[_buildMainTabBar(), const SizedBox(height: 10)],
-        ],
-      ),
-    );
-  }
-
-  Widget _buildMainTabBar() {
-    final selectedIndex = _mainTab == _ScheduleMainTab.templateSetup ? 0 : 1;
-    return OsaPrimaryTabBar(
-      controllerKey: ValueKey(_mainTab),
-      tabs: const ['Template Setup', 'Open Slots'],
-      selectedIndex: selectedIndex,
-      primaryColor: _primary,
-      onTap: (index) {
-        final next = index == 0
-            ? _ScheduleMainTab.templateSetup
-            : _ScheduleMainTab.openSlots;
-        if (next == _mainTab) return;
-        setState(() => _mainTab = next);
-      },
-    );
-  }
-
-  Widget _buildEditorCard() {
+  Widget _buildEditorCard({required bool showBackToOpenSlots}) {
     final hasActiveAcademic =
         (_activeSchoolYearId ?? '').trim().isNotEmpty &&
         (_activeTermId ?? '').trim().isNotEmpty;
+    final canEdit = hasActiveAcademic && _isEditingTemplate;
 
     return OsaPanelCard(
       padding: const EdgeInsets.all(AppSpacing.md),
@@ -1795,12 +1739,16 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
           Expanded(
             child: ListView(
               children: [
-                _buildWeeklyAvailabilitySection(),
+                _buildWeeklyAvailabilitySection(canEdit: canEdit),
                 const SizedBox(height: 12),
-                _buildBlockedDatesSection(hasActiveAcademic: hasActiveAcademic),
+                _buildBlockedDatesSection(
+                  hasActiveAcademic: hasActiveAcademic,
+                  canEdit: canEdit,
+                ),
                 const SizedBox(height: 12),
                 _buildRecurringBlockedHoursSection(
                   hasActiveAcademic: hasActiveAcademic,
+                  canEdit: canEdit,
                 ),
               ],
             ),
@@ -1809,6 +1757,50 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
           LayoutBuilder(
             builder: (context, constraints) {
               final stacked = constraints.maxWidth < 420;
+              if (!_isEditingTemplate) {
+                final actions = <Widget>[
+                  if (showBackToOpenSlots)
+                    OutlinedButton.icon(
+                      onPressed: () => setState(() {
+                        _showTemplateEditor = false;
+                      }),
+                      icon: const Icon(Icons.arrow_back_rounded, size: 16),
+                      label: const Text('Back to Open Slots'),
+                    ),
+                  FilledButton.icon(
+                    onPressed: hasActiveAcademic
+                        ? () => setState(() => _isEditingTemplate = true)
+                        : null,
+                    icon: const Icon(Icons.edit_rounded, size: 16),
+                    style: FilledButton.styleFrom(backgroundColor: _primary),
+                    label: const Text('Edit Template'),
+                  ),
+                ];
+
+                if (stacked) {
+                  return Column(
+                    children: actions
+                        .map(
+                          (w) => Padding(
+                            padding: const EdgeInsets.only(bottom: 8),
+                            child: SizedBox(width: double.infinity, child: w),
+                          ),
+                        )
+                        .toList(),
+                  );
+                }
+                return Row(
+                  children: [
+                    if (showBackToOpenSlots) ...[
+                      Expanded(child: actions.first),
+                      const SizedBox(width: 10),
+                      Expanded(child: actions.last),
+                    ] else
+                      Expanded(child: actions.last),
+                  ],
+                );
+              }
+
               if (stacked) {
                 return Column(
                   children: [
@@ -1817,21 +1809,21 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                       child: OutlinedButton.icon(
                         onPressed: _saving || !hasActiveAcademic
                             ? null
-                            : _saveTemplate,
-                        icon: const Icon(Icons.save_outlined),
-                        label: Text(_saving ? 'Saving...' : 'Save Template'),
+                            : _discardTemplateChanges,
+                        icon: const Icon(Icons.close_rounded),
+                        label: const Text('Discard Changes'),
                       ),
                     ),
                     const SizedBox(height: 8),
                     SizedBox(
                       width: double.infinity,
                       child: FilledButton.icon(
-                        onPressed: _generating || !hasActiveAcademic
+                        onPressed: _saving || !hasActiveAcademic
                             ? null
-                            : _generateSlots,
-                        icon: const Icon(Icons.auto_awesome_rounded),
+                            : _saveTemplate,
+                        icon: const Icon(Icons.save_outlined),
                         label: Text(
-                          _generating ? 'Generating...' : 'Generate Slots',
+                          _saving ? 'Saving...' : 'Save Changes',
                         ),
                         style: FilledButton.styleFrom(
                           backgroundColor: _primary,
@@ -1842,27 +1834,25 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                 );
               }
 
-              return Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: _saving || !hasActiveAcademic
-                          ? null
-                          : _saveTemplate,
-                      icon: const Icon(Icons.save_outlined),
-                      label: Text(_saving ? 'Saving...' : 'Save Template'),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: FilledButton.icon(
-                      onPressed: _generating || !hasActiveAcademic
-                          ? null
-                          : _generateSlots,
-                      icon: const Icon(Icons.auto_awesome_rounded),
-                      label: Text(
-                        _generating ? 'Generating...' : 'Generate Slots',
+                return Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: _saving || !hasActiveAcademic
+                            ? null
+                            : _discardTemplateChanges,
+                        icon: const Icon(Icons.close_rounded),
+                        label: const Text('Discard Changes'),
                       ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: FilledButton.icon(
+                        onPressed: _saving || !hasActiveAcademic
+                            ? null
+                            : _saveTemplate,
+                        icon: const Icon(Icons.save_outlined),
+                        label: Text(_saving ? 'Saving...' : 'Save Changes'),
                       style: FilledButton.styleFrom(backgroundColor: _primary),
                     ),
                   ),
@@ -1916,7 +1906,7 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
     );
   }
 
-  Widget _buildWeeklyAvailabilitySection() {
+  Widget _buildWeeklyAvailabilitySection({required bool canEdit}) {
     return OsaPanelCard(
       padding: const EdgeInsets.all(AppSpacing.sm),
       withShadow: true,
@@ -1936,13 +1926,16 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
             ],
           ),
           const SizedBox(height: 8),
-          _buildWeeklyAvailabilityTable(),
+          _buildWeeklyAvailabilityTable(canEdit: canEdit),
         ],
       ),
     );
   }
 
-  Widget _buildBlockedDatesSection({required bool hasActiveAcademic}) {
+  Widget _buildBlockedDatesSection({
+    required bool hasActiveAcademic,
+    required bool canEdit,
+  }) {
     final hasTermRange = _activeTermStart != null && _activeTermEnd != null;
     final todayStart = _todayStart();
     final effectiveStart = hasTermRange
@@ -1952,7 +1945,7 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
         : null;
     final rangeText = hasTermRange
         ? '${DateFormat('MMM d, yyyy').format(effectiveStart!)} - ${DateFormat('MMM d, yyyy').format(_activeTermEnd!)}'
-        : 'No active term range found';
+        : 'No active semester range found';
 
     return OsaPanelCard(
       padding: const EdgeInsets.all(AppSpacing.sm),
@@ -1969,7 +1962,7 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                 alignment: WrapAlignment.end,
                 crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
-                  if (_blockedDateKeys.isNotEmpty)
+                  if (canEdit && _blockedDateKeys.isNotEmpty)
                     TextButton(
                       onPressed: () {
                         setState(() {
@@ -1986,7 +1979,7 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                       child: const Text('Clear'),
                     ),
                   FilledButton(
-                    onPressed: hasActiveAcademic && hasTermRange
+                    onPressed: canEdit && hasActiveAcademic && hasTermRange
                         ? _pickBlockedDate
                         : null,
                     style: FilledButton.styleFrom(
@@ -2073,7 +2066,7 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                   backgroundColor: Colors.white,
                   side: BorderSide(color: _primary.withValues(alpha: 0.18)),
                   deleteIconColor: _primary,
-                  onDeleted: () => _removeBlockedDate(key),
+                  onDeleted: canEdit ? () => _removeBlockedDate(key) : null,
                 );
               }).toList(),
             ),
@@ -2082,7 +2075,10 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
     );
   }
 
-  Widget _buildRecurringBlockedHoursSection({required bool hasActiveAcademic}) {
+  Widget _buildRecurringBlockedHoursSection({
+    required bool hasActiveAcademic,
+    required bool canEdit,
+  }) {
     final hasRules = _weeklyBlockedWindows.values.any(
       (list) => list.isNotEmpty,
     );
@@ -2103,7 +2099,7 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                 alignment: WrapAlignment.end,
                 crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
-                  if (hasRules)
+                  if (canEdit && hasRules)
                     TextButton(
                       onPressed: () {
                         setState(() {
@@ -2122,7 +2118,7 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                       child: const Text('Clear'),
                     ),
                   FilledButton(
-                    onPressed: hasActiveAcademic
+                    onPressed: canEdit && hasActiveAcademic
                         ? _showRecurringBlockedHoursDialog
                         : null,
                     style: FilledButton.styleFrom(
@@ -2184,7 +2180,7 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
               style: TextStyle(color: _hint, fontWeight: FontWeight.w700),
             )
           else
-            _buildRecurringBlockedHoursTable(items),
+            _buildRecurringBlockedHoursTable(items, canEdit: canEdit),
         ],
       ),
     );
@@ -2192,6 +2188,7 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
 
   Widget _buildRecurringBlockedHoursTable(
     List<({String start, String end, String label, List<String> days})> items,
+    {required bool canEdit}
   ) {
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -2268,10 +2265,12 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                   Align(
                     alignment: Alignment.centerRight,
                     child: IconButton(
-                      onPressed: () => _removeRecurringBlockedHourRange(
-                        start: item.start,
-                        end: item.end,
-                      ),
+                      onPressed: canEdit
+                          ? () => _removeRecurringBlockedHourRange(
+                              start: item.start,
+                              end: item.end,
+                            )
+                          : null,
                       icon: const Icon(Icons.delete_outline_rounded, size: 18),
                       color: Colors.red.shade600,
                       tooltip: 'Remove this blocked time set',
@@ -2323,7 +2322,7 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
     );
   }
 
-  Widget _buildWeeklyAvailabilityTable() {
+  Widget _buildWeeklyAvailabilityTable({required bool canEdit}) {
     return LayoutBuilder(
       builder: (context, constraints) {
         final rows = <TableRow>[
@@ -2380,7 +2379,7 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                   child: _buildCompactTimeField(
                     value: _toReadable(_startCtrls[dayKey]!.text),
                     onTap: () => _pickTime(dayKey: dayKey, isStart: true),
-                    enabled: enabled,
+                    enabled: enabled && canEdit,
                     height: 32,
                     horizontalPadding: 7,
                   ),
@@ -2390,7 +2389,7 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                   child: _buildCompactTimeField(
                     value: _toReadable(_endCtrls[dayKey]!.text),
                     onTap: () => _pickTime(dayKey: dayKey, isStart: false),
-                    enabled: enabled,
+                    enabled: enabled && canEdit,
                     height: 32,
                     horizontalPadding: 7,
                   ),
@@ -2403,12 +2402,14 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                       activeThumbColor: _primary,
                       activeTrackColor: _primary.withValues(alpha: 0.30),
                       materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      onChanged: (value) {
-                        setState(() {
-                          _enabledDays[dayKey] = value;
-                          _dayErrors[dayKey] = _validateDay(dayKey);
-                        });
-                      },
+                      onChanged: canEdit
+                          ? (value) {
+                              setState(() {
+                                _enabledDays[dayKey] = value;
+                                _dayErrors[dayKey] = _validateDay(dayKey);
+                              });
+                            }
+                          : null,
                     ),
                   ),
                 ),
@@ -2530,7 +2531,7 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
         decoration: InputDecoration(
           labelText: label,
           filled: true,
-          fillColor: enabled ? Colors.white : Colors.grey[100],
+          fillColor: Colors.white,
           border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(AppRadii.md),
           ),
@@ -2564,6 +2565,8 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
     required bool canQuerySlots,
     required String sy,
     required String term,
+    required VoidCallback onOpenTemplate,
+    required VoidCallback onReopenClosed,
   }) {
     return LayoutBuilder(
       builder: (context, slotLayout) {
@@ -2574,7 +2577,7 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
           child: !canQuerySlots
               ? const Center(
                   child: Text(
-                    'Set School Year and Term first.',
+                    'Set School Year and Semester first.',
                     style: TextStyle(color: _hint, fontWeight: FontWeight.w700),
                   ),
                 )
@@ -2584,7 +2587,7 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                   stream: _svc.streamOpenSlots(
                     schoolYearId: sy,
                     termId: term,
-                    limit: 150,
+                    limit: 0,
                   ),
                   builder: (context, snapshot) {
                     if (snapshot.hasError) {
@@ -2603,13 +2606,39 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                     }
 
                     final now = DateTime.now();
+                    final hasTermRange =
+                        _activeTermStart != null && _activeTermEnd != null;
+                    final termStart = hasTermRange
+                        ? DateTime(
+                            _activeTermStart!.year,
+                            _activeTermStart!.month,
+                            _activeTermStart!.day,
+                          )
+                        : null;
+                    final termEnd = hasTermRange
+                        ? DateTime(
+                            _activeTermEnd!.year,
+                            _activeTermEnd!.month,
+                            _activeTermEnd!.day,
+                            23,
+                            59,
+                            59,
+                          )
+                        : null;
                     final docs = snapshot.data!.where((doc) {
                       final start = (doc.data()['startAt'] as Timestamp?)
                           ?.toDate();
-                      return start != null && !start.isBefore(now);
+                      if (start == null || start.isBefore(now)) return false;
+                      if (termStart != null && start.isBefore(termStart)) {
+                        return false;
+                      }
+                      if (termEnd != null && start.isAfter(termEnd)) {
+                        return false;
+                      }
+                      return true;
                     }).toList();
                     const emptyMessage =
-                        'No upcoming open slots. Generate or refresh term slots.';
+                        'No upcoming open slots. Open Schedule Template to update or generate slots.';
                     final visibleSlotIds = docs.map((doc) => doc.id).toSet();
                     final selectedVisibleSlotIds = _selectedOpenSlotIds
                         .where(visibleSlotIds.contains)
@@ -2625,30 +2654,50 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                       children: [
                         if (!isCompact)
                           Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              const Expanded(
-                                child: Text(
-                                  'Open Meeting Slots',
-                                  style: TextStyle(
-                                    color: _text,
-                                    fontWeight: FontWeight.w900,
-                                    fontSize: 16,
-                                  ),
+                              Expanded(
+                                child: Row(
+                                  children: [
+                                    _buildSectionIcon(
+                                      Icons.calendar_month_rounded,
+                                    ),
+                                    const SizedBox(width: 10),
+                                    Expanded(
+                                      child: _buildSectionHeaderText(
+                                        title: 'Open Meeting Slots',
+                                        subtitle:
+                                            'Review and manage generated open booking slots.',
+                                      ),
+                                    ),
+                                  ],
                                 ),
                               ),
-                              ..._buildSlotActionButtons(
-                                selectedVisibleSlotIds: selectedVisibleSlotIds,
+                              const SizedBox(width: 10),
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 8,
+                                children: _buildSlotActionButtons(
+                                  selectedVisibleSlotIds: selectedVisibleSlotIds,
+                                  onOpenTemplate: onOpenTemplate,
+                                  onReopenClosed: onReopenClosed,
+                                ),
                               ),
                             ],
                           )
                         else ...[
-                          const Text(
-                            'Open Meeting Slots',
-                            style: TextStyle(
-                              color: _text,
-                              fontWeight: FontWeight.w900,
-                              fontSize: 16,
-                            ),
+                          Row(
+                            children: [
+                              _buildSectionIcon(Icons.calendar_month_rounded),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: _buildSectionHeaderText(
+                                  title: 'Open Meeting Slots',
+                                  subtitle:
+                                      'Review and manage generated open booking slots.',
+                                ),
+                              ),
+                            ],
                           ),
                           const SizedBox(height: 8),
                           Wrap(
@@ -2656,14 +2705,16 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                             runSpacing: 8,
                             children: _buildSlotActionButtons(
                               selectedVisibleSlotIds: selectedVisibleSlotIds,
+                              onOpenTemplate: onOpenTemplate,
+                              onReopenClosed: onReopenClosed,
                             ),
                           ),
                         ],
                         const SizedBox(height: 6),
                         Text(
                           _slotSelectionMode
-                              ? 'Tap slots to select, then close selected from top-right.'
-                              : 'Click Select to start choosing slots to close.',
+                              ? 'Select open slots below, then click Close Selected.'
+                              : 'Click Select to choose slots to close.',
                           style: const TextStyle(
                             color: _hint,
                             fontWeight: FontWeight.w700,
@@ -2676,7 +2727,7 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                           runSpacing: 8,
                           children: [
                             OsaStatChip(
-                              label: 'Open slots',
+                              label: 'Upcoming open slots',
                               value: '${docs.length}',
                               primaryColor: _primary,
                               hintColor: _hint,
@@ -2762,9 +2813,22 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
 
   List<Widget> _buildSlotActionButtons({
     required Set<String> selectedVisibleSlotIds,
+    required VoidCallback onOpenTemplate,
+    required VoidCallback onReopenClosed,
   }) {
     if (!_slotSelectionMode) {
       return [
+        FilledButton.icon(
+          onPressed: onOpenTemplate,
+          icon: const Icon(Icons.tune_rounded, size: 16),
+          label: const Text('Schedule Template'),
+          style: FilledButton.styleFrom(backgroundColor: _primary),
+        ),
+        OutlinedButton.icon(
+          onPressed: onReopenClosed,
+          icon: const Icon(Icons.restore_rounded, size: 16),
+          label: const Text('Reopen Closed'),
+        ),
         OutlinedButton.icon(
           onPressed: () => setState(() {
             _slotSelectionMode = true;
@@ -2777,13 +2841,14 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
     }
 
     return [
-      OutlinedButton.icon(
+      TextButton.icon(
         onPressed: () => setState(() {
           _slotSelectionMode = false;
           _selectedOpenSlotIds.clear();
         }),
         icon: const Icon(Icons.close_rounded, size: 16),
         label: const Text('Cancel'),
+        style: TextButton.styleFrom(foregroundColor: _hint),
       ),
       OutlinedButton.icon(
         onPressed: selectedVisibleSlotIds.isEmpty
@@ -2805,6 +2870,287 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
         style: FilledButton.styleFrom(backgroundColor: Colors.red[700]),
       ),
     ];
+  }
+
+  Future<void> _showReopenClosedSlotsDialog({
+    required String sy,
+    required String term,
+  }) async {
+    final selected = <String>{};
+    bool reopening = false;
+    String? errorText;
+
+    final reopenedCount = await showDialog<int>(
+      context: context,
+      builder: (dialogContext) {
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
+          child: StatefulBuilder(
+            builder: (context, setModalState) {
+              return Container(
+                constraints: const BoxConstraints(maxWidth: 760, maxHeight: 640),
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 14),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.12),
+                      blurRadius: 18,
+                      offset: const Offset(0, 10),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        _buildSectionIcon(Icons.restore_rounded),
+                        const SizedBox(width: 10),
+                        const Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Reopen Closed Slots',
+                                style: TextStyle(
+                                  color: _text,
+                                  fontWeight: FontWeight.w900,
+                                  fontSize: 16,
+                                ),
+                              ),
+                              SizedBox(height: 2),
+                              Text(
+                                'Select closed upcoming slots to reopen for booking.',
+                                style: TextStyle(
+                                  color: _hint,
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        IconButton(
+                          onPressed: reopening
+                              ? null
+                              : () => Navigator.of(dialogContext).pop(0),
+                          icon: const Icon(Icons.close_rounded),
+                          color: _hint,
+                          style: IconButton.styleFrom(
+                            backgroundColor: Colors.black.withValues(alpha: 0.04),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    Expanded(
+                      child: StreamBuilder<
+                        List<QueryDocumentSnapshot<Map<String, dynamic>>>
+                      >(
+                        stream: _svc.streamCancelledSlots(
+                          schoolYearId: sy,
+                          termId: term,
+                          fromDate: DateTime.now(),
+                          limit: 500,
+                        ),
+                        builder: (context, snapshot) {
+                          if (snapshot.hasError) {
+                            return Center(
+                              child: Text(
+                                'Error loading closed slots: ${snapshot.error}',
+                                style: const TextStyle(
+                                  color: Colors.red,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            );
+                          }
+                          if (!snapshot.hasData) {
+                            return const Center(
+                              child: CircularProgressIndicator(),
+                            );
+                          }
+
+                          final docs = snapshot.data!;
+                          if (docs.isEmpty) {
+                            return const Center(
+                              child: Text(
+                                'No upcoming closed slots.',
+                                style: TextStyle(
+                                  color: _hint,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            );
+                          }
+
+                          return ListView.separated(
+                            itemCount: docs.length,
+                            separatorBuilder: (context, index) =>
+                                const SizedBox(height: 8),
+                            itemBuilder: (context, index) {
+                              final doc = docs[index];
+                              final data = doc.data();
+                              final start =
+                                  (data['startAt'] as Timestamp?)?.toDate();
+                              final end =
+                                  (data['endAt'] as Timestamp?)?.toDate();
+                              final title = start == null || end == null
+                                  ? doc.id
+                                  : '${DateFormat('EEE, MMM d').format(start)} • ${DateFormat('h:mm a').format(start)} - ${DateFormat('h:mm a').format(end)}';
+                              final checked = selected.contains(doc.id);
+                              return InkWell(
+                                borderRadius: BorderRadius.circular(10),
+                                onTap: reopening
+                                    ? null
+                                    : () {
+                                        setModalState(() {
+                                          if (checked) {
+                                            selected.remove(doc.id);
+                                          } else {
+                                            selected.add(doc.id);
+                                          }
+                                          errorText = null;
+                                        });
+                                      },
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 8,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: checked
+                                        ? _primary.withValues(alpha: 0.08)
+                                        : Colors.white,
+                                    borderRadius: BorderRadius.circular(10),
+                                    border: Border.all(
+                                      color: checked
+                                          ? _primary.withValues(alpha: 0.30)
+                                          : Colors.black.withValues(alpha: 0.10),
+                                    ),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Checkbox(
+                                        value: checked,
+                                        onChanged: reopening
+                                            ? null
+                                            : (value) {
+                                                setModalState(() {
+                                                  if (value == true) {
+                                                    selected.add(doc.id);
+                                                  } else {
+                                                    selected.remove(doc.id);
+                                                  }
+                                                  errorText = null;
+                                                });
+                                              },
+                                      ),
+                                      Expanded(
+                                        child: Text(
+                                          title,
+                                          style: const TextStyle(
+                                            color: _text,
+                                            fontWeight: FontWeight.w800,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              );
+                            },
+                          );
+                        },
+                      ),
+                    ),
+                    if (errorText != null) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        errorText!,
+                        style: const TextStyle(
+                          color: Colors.red,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: reopening
+                                ? null
+                                : () => Navigator.of(dialogContext).pop(0),
+                            child: const Text('Cancel'),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: FilledButton.icon(
+                            onPressed: reopening
+                                ? null
+                                : () async {
+                                    if (selected.isEmpty) {
+                                      setModalState(() {
+                                        errorText =
+                                            'Select at least one closed slot.';
+                                      });
+                                      return;
+                                    }
+                                    setModalState(() {
+                                      reopening = true;
+                                      errorText = null;
+                                    });
+                                    var success = 0;
+                                    for (final slotId in selected.toList()) {
+                                      try {
+                                        await _svc.reopenClosedSlot(
+                                          slotId: slotId,
+                                        );
+                                        success++;
+                                      } catch (_) {}
+                                    }
+                                    if (!dialogContext.mounted) return;
+                                    Navigator.of(dialogContext).pop(success);
+                                  },
+                            icon: const Icon(Icons.restore_rounded, size: 16),
+                            label: Text(
+                              reopening
+                                  ? 'Reopening...'
+                                  : 'Reopen Selected (${selected.length})',
+                            ),
+                            style: FilledButton.styleFrom(
+                              backgroundColor: _primary,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+        );
+      },
+    );
+
+    if (!mounted || reopenedCount == null) return;
+    if (reopenedCount > 0) {
+      setState(() {
+        _slotPresenceVersion++;
+      });
+      AppScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$reopenedCount slot(s) reopened.')),
+      );
+    }
   }
 
   void _toggleOpenSlotSelection(String slotId) {
@@ -2871,7 +3217,7 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
           _slotSelectionMode = false;
         }
       });
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
             failed == 0
@@ -2882,7 +3228,7 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
+      AppScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Close selected failed: $e')));
     } finally {

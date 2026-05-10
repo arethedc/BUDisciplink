@@ -6,9 +6,9 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../services/violation_case_service.dart';
 import '../shared/widgets/modern_table_layout.dart';
 import '../shared/widgets/app_layout_tokens.dart';
-import '../shared/widgets/responsive_layout_tokens.dart';
 
 class ViolationRecordsFilterPreset {
   final bool clearExisting;
@@ -53,7 +53,7 @@ class ViolationRecordsPage extends StatefulWidget {
 }
 
 class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
-  static const _bg = Color(0xFFF6FAF6);
+  static const _bg = Colors.white;
   static const _primary = Color(0xFF1B5E20);
   static const _textDark = Color(0xFF1F2A1F);
   static const _hint = Color(0xFF6D7F62);
@@ -85,6 +85,7 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
   final LayerLink _advancedFiltersLink = LayerLink();
   OverlayEntry? _advancedFiltersEntry;
   String? _selectedCaseId;
+  bool _isRefreshingTable = false;
   final ValueNotifier<List<QueryDocumentSnapshot<Map<String, dynamic>>>>
   _visibleRecordDocs =
       ValueNotifier<List<QueryDocumentSnapshot<Map<String, dynamic>>>>(
@@ -191,12 +192,31 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
     _selectedCaseId = caseId;
   }
 
-  void _onSearchChanged(String value) {
+  void _onSearchInputChanged(String value) {
     _searchDebounce?.cancel();
-    _searchDebounce = Timer(const Duration(milliseconds: 250), () {
+    _searchDebounce = Timer(const Duration(milliseconds: 220), () {
       if (!mounted) return;
-      setState(() => _searchQuery = value.trim().toLowerCase());
+      final next = value.trim().toLowerCase();
+      if (_searchQuery == next) return;
+      setState(() => _searchQuery = next);
     });
+  }
+
+  void _clearSearchQuery() {
+    _searchDebounce?.cancel();
+    _searchCtrl.clear();
+    if (!mounted) return;
+    if (_searchQuery.isNotEmpty) {
+      setState(() => _searchQuery = '');
+    }
+  }
+
+  Future<void> _refreshCurrentTable() async {
+    if (_isRefreshingTable || !mounted) return;
+    setState(() => _isRefreshingTable = true);
+    await Future<void>.delayed(const Duration(milliseconds: 350));
+    if (!mounted) return;
+    setState(() => _isRefreshingTable = false);
   }
 
   void _syncDraftFromApplied() {
@@ -330,8 +350,6 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
         final screenWidth = constraints.maxWidth;
         final compactFilters = screenWidth < 920;
         final preferDesktopTable = screenWidth >= 900;
-        final pageHorizontalPadding =
-            ResponsiveLayoutTokens.pageHorizontalPadding(screenWidth);
         final detailsWidth = (constraints.maxWidth * 0.33)
             .clamp(320.0, 420.0)
             .toDouble();
@@ -339,9 +357,7 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
         return Scaffold(
           backgroundColor: _bg,
           body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-            stream: FirebaseFirestore.instance
-                .collection('violation_cases')
-                .snapshots(),
+            stream: ViolationCaseService().streamResolvedCases(limit: 1000),
             builder: (context, snap) {
               if (snap.hasError) {
                 return Center(child: Text('Error: ${snap.error}'));
@@ -404,24 +420,11 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
               _visibleRecordDocs.value = filtered;
 
               final headerFilters = <Widget>[
-                if (compactFilters)
-                  _buildCompactFiltersButton(
-                    onTap: () => _openCompactFiltersSheet(
-                      categoryOptions: categoryOptions,
-                      violationOptions: violationOptions,
-                      reporterOptions: reporterOptions,
-                      departmentProgramOptions: departmentProgramOptions,
-                      outcomeOptions: outcomeOptions,
-                      schoolYearOptions: schoolYearOptions,
-                      termOptions: termOptions,
-                    ),
-                  ),
                 ..._buildHeaderFilterChipWidgets(),
               ];
 
               return ModernTableLayout(
                 detailsWidth: detailsWidth,
-                detailsIncludeHeader: true,
                 showDetails: _selectedCaseId != null,
                 details: _selectedCaseId != null
                     ? ValueListenableBuilder<
@@ -445,61 +448,60 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
                             onClose: () {
                               setState(() => _selectedCaseId = null);
                             },
+                            onOpenCase: (nextDoc) {
+                              if (_selectedCaseId == nextDoc.id) return;
+                              setState(() => _selectedCaseId = nextDoc.id);
+                            },
                           );
                         },
                       )
                     : null,
                 header: ModernTableHeader(
-                  title: 'Violation Records',
-                  subtitle: 'Resolved cases only',
-                  searchBar: TextField(
-                    controller: _searchCtrl,
-                    onChanged: _onSearchChanged,
-                    decoration: InputDecoration(
-                      hintText: 'Search case ID, student name, or violation',
-                      prefixIcon: const Icon(Icons.search, color: _primary),
-                      filled: true,
-                      fillColor: _bg,
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(AppRadii.md),
-                        borderSide: BorderSide.none,
-                      ),
-                      contentPadding: EdgeInsets.zero,
-                    ),
-                  ),
-                  tabs: compactFilters
-                      ? null
-                      : _buildDesktopFilterToolbar(
+                  showTitleSection: false,
+                  showTopControlsWhenTitleHidden: true,
+                  showSearchBar: true,
+                  searchBar: _buildHandbookStyleSearchBar(
+                    compactTrailingAction: _buildCompactFiltersButton(
+                      onTap: () {
+                        if (compactFilters) {
+                          _openCompactFiltersSheet(
+                            categoryOptions: categoryOptions,
+                            violationOptions: violationOptions,
+                            reporterOptions: reporterOptions,
+                            departmentProgramOptions: departmentProgramOptions,
+                            outcomeOptions: outcomeOptions,
+                            schoolYearOptions: schoolYearOptions,
+                            termOptions: termOptions,
+                          );
+                          return;
+                        }
+                        _openAdvancedFiltersSidePanel(
                           categoryOptions: categoryOptions,
                           violationOptions: violationOptions,
                           reporterOptions: reporterOptions,
-                          departmentProgramOptions: departmentProgramOptions,
+                          departmentOptions: departmentProgramOptions,
                           outcomeOptions: outcomeOptions,
                           schoolYearOptions: schoolYearOptions,
                           termOptions: termOptions,
-                        ),
+                        );
+                      },
+                    ),
+                  ),
+                  tabs: null,
                   filters: headerFilters.isEmpty ? null : headerFilters,
                 ),
                 body: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    const SizedBox(height: 8),
-                    _buildResultSummary(
-                      filtered.length,
-                      horizontalPadding: pageHorizontalPadding,
-                    ),
-                    const SizedBox(height: 10),
                     Expanded(
                       child: filtered.isEmpty
                           ? _buildEmptyState()
                           : preferDesktopTable
                           ? _buildDesktopTable(
                               filtered,
-                              horizontalPadding: pageHorizontalPadding,
                             )
                           : _buildMobileList(
                               filtered,
-                              horizontalPadding: pageHorizontalPadding,
                             ),
                     ),
                   ],
@@ -509,6 +511,149 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
           ),
         );
       },
+    );
+  }
+
+  Widget _buildHandbookStyleSearchBar({Widget? compactTrailingAction}) {
+    final width = MediaQuery.sizeOf(context).width;
+    final isDesktop = width >= 1000;
+    final shouldConstrainWidth = width >= 900;
+    final constrainedWidth = width >= 1600
+        ? 640.0
+        : width >= 1300
+        ? 580.0
+        : 520.0;
+    final height = isDesktop ? 56.0 : 48.0;
+    final borderRadius = isDesktop ? 16.0 : 18.0;
+    final iconSize = isDesktop ? 24.0 : 22.0;
+    final fontSize = isDesktop ? 15.0 : 13.5;
+
+    final searchField = ValueListenableBuilder<TextEditingValue>(
+      valueListenable: _searchCtrl,
+      builder: (context, value, _) {
+        final hasText = value.text.trim().isNotEmpty;
+        return Container(
+          height: height,
+          padding: EdgeInsets.symmetric(horizontal: isDesktop ? 20 : 12),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.75),
+            borderRadius: BorderRadius.circular(borderRadius),
+            border: Border.all(color: Colors.black12),
+            boxShadow: isDesktop
+                ? [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.05),
+                      blurRadius: 10,
+                      offset: const Offset(0, 2),
+                    ),
+                  ]
+                : null,
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.search_rounded, color: _hint, size: iconSize),
+              SizedBox(width: isDesktop ? 12 : 8),
+              Expanded(
+                child: TextField(
+                  controller: _searchCtrl,
+                  onChanged: _onSearchInputChanged,
+                  style: TextStyle(
+                    fontSize: fontSize,
+                    fontWeight: FontWeight.w600,
+                    color: _textDark,
+                  ),
+                  decoration: InputDecoration(
+                    hintText: 'Search case, student, violation, date...',
+                    border: InputBorder.none,
+                    enabledBorder: InputBorder.none,
+                    focusedBorder: InputBorder.none,
+                    disabledBorder: InputBorder.none,
+                    filled: false,
+                    isDense: true,
+                    contentPadding: EdgeInsets.zero,
+                    hintStyle: TextStyle(
+                      color: _hint,
+                      fontWeight: FontWeight.w600,
+                      fontSize: fontSize,
+                    ),
+                  ),
+                ),
+              ),
+              if (hasText)
+                IconButton(
+                  tooltip: 'Clear search',
+                  onPressed: _clearSearchQuery,
+                  icon: Icon(
+                    Icons.close_rounded,
+                    color: _hint.withValues(alpha: 0.85),
+                    size: isDesktop ? 20 : 18,
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+
+    final refreshButton = Tooltip(
+      message: 'Refresh table',
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: _isRefreshingTable ? null : _refreshCurrentTable,
+        child: Container(
+          width: height,
+          height: height,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: Colors.white.withValues(alpha: 0.75),
+            border: Border.all(color: Colors.black12),
+            boxShadow: isDesktop
+                ? [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.05),
+                      blurRadius: 10,
+                      offset: const Offset(0, 2),
+                    ),
+                  ]
+                : null,
+          ),
+          child: _isRefreshingTable
+              ? SizedBox(
+                  width: isDesktop ? 18 : 16,
+                  height: isDesktop ? 18 : 16,
+                  child: const CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: _hint,
+                  ),
+                )
+              : Icon(
+                  Icons.refresh_rounded,
+                  color: _hint.withValues(alpha: 0.9),
+                  size: isDesktop ? 20 : 18,
+                ),
+        ),
+      ),
+    );
+
+    Widget searchWithRefresh() {
+      return Row(
+        children: [
+          Expanded(child: searchField),
+          const SizedBox(width: 8),
+          refreshButton,
+          if (compactTrailingAction != null) ...[
+            const SizedBox(width: 8),
+            compactTrailingAction,
+          ],
+        ],
+      );
+    }
+
+    if (!shouldConstrainWidth) return searchWithRefresh();
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: SizedBox(width: constrainedWidth, child: searchWithRefresh()),
     );
   }
 
@@ -523,62 +668,30 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
   }) {
     return Align(
       alignment: Alignment.centerLeft,
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          children: [
-            _buildConcernFilter(),
-            _buildDateRangeFilter(),
-            _buildMoreFiltersButton(
-              categoryOptions: categoryOptions,
-              violationOptions: violationOptions,
-              reporterOptions: reporterOptions,
-              departmentProgramOptions: departmentProgramOptions,
-              outcomeOptions: outcomeOptions,
-              schoolYearOptions: schoolYearOptions,
-              termOptions: termOptions,
-            ),
-          ],
-        ),
+      child: _buildMoreFiltersButton(
+        categoryOptions: categoryOptions,
+        violationOptions: violationOptions,
+        reporterOptions: reporterOptions,
+        departmentProgramOptions: departmentProgramOptions,
+        outcomeOptions: outcomeOptions,
+        schoolYearOptions: schoolYearOptions,
+        termOptions: termOptions,
       ),
     );
   }
 
   Widget _buildEmptyState() {
     return Center(
-      child: Container(
-        constraints: const BoxConstraints(maxWidth: 360),
-        padding: const EdgeInsets.all(18),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(AppRadii.lg),
-          border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text(
-              'No violation records found.',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: _textDark,
-                fontWeight: FontWeight.w900,
-                fontSize: 16,
-              ),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'Try adjusting or clearing the filters.',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: _hint, fontWeight: FontWeight.w700),
-            ),
-            const SizedBox(height: 12),
-            FilledButton.tonal(
-              onPressed: _clearAllFilters,
-              child: const Text('Clear Filters'),
-            ),
-          ],
-        ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.inbox_outlined, size: 64, color: Colors.grey[300]),
+          const SizedBox(height: 16),
+          const Text(
+            'No cases found',
+            style: TextStyle(color: _hint, fontWeight: FontWeight.bold),
+          ),
+        ],
       ),
     );
   }
@@ -649,8 +762,10 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
         onTap: () {
           _openAdvancedFiltersSidePanel(
             categoryOptions: categoryOptions,
+            violationOptions: violationOptions,
             reporterOptions: reporterOptions,
             departmentOptions: departmentProgramOptions,
+            outcomeOptions: outcomeOptions,
             schoolYearOptions: schoolYearOptions,
             termOptions: termOptions,
           );
@@ -660,12 +775,9 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
           children: [
             const Icon(Icons.tune_rounded, size: 16),
             const SizedBox(width: 8),
-            Text(
-              _showAdvancedFilters ? 'Hide Filters' : 'More Filters',
-              style: const TextStyle(
-                fontWeight: FontWeight.w700,
-                fontSize: 12.5,
-              ),
+            const Text(
+              'Show Filters',
+              style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12.5),
             ),
           ],
         ),
@@ -675,17 +787,22 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
 
   Future<void> _openAdvancedFiltersSidePanel({
     required List<String> categoryOptions,
+    required List<String> violationOptions,
     required List<String> reporterOptions,
     required List<String> departmentOptions,
+    required List<String> outcomeOptions,
     required List<String> schoolYearOptions,
     required List<String> termOptions,
   }) async {
     if (_showAdvancedFilters) return;
 
     var concern = _concernFilter;
+    var dateRange = _dateRange;
     var category = _categoryFilter;
+    var violationType = _violationTypeFilter;
     var reporter = _reporterFilter;
     var department = _departmentProgramFilter;
+    var outcome = _outcomeFilter;
     var schoolYear = _schoolYearFilter;
     var term = _termFilter;
 
@@ -702,6 +819,39 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
           alignment: Alignment.centerRight,
           child: StatefulBuilder(
             builder: (context, setModalState) {
+              Future<void> pickDateFrom() async {
+                final picked = await _showSingleFilterDatePicker(
+                  initialDate: dateRange?.start,
+                );
+                if (picked == null) return;
+                final currentEnd = dateRange?.end;
+                setModalState(() {
+                  if (currentEnd != null && currentEnd.isBefore(picked)) {
+                    dateRange = DateTimeRange(start: picked, end: picked);
+                  } else {
+                    dateRange = DateTimeRange(
+                      start: picked,
+                      end: currentEnd ?? picked,
+                    );
+                  }
+                });
+              }
+
+              Future<void> pickDateTo() async {
+                final picked = await _showSingleFilterDatePicker(
+                  initialDate: dateRange?.end ?? dateRange?.start,
+                );
+                if (picked == null) return;
+                final currentStart = dateRange?.start ?? picked;
+                setModalState(() {
+                  if (picked.isBefore(currentStart)) {
+                    dateRange = DateTimeRange(start: picked, end: picked);
+                  } else {
+                    dateRange = DateTimeRange(start: currentStart, end: picked);
+                  }
+                });
+              }
+
               return Material(
                 color: Colors.transparent,
                 child: SafeArea(
@@ -770,7 +920,42 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
                                   onChanged: (v) =>
                                       setModalState(() => concern = v),
                                 ),
-                                const SizedBox(height: 12),
+                                const SizedBox(height: 14),
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: _buildDateBoundField(
+                                        label: 'Date from',
+                                        value: dateRange?.start,
+                                        onTap: pickDateFrom,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 10),
+                                    Expanded(
+                                      child: _buildDateBoundField(
+                                        label: 'Date to',
+                                        value: dateRange?.end,
+                                        onTap: pickDateTo,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                if (dateRange != null) ...[
+                                  const SizedBox(height: 8),
+                                  Align(
+                                    alignment: Alignment.centerRight,
+                                    child: TextButton.icon(
+                                      onPressed: () =>
+                                          setModalState(() => dateRange = null),
+                                      icon: const Icon(
+                                        Icons.close_rounded,
+                                        size: 16,
+                                      ),
+                                      label: const Text('Clear dates'),
+                                    ),
+                                  ),
+                                ],
+                                const SizedBox(height: 14),
                                 _panelDropdown(
                                   label: 'Category',
                                   value: category,
@@ -778,7 +963,16 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
                                   onChanged: (v) =>
                                       setModalState(() => category = v),
                                 ),
-                                const SizedBox(height: 12),
+                                const SizedBox(height: 14),
+                                _panelDropdown(
+                                  label: 'Violation Type',
+                                  value: violationType,
+                                  options: violationOptions,
+                                  onChanged: (v) => setModalState(
+                                    () => violationType = v,
+                                  ),
+                                ),
+                                const SizedBox(height: 14),
                                 _panelDropdown(
                                   label: 'Reporter',
                                   value: reporter,
@@ -786,7 +980,7 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
                                   onChanged: (v) =>
                                       setModalState(() => reporter = v),
                                 ),
-                                const SizedBox(height: 12),
+                                const SizedBox(height: 14),
                                 _panelDropdown(
                                   label: 'Department',
                                   value: department,
@@ -794,7 +988,15 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
                                   onChanged: (v) =>
                                       setModalState(() => department = v),
                                 ),
-                                const SizedBox(height: 12),
+                                const SizedBox(height: 14),
+                                _panelDropdown(
+                                  label: 'Outcome',
+                                  value: outcome,
+                                  options: outcomeOptions,
+                                  onChanged: (v) =>
+                                      setModalState(() => outcome = v),
+                                ),
+                                const SizedBox(height: 14),
                                 _panelDropdown(
                                   label: 'School Year',
                                   value: schoolYear,
@@ -802,7 +1004,7 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
                                   onChanged: (v) =>
                                       setModalState(() => schoolYear = v),
                                 ),
-                                const SizedBox(height: 12),
+                                const SizedBox(height: 14),
                                 _panelDropdown(
                                   label: 'Term',
                                   value: term,
@@ -829,9 +1031,12 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
                                 onPressed: () {
                                   setState(() {
                                     _concernFilter = concern;
+                                    _dateRange = dateRange;
                                     _categoryFilter = category;
+                                    _violationTypeFilter = violationType;
                                     _reporterFilter = reporter;
                                     _departmentProgramFilter = department;
+                                    _outcomeFilter = outcome;
                                     _schoolYearFilter = schoolYear;
                                     _termFilter = term;
                                   });
@@ -876,77 +1081,45 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
     required ValueChanged<String> onChanged,
   }) {
     final normalized = _normalizeSelected(value, options);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          '$label:',
-          style: const TextStyle(
-            color: _textDark,
-            fontWeight: FontWeight.w800,
-            fontSize: 12.5,
-          ),
-        ),
-        const SizedBox(height: 6),
-        DropdownButtonFormField<String>(
-          initialValue: normalized,
-          isExpanded: true,
-          menuMaxHeight: 360,
-          decoration: InputDecoration(
-            isDense: false,
-            filled: true,
-            fillColor: _bg.withValues(alpha: 0.7),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(10),
-              borderSide: BorderSide(
-                color: Colors.black.withValues(alpha: 0.10),
-              ),
+    return DropdownButtonFormField<String>(
+      initialValue: normalized,
+      isExpanded: true,
+      menuMaxHeight: 360,
+      decoration: _uniformDropdownDecoration(label: label),
+      items: options
+          .map(
+            (item) => DropdownMenuItem(
+              value: item,
+              child: Text(item, overflow: TextOverflow.ellipsis),
             ),
-            enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(10),
-              borderSide: BorderSide(
-                color: Colors.black.withValues(alpha: 0.10),
-              ),
-            ),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(10),
-              borderSide: const BorderSide(color: _primary, width: 1.3),
-            ),
-            contentPadding: const EdgeInsets.symmetric(
-              horizontal: 12,
-              vertical: 13,
-            ),
-          ),
-          items: options
-              .map(
-                (item) => DropdownMenuItem(
-                  value: item,
-                  child: Text(item, overflow: TextOverflow.ellipsis),
-                ),
-              )
-              .toList(),
-          onChanged: (v) {
-            if (v != null) onChanged(v);
-          },
-        ),
-      ],
+          )
+          .toList(),
+      onChanged: (v) {
+        if (v != null) onChanged(v);
+      },
     );
   }
 
   Widget _buildCompactFiltersButton({required VoidCallback onTap}) {
-    return _toolbarFilterShell(
+    return Tooltip(
+      message: 'Show Filters',
       child: InkWell(
+        customBorder: const CircleBorder(),
         onTap: onTap,
-        child: const Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.filter_alt_rounded, size: 16),
-            SizedBox(width: 8),
-            Text(
-              'Filters',
-              style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12.5),
-            ),
-          ],
+        child: Container(
+          width: 48,
+          height: 48,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: Colors.white.withValues(alpha: 0.75),
+            border: Border.all(color: Colors.black12),
+          ),
+          child: Icon(
+            Icons.filter_alt_rounded,
+            color: _hint.withValues(alpha: 0.9),
+            size: 18,
+          ),
         ),
       ),
     );
@@ -1340,12 +1513,37 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
       builder: (sheetContext) {
         return StatefulBuilder(
           builder: (sheetContext, setModalState) {
-            Future<void> pickDate() async {
-              final picked = await _showThemedDateRangeDialog(
-                initialRange: dateRange,
+            Future<void> pickDateFrom() async {
+              final picked = await _showSingleFilterDatePicker(
+                initialDate: dateRange?.start,
               );
               if (picked == null) return;
-              setModalState(() => dateRange = picked);
+              final currentEnd = dateRange?.end;
+              setModalState(() {
+                if (currentEnd != null && currentEnd.isBefore(picked)) {
+                  dateRange = DateTimeRange(start: picked, end: picked);
+                } else {
+                  dateRange = DateTimeRange(
+                    start: picked,
+                    end: currentEnd ?? picked,
+                  );
+                }
+              });
+            }
+
+            Future<void> pickDateTo() async {
+              final picked = await _showSingleFilterDatePicker(
+                initialDate: dateRange?.end ?? dateRange?.start,
+              );
+              if (picked == null) return;
+              final currentStart = dateRange?.start ?? picked;
+              setModalState(() {
+                if (picked.isBefore(currentStart)) {
+                  dateRange = DateTimeRange(start: picked, end: picked);
+                } else {
+                  dateRange = DateTimeRange(start: currentStart, end: picked);
+                }
+              });
             }
 
             return DraggableScrollableSheet(
@@ -1373,30 +1571,44 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
                         ),
                       ),
                       const SizedBox(height: 12),
-                      DropdownButtonFormField<String>(
-                        initialValue: concern,
-                        decoration: _fieldDecoration('Concern'),
-                        items: const [
-                          DropdownMenuItem(value: 'All', child: Text('All')),
-                          DropdownMenuItem(
-                            value: 'Basic',
-                            child: Text('Basic'),
+                      _advancedDropdownField(
+                        label: 'Concern Type',
+                        value: concern,
+                        options: const ['All', 'Basic', 'Serious'],
+                        onChanged: (v) => setModalState(() => concern = v),
+                      ),
+                      const SizedBox(height: 14),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: _buildDateBoundField(
+                              label: 'Date from',
+                              value: dateRange?.start,
+                              onTap: pickDateFrom,
+                            ),
                           ),
-                          DropdownMenuItem(
-                            value: 'Serious',
-                            child: Text('Serious'),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: _buildDateBoundField(
+                              label: 'Date to',
+                              value: dateRange?.end,
+                              onTap: pickDateTo,
+                            ),
                           ),
                         ],
-                        onChanged: (v) {
-                          if (v != null) setModalState(() => concern = v);
-                        },
                       ),
-                      const SizedBox(height: 10),
-                      OutlinedButton.icon(
-                        onPressed: pickDate,
-                        icon: const Icon(Icons.calendar_month_rounded),
-                        label: Text('Date: ${_dateRangeLabel(dateRange)}'),
-                      ),
+                      if (dateRange != null) ...[
+                        const SizedBox(height: 8),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: TextButton.icon(
+                            onPressed: () =>
+                                setModalState(() => dateRange = null),
+                            icon: const Icon(Icons.close_rounded, size: 16),
+                            label: const Text('Clear dates'),
+                          ),
+                        ),
+                      ],
                       const SizedBox(height: 14),
                       _advancedDropdownField(
                         label: 'Category',
@@ -1673,60 +1885,22 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
     required ValueChanged<String> onChanged,
   }) {
     final normalized = _normalizeSelected(value, options);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          label,
-          style: const TextStyle(
-            color: _textDark,
-            fontWeight: FontWeight.w800,
-            fontSize: 12.5,
-          ),
-        ),
-        const SizedBox(height: 6),
-        DropdownButtonFormField<String>(
-          initialValue: normalized,
-          isExpanded: true,
-          menuMaxHeight: 360,
-          decoration: InputDecoration(
-            isDense: false,
-            filled: true,
-            fillColor: _bg.withValues(alpha: 0.6),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(10),
-              borderSide: BorderSide(
-                color: Colors.black.withValues(alpha: 0.10),
-              ),
+    return DropdownButtonFormField<String>(
+      initialValue: normalized,
+      isExpanded: true,
+      menuMaxHeight: 360,
+      decoration: _uniformDropdownDecoration(label: label),
+      items: options
+          .map(
+            (item) => DropdownMenuItem(
+              value: item,
+              child: Text(item, overflow: TextOverflow.ellipsis),
             ),
-            enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(10),
-              borderSide: BorderSide(
-                color: Colors.black.withValues(alpha: 0.10),
-              ),
-            ),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(10),
-              borderSide: const BorderSide(color: _primary, width: 1.3),
-            ),
-            contentPadding: const EdgeInsets.symmetric(
-              horizontal: 12,
-              vertical: 13,
-            ),
-          ),
-          items: options
-              .map(
-                (item) => DropdownMenuItem(
-                  value: item,
-                  child: Text(item, overflow: TextOverflow.ellipsis),
-                ),
-              )
-              .toList(),
-          onChanged: (v) {
-            if (v != null) onChanged(v);
-          },
-        ),
-      ],
+          )
+          .toList(),
+      onChanged: (v) {
+        if (v != null) onChanged(v);
+      },
     );
   }
 
@@ -1742,12 +1916,91 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
     );
   }
 
-  InputDecoration _fieldDecoration([String? label]) {
+  InputDecoration _uniformDropdownDecoration({String? label}) {
     return InputDecoration(
       labelText: label,
-      isDense: true,
-      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+      labelStyle: const TextStyle(color: _hint, fontWeight: FontWeight.w700),
+      isDense: false,
+      filled: true,
+      fillColor: Colors.white,
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(10),
+        borderSide: BorderSide(color: _primary.withValues(alpha: 0.20)),
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(10),
+        borderSide: BorderSide(color: _primary.withValues(alpha: 0.20)),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(10),
+        borderSide: const BorderSide(color: _primary, width: 1.6),
+      ),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+    );
+  }
+
+  Widget _buildDateBoundField({
+    required String label,
+    required DateTime? value,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(10),
+      onTap: onTap,
+      child: InputDecorator(
+        decoration: _uniformDropdownDecoration(label: label),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                value == null ? 'Select date' : DateFormat('MMM d, yyyy').format(value),
+                style: TextStyle(
+                  color: value == null ? _hint : _textDark,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 12.8,
+                ),
+              ),
+            ),
+            Icon(
+              Icons.calendar_today_rounded,
+              size: 16,
+              color: _hint.withValues(alpha: 0.9),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<DateTime?> _showSingleFilterDatePicker({DateTime? initialDate}) async {
+    final now = DateTime.now();
+    final firstDate = DateTime(now.year - 5, 1, 1);
+    final lastDate = DateTime(now.year + 1, 12, 31);
+
+    final initial = initialDate == null
+        ? now
+        : (initialDate.isBefore(firstDate)
+              ? firstDate
+              : (initialDate.isAfter(lastDate) ? lastDate : initialDate));
+
+    return showDatePicker(
+      context: context,
+      initialDate: initial,
+      firstDate: firstDate,
+      lastDate: lastDate,
+      builder: (context, child) {
+        return Theme(
+          data: Theme.of(context).copyWith(
+            colorScheme: const ColorScheme.light(
+              primary: _primary,
+              onPrimary: Colors.white,
+              onSurface: _textDark,
+              surface: Colors.white,
+            ),
+          ),
+          child: child ?? const SizedBox.shrink(),
+        );
+      },
     );
   }
 
@@ -1792,23 +2045,76 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
       ...chips.map(
         (chip) => Padding(
           padding: const EdgeInsets.only(right: 8),
-          child: InputChip(
-            label: Text(chip.label),
-            onDeleted: chip.onRemove,
-            backgroundColor: Colors.white,
-            side: BorderSide(color: Colors.black.withValues(alpha: 0.14)),
-            labelStyle: const TextStyle(
-              color: _textDark,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
+          child: _buildActiveFilterFieldChip(chip),
         ),
       ),
-      TextButton(
+      OutlinedButton.icon(
         onPressed: _clearAllFilters,
-        child: const Text('Clear All Filters'),
+        icon: const Icon(Icons.filter_alt_off_rounded, size: 16),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: _primary,
+          side: BorderSide(color: _primary.withValues(alpha: 0.25)),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
+        ),
+        label: const Text(
+          'Clear All',
+          style: TextStyle(fontWeight: FontWeight.w800),
+        ),
       ),
     ];
+  }
+
+  Widget _buildActiveFilterFieldChip(_FilterChipData chip) {
+    final raw = chip.label.trim();
+    final splitIndex = raw.indexOf(':');
+    final hasFieldLabel = splitIndex > 0 && splitIndex < raw.length - 1;
+    final fieldLabel = hasFieldLabel ? raw.substring(0, splitIndex).trim() : '';
+    final fieldValue = hasFieldLabel
+        ? raw.substring(splitIndex + 1).trim()
+        : raw;
+
+    return InputChip(
+      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      visualDensity: VisualDensity.compact,
+      onDeleted: chip.onRemove,
+      deleteIcon: Icon(
+        Icons.close_rounded,
+        size: 16,
+        color: _primary.withValues(alpha: 0.9),
+      ),
+      deleteButtonTooltipMessage: 'Remove filter',
+      labelPadding: const EdgeInsets.symmetric(horizontal: 2),
+      backgroundColor: const Color(0xFFF7FBF7),
+      side: BorderSide(color: _primary.withValues(alpha: 0.25)),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      label: RichText(
+        overflow: TextOverflow.ellipsis,
+        text: TextSpan(
+          children: [
+            if (hasFieldLabel)
+              TextSpan(
+                text: '$fieldLabel: ',
+                style: const TextStyle(
+                  color: _hint,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 12.5,
+                ),
+              ),
+            TextSpan(
+              text: fieldValue,
+              style: const TextStyle(
+                color: _textDark,
+                fontWeight: FontWeight.w800,
+                fontSize: 12.8,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   List<_FilterChipData> _activeFilterChips() {
@@ -1902,36 +2208,90 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
     return chips;
   }
 
-  Widget _buildDesktopTable(
-    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs, {
-    required double horizontalPadding,
-  }) {
-    final tablePadding = horizontalPadding.clamp(12.0, 24.0);
+  Widget _buildDesktopTable(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) {
     return SingleChildScrollView(
-      padding: EdgeInsets.fromLTRB(tablePadding, 0, tablePadding, 20),
+      padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
       child: Container(
         width: double.infinity,
         decoration: BoxDecoration(
           color: Colors.white,
           borderRadius: BorderRadius.circular(AppRadii.xl),
+        ),
+        foregroundDecoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(AppRadii.xl),
           border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
         ),
+        clipBehavior: Clip.antiAlias,
         child: LayoutBuilder(
           builder: (context, constraints) {
             final tableWidth = constraints.maxWidth;
+            final detailsOpen = _selectedCaseId != null;
+            final compactTable = detailsOpen || tableWidth < 1120;
+            final tableHorizontalMargin = compactTable ? 8.0 : 12.0;
+            final tableColumnSpacing = compactTable ? 12.0 : 20.0;
+            const columnCount = 5;
             const totalWeight = 8.6;
-            double colWidth(double weight, double minWidth, double maxWidth) {
-              final value = tableWidth * (weight / totalWeight);
-              if (value < minWidth) return minWidth;
+            final usableWidth =
+                (tableWidth -
+                        (tableHorizontalMargin * 2) -
+                        (tableColumnSpacing * (columnCount - 1)))
+                    .clamp(420.0, double.infinity)
+                    .toDouble();
+            double colWidth(
+              double weight,
+              double minWidth,
+              double maxWidth, {
+              double? compactMinWidth,
+              double? compactMaxWidth,
+            }) {
+              final value = usableWidth * (weight / totalWeight);
+              final effectiveMin = compactTable
+                  ? (compactMinWidth ?? minWidth)
+                  : minWidth;
+              final effectiveMax = compactTable
+                  ? (compactMaxWidth ?? maxWidth)
+                  : maxWidth;
+              if (value < effectiveMin) return effectiveMin;
+              if (value > effectiveMax) return effectiveMax;
               if (value > maxWidth) return maxWidth;
               return value;
             }
 
-            final codeCellWidth = colWidth(1.10, 98, 120);
-            final studentCellWidth = colWidth(2.40, 210, 230);
-            final concernCellWidth = colWidth(1.60, 138, 152);
-            final violationCellWidth = colWidth(2.50, 220, 250);
-            final dateCellWidth = colWidth(1.00, 126, 136);
+            final codeCellWidth = colWidth(
+              1.10,
+              98,
+              120,
+              compactMinWidth: 82,
+              compactMaxWidth: 106,
+            );
+            final studentCellWidth = colWidth(
+              2.40,
+              210,
+              230,
+              compactMinWidth: 170,
+              compactMaxWidth: 220,
+            );
+            final concernCellWidth = colWidth(
+              1.60,
+              138,
+              152,
+              compactMinWidth: 102,
+              compactMaxWidth: 142,
+            );
+            final violationCellWidth = colWidth(
+              2.50,
+              220,
+              250,
+              compactMinWidth: 165,
+              compactMaxWidth: 225,
+            );
+            final dateCellWidth = colWidth(
+              1.00,
+              126,
+              136,
+              compactMinWidth: 92,
+              compactMaxWidth: 120,
+            );
 
             return SingleChildScrollView(
               scrollDirection: Axis.horizontal,
@@ -1940,7 +2300,8 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
                 child: DataTable(
                   showCheckboxColumn: false,
                   headingRowColor: WidgetStateProperty.all(_bg),
-                  columnSpacing: 20,
+                  horizontalMargin: tableHorizontalMargin,
+                  columnSpacing: tableColumnSpacing,
                   columns: [
                     DataColumn(
                       label: SizedBox(
@@ -2128,66 +2489,115 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
     );
   }
 
-  Widget _buildMobileList(
-    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs, {
-    required double horizontalPadding,
-  }) {
+  Widget _buildMobileList(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) {
     return ListView.builder(
-      padding: EdgeInsets.fromLTRB(horizontalPadding, 0, horizontalPadding, 16),
+      padding: const EdgeInsets.all(14),
       itemCount: docs.length,
       itemBuilder: (context, index) {
         final doc = docs[index];
-        final data = doc.data();
-        final code = _caseCode(data, doc.id);
-        final student = _studentName(data);
-        final concern = _concernValue(data);
-        final violation = _violationTypeValue(data);
-        final date = _bestDate(data);
-
-        return Card(
-          margin: const EdgeInsets.only(bottom: 10),
-          child: ListTile(
-            onTap: () => _openMobileDetails(context, doc),
-            title: Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    student,
-                    style: const TextStyle(
-                      color: _textDark,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                ),
-                _ConcernPill(concern: concern),
-              ],
-            ),
-            subtitle: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const SizedBox(height: 4),
-                Text(violation, maxLines: 1, overflow: TextOverflow.ellipsis),
-                const SizedBox(height: 2),
-                Text(
-                  date == null ? '--' : DateFormat('MMM d, yyyy').format(date),
-                  style: const TextStyle(
-                    color: _hint,
-                    fontWeight: FontWeight.w700,
-                    fontSize: 12,
-                  ),
-                ),
-              ],
-            ),
-            trailing: Text(
-              code,
-              style: const TextStyle(
-                color: _primary,
-                fontWeight: FontWeight.w900,
-              ),
-            ),
-          ),
+        final isSelected = _selectedCaseId == doc.id;
+        return _buildCaseCard(
+          doc.id,
+          doc.data(),
+          isSelected,
+          () {
+            setState(() => _selectedCaseId = doc.id);
+            _openMobileDetails(context, doc);
+          },
         );
       },
+    );
+  }
+
+  Widget _buildCaseCard(
+    String id,
+    Map<String, dynamic> data,
+    bool isSelected,
+    VoidCallback onTap,
+  ) {
+    final caseCode = _caseCode(data, id);
+    final studentName = _studentName(data);
+    final violation = _violationTypeValue(data);
+    final concern = _concernValue(data);
+    final date = _bestDate(data);
+
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.all(AppSpacing.md),
+        decoration: BoxDecoration(
+          color: isSelected ? _primary.withValues(alpha: 0.05) : Colors.white,
+          borderRadius: BorderRadius.circular(AppRadii.xl),
+          border: Border.all(
+            color: isSelected
+                ? _primary
+                : Colors.black.withValues(alpha: 0.05),
+            width: isSelected ? 2 : 1,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.02),
+              blurRadius: 10,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          caseCode,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w900,
+                            color: _primary,
+                          ),
+                        ),
+                      ),
+                      if (date != null)
+                        Text(
+                          DateFormat('MMM d, yyyy').format(date),
+                          style: const TextStyle(fontSize: 12, color: _hint),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    studentName,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                      color: _textDark,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      _ConcernPill(concern: concern),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          violation,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(color: _hint, fontSize: 13),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const Icon(Icons.chevron_right, color: Colors.grey),
+          ],
+        ),
+      ),
     );
   }
 
@@ -2198,42 +2608,37 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (_) => DraggableScrollableSheet(
-        initialChildSize: 0.88,
-        minChildSize: 0.5,
-        maxChildSize: 0.95,
-        builder: (context, controller) => Container(
-          decoration: const BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
-          ),
-          child: Column(
-            children: [
-              AppBar(
-                elevation: 0,
-                backgroundColor: Colors.white,
-                foregroundColor: _textDark,
-                title: const Text('Case Details (Read-only)'),
-                actions: [
-                  IconButton(
-                    onPressed: () => Navigator.of(context).pop(),
-                    icon: const Icon(Icons.close_rounded),
-                  ),
-                ],
-              ),
-              const Divider(height: 1),
-              Expanded(
-                child: ListView(
-                  controller: controller,
-                  padding: const EdgeInsets.all(14),
-                  children: [_RecordDetailsContent(doc: doc)],
-                ),
-              ),
-            ],
-          ),
-        ),
+      showDragHandle: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
+      builder: (sheetContext) {
+        final media = MediaQuery.of(sheetContext);
+        final reservedTop = media.padding.top + kToolbarHeight + 8;
+        final modalHeight = (media.size.height - reservedTop)
+            .clamp(420.0, media.size.height * 0.92)
+            .toDouble();
+        return SafeArea(
+          top: false,
+          child: SizedBox(
+            height: modalHeight,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+              child: _RecordDetailsPanel(
+                doc: doc,
+                onClose: () => Navigator.of(sheetContext).pop(),
+                onOpenCase: (nextDoc) async {
+                  Navigator.of(sheetContext).pop();
+                  await Future<void>.delayed(const Duration(milliseconds: 120));
+                  if (!context.mounted) return;
+                  await _openMobileDetails(context, nextDoc);
+                },
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -2333,11 +2738,9 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
 
   static DateTime? _bestDate(Map<String, dynamic> data) {
     final candidates = [
-      data['resolvedAt'],
-      data['updatedAt'],
-      data['createdAt'],
       data['incidentAt'],
-      data['submittedAt'],
+      data['incidentDate'],
+      data['dateOfIncident'],
     ];
     for (final value in candidates) {
       if (value is Timestamp) return value.toDate();
@@ -2459,20 +2862,37 @@ class _ConcernPill extends StatelessWidget {
     final label = concern.isEmpty || concern == '--'
         ? 'General'
         : toTitleCase(concern);
+    final normalized = label.toLowerCase().trim();
+    final isSerious = normalized.contains('serious');
+    final isBasic = normalized.contains('basic');
+
+    final Color fill = isSerious
+        ? Colors.orange.withValues(alpha: 0.10)
+        : isBasic
+        ? const Color(0xFF1B5E20).withValues(alpha: 0.10)
+        : Colors.black.withValues(alpha: 0.04);
+    final Color border = isSerious
+        ? Colors.orange.withValues(alpha: 0.30)
+        : isBasic
+        ? const Color(0xFF1B5E20).withValues(alpha: 0.25)
+        : Colors.black.withValues(alpha: 0.12);
+    final Color text = isSerious
+        ? Colors.orange.shade900
+        : isBasic
+        ? const Color(0xFF1B5E20)
+        : const Color(0xFF6D7F62);
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(
-        color: const Color(0xFF1B5E20).withValues(alpha: 0.10),
+        color: fill,
         borderRadius: BorderRadius.circular(AppRadii.xxl),
-        border: Border.all(
-          color: const Color(0xFF1B5E20).withValues(alpha: 0.25),
-        ),
+        border: Border.all(color: border),
       ),
       child: Text(
         label,
-        style: const TextStyle(
-          color: Color(0xFF1B5E20),
+        style: TextStyle(
+          color: text,
           fontSize: 10,
           fontWeight: FontWeight.w900,
           letterSpacing: 0.5,
@@ -2485,40 +2905,67 @@ class _ConcernPill extends StatelessWidget {
 class _RecordDetailsPanel extends StatelessWidget {
   final QueryDocumentSnapshot<Map<String, dynamic>> doc;
   final VoidCallback onClose;
+  final ValueChanged<QueryDocumentSnapshot<Map<String, dynamic>>>? onOpenCase;
 
-  const _RecordDetailsPanel({required this.doc, required this.onClose});
+  const _RecordDetailsPanel({
+    required this.doc,
+    required this.onClose,
+    this.onOpenCase,
+  });
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      color: const Color(0xFFF9FBF9),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(AppRadii.xl),
+        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.03),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
       child: Column(
         children: [
           Container(
-            padding: const EdgeInsets.fromLTRB(14, 14, 10, 10),
+            padding: const EdgeInsets.fromLTRB(14, 14, 10, 8),
             child: Row(
               children: [
+                const Icon(
+                  Icons.assignment_outlined,
+                  color: Color(0xFF1B5E20),
+                  size: 20,
+                ),
+                const SizedBox(width: 8),
                 const Expanded(
                   child: Text(
-                    'Case Details (Read-only)',
+                    'Case Details',
                     style: TextStyle(
-                      color: Color(0xFF1F2A1F),
+                      color: Color(0xFF1B5E20),
                       fontWeight: FontWeight.w900,
+                      fontSize: 17,
                     ),
                   ),
                 ),
                 IconButton(
                   onPressed: onClose,
-                  icon: const Icon(Icons.close_rounded),
+                  icon: const Icon(
+                    Icons.close_rounded,
+                    color: Color(0xFF6D7F62),
+                  ),
                 ),
               ],
             ),
           ),
+          const SizedBox(height: 8),
           const Divider(height: 1),
           Expanded(
             child: ListView(
-              padding: const EdgeInsets.all(14),
-              children: [_RecordDetailsContent(doc: doc)],
+              padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
+              children: [_RecordDetailsContent(doc: doc, onOpenCase: onOpenCase)],
             ),
           ),
         ],
@@ -2529,8 +2976,9 @@ class _RecordDetailsPanel extends StatelessWidget {
 
 class _RecordDetailsContent extends StatelessWidget {
   final QueryDocumentSnapshot<Map<String, dynamic>> doc;
+  final ValueChanged<QueryDocumentSnapshot<Map<String, dynamic>>>? onOpenCase;
 
-  const _RecordDetailsContent({required this.doc});
+  const _RecordDetailsContent({required this.doc, this.onOpenCase});
 
   @override
   Widget build(BuildContext context) {
@@ -2548,18 +2996,33 @@ class _RecordDetailsContent extends StatelessWidget {
     final category = _ViolationRecordsPageState._categoryValue(data);
     final violation = _ViolationRecordsPageState._violationTypeValue(data);
     final reporter = _ViolationRecordsPageState._reporterValue(data);
-    final outcome = _ViolationRecordsPageState._outcomeValue(data);
     final narrative = _ViolationRecordsPageState._value(
       data['narrative'] ?? data['description'],
     );
-    final reportedAt = _ViolationRecordsPageState._bestDate(data);
-    final dateText = reportedAt == null
+    final reportedAt = _tsToDate(data['createdAt']);
+    final dateReportedText = reportedAt == null
         ? '--'
         : DateFormat('MMM d, yyyy - h:mm a').format(reportedAt);
+    final incidentAt =
+        _tsToDate(data['incidentAt']) ??
+        _tsToDate(data['incidentDate']) ??
+        _tsToDate(data['dateOfIncident']);
+    final dateOfIncidentText = incidentAt == null
+        ? '--'
+        : DateFormat('MMM d, yyyy - h:mm a').format(incidentAt);
     final studentUid = _ViolationRecordsPageState._value(
       data['studentUid'] ?? data['studentId'] ?? data['reportedStudentUid'],
     );
+    final studentPhotoFuture = _resolveStudentProfilePhotoUrl(
+      studentUid: studentUid,
+      caseData: data,
+    );
     final evidenceUrls = _evidenceUrlsFromCase(data);
+    final offenseFuture = _resolveRecordOffenseIndicator(
+      studentUid: studentUid,
+      currentCaseId: doc.id,
+      currentCategory: category,
+    );
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2568,21 +3031,79 @@ class _RecordDetailsContent extends StatelessWidget {
           title: 'Student Information',
           child: Row(
             children: [
-              Container(
-                width: 46,
-                height: 46,
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1B5E20).withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(AppRadii.md),
-                  border: Border.all(
-                    color: const Color(0xFF1B5E20).withValues(alpha: 0.25),
-                  ),
-                ),
-                child: const Icon(
-                  Icons.person_rounded,
-                  color: Color(0xFF1B5E20),
-                  size: 24,
-                ),
+              FutureBuilder<String>(
+                future: studentPhotoFuture,
+                initialData: '',
+                builder: (context, snapshot) {
+                  final photoUrl = (snapshot.data ?? '').trim();
+                  return MouseRegion(
+                    cursor: photoUrl.isEmpty
+                        ? SystemMouseCursors.basic
+                        : SystemMouseCursors.click,
+                    child: GestureDetector(
+                      onTap: photoUrl.isEmpty
+                          ? null
+                          : () => _openProfilePhotoViewer(
+                              context,
+                              sourceUrl: photoUrl,
+                              studentName: studentName,
+                            ),
+                      child: Stack(
+                        clipBehavior: Clip.none,
+                        children: [
+                          Container(
+                            width: 46,
+                            height: 46,
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF1B5E20).withValues(alpha: 0.12),
+                              borderRadius: BorderRadius.circular(AppRadii.md),
+                              border: Border.all(
+                                color: const Color(0xFF1B5E20).withValues(alpha: 0.25),
+                              ),
+                            ),
+                            child: photoUrl.isEmpty
+                                ? const Icon(
+                                    Icons.person_rounded,
+                                    color: Color(0xFF1B5E20),
+                                    size: 24,
+                                  )
+                                : ClipRRect(
+                                    borderRadius: BorderRadius.circular(AppRadii.md - 1),
+                                    child: Image.network(
+                                      photoUrl,
+                                      fit: BoxFit.cover,
+                                      errorBuilder: (_, __, ___) => const Icon(
+                                        Icons.person_rounded,
+                                        color: Color(0xFF1B5E20),
+                                        size: 24,
+                                      ),
+                                    ),
+                                  ),
+                          ),
+                          if (photoUrl.isNotEmpty)
+                            Positioned(
+                              right: -4,
+                              bottom: -4,
+                              child: Container(
+                                width: 17,
+                                height: 17,
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF1B5E20),
+                                  borderRadius: BorderRadius.circular(AppRadii.pill),
+                                  border: Border.all(color: Colors.white, width: 1.3),
+                                ),
+                                child: const Icon(
+                                  Icons.open_in_full_rounded,
+                                  color: Colors.white,
+                                  size: 10,
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
               ),
               const SizedBox(width: 12),
               Expanded(
@@ -2622,6 +3143,49 @@ class _RecordDetailsContent extends StatelessWidget {
         const SizedBox(height: 12),
         _DetailCard(
           title: 'Incident Summary',
+          titleTrailing: FutureBuilder<_RecordOffenseIndicator>(
+            future: offenseFuture,
+            initialData: const _RecordOffenseIndicator(
+              label: '--',
+              subtitle: '',
+              offenseNumber: 0,
+            ),
+            builder: (context, snapshot) {
+              final indicator =
+                  snapshot.data ??
+                  const _RecordOffenseIndicator(
+                    label: '--',
+                    subtitle: '',
+                    offenseNumber: 0,
+                  );
+              final isRepeat = indicator.offenseNumber >= 2;
+              return Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 4,
+                ),
+                decoration: BoxDecoration(
+                  color: isRepeat
+                      ? Colors.orange.withValues(alpha: 0.12)
+                      : const Color(0xFF1B5E20).withValues(alpha: 0.10),
+                  borderRadius: BorderRadius.circular(AppRadii.pill),
+                  border: Border.all(
+                    color: isRepeat
+                        ? Colors.orange.withValues(alpha: 0.35)
+                        : const Color(0xFF1B5E20).withValues(alpha: 0.28),
+                  ),
+                ),
+                child: Text(
+                  indicator.label,
+                  style: TextStyle(
+                    color: isRepeat ? Colors.orange.shade800 : const Color(0xFF1B5E20),
+                    fontWeight: FontWeight.w900,
+                    fontSize: 11.5,
+                  ),
+                ),
+              );
+            },
+          ),
           child: Column(
             children: [
               _kv('Concern', concern),
@@ -2630,11 +3194,11 @@ class _RecordDetailsContent extends StatelessWidget {
               const SizedBox(height: 8),
               _kv('Violation Type', violation),
               const SizedBox(height: 8),
-              _kv('Reporter', reporter),
+              _kv('Date Reported', dateReportedText),
               const SizedBox(height: 8),
-              _kv('Outcome', outcome),
+              _kv('Date of Incident', dateOfIncidentText),
               const SizedBox(height: 8),
-              _kv('Date Reported', dateText),
+              _kv('Reported By', reporter),
               const SizedBox(height: 8),
               _kv('Case Code', caseCode),
             ],
@@ -2664,7 +3228,7 @@ class _RecordDetailsContent extends StatelessWidget {
         ),
         const SizedBox(height: 12),
         _DetailCard(
-          title: 'Evidence',
+          title: 'Evidence (${evidenceUrls.length})',
           child: _EvidencePreviewGrid(urls: evidenceUrls),
         ),
         const SizedBox(height: 12),
@@ -2673,6 +3237,8 @@ class _RecordDetailsContent extends StatelessWidget {
           child: _StudentCaseHistoryCard(
             studentUid: studentUid,
             currentCaseId: doc.id,
+            currentCategory: category,
+            onOpenCase: onOpenCase,
           ),
         ),
       ],
@@ -2710,160 +3276,706 @@ class _RecordDetailsContent extends StatelessWidget {
   }
 }
 
-class _StudentCaseHistoryCard extends StatelessWidget {
+class _StudentCaseHistoryCard extends StatefulWidget {
   final String studentUid;
   final String currentCaseId;
+  final String currentCategory;
+  final ValueChanged<QueryDocumentSnapshot<Map<String, dynamic>>>? onOpenCase;
 
   const _StudentCaseHistoryCard({
     required this.studentUid,
     required this.currentCaseId,
+    required this.currentCategory,
+    this.onOpenCase,
   });
 
   @override
+  State<_StudentCaseHistoryCard> createState() => _StudentCaseHistoryCardState();
+}
+
+class _StudentCaseHistoryCardState extends State<_StudentCaseHistoryCard> {
+  final Set<String> _expandedCategories = <String>{};
+  bool _initializedDefaultExpanded = false;
+
+  String _normalizeCategoryKey(String raw) {
+    final value = raw.trim().toLowerCase();
+    if (value.isEmpty || value == '--') return 'uncategorized';
+    return value;
+  }
+
+  String _displayCategoryLabel(String raw) {
+    final value = raw.trim();
+    if (value.isEmpty || value == '--') return 'Uncategorized';
+    return value;
+  }
+
+  DateTime? _historyDate(Map<String, dynamic> data) {
+    return _offenseSortDate(data);
+  }
+
+  Widget _buildCategoryCard({
+    required String categoryKey,
+    required String categoryLabel,
+    required List<QueryDocumentSnapshot<Map<String, dynamic>>> priorCases,
+    required List<QueryDocumentSnapshot<Map<String, dynamic>>> allCasesInCategory,
+    required bool isCurrentCategory,
+  }) {
+    final isExpanded = _expandedCategories.contains(categoryKey);
+    final sortedAll = [...allCasesInCategory]
+      ..sort((a, b) {
+        final da = _historyDate(a.data()) ?? DateTime(2000);
+        final db = _historyDate(b.data()) ?? DateTime(2000);
+        final byDate = da.compareTo(db);
+        if (byDate != 0) return byDate;
+        return a.id.compareTo(b.id);
+      });
+    final sortedPrior = [...priorCases]
+      ..sort((a, b) {
+        final da = _historyDate(a.data()) ?? DateTime(2000);
+        final db = _historyDate(b.data()) ?? DateTime(2000);
+        final byDate = da.compareTo(db);
+        if (byDate != 0) return byDate;
+        return a.id.compareTo(b.id);
+      });
+
+    final totalInCategory = sortedAll.length;
+    final currentIndexInCategory = isCurrentCategory
+        ? sortedAll.indexWhere((doc) => doc.id == widget.currentCaseId) + 1
+        : 0;
+    final subtitle = isCurrentCategory
+        ? (currentIndexInCategory <= 1
+              ? 'Current case appears to be the 1st offense in this category.'
+              : 'Current case is the ${_ordinal(currentIndexInCategory)} offense in this category.')
+        : '';
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: isCurrentCategory
+              ? const Color(0xFF1B5E20).withValues(alpha: 0.25)
+              : Colors.black.withValues(alpha: 0.08),
+        ),
+      ),
+      child: Column(
+        children: [
+          InkWell(
+            borderRadius: BorderRadius.circular(10),
+            onTap: () {
+              setState(() {
+                if (isExpanded) {
+                  _expandedCategories.remove(categoryKey);
+                } else {
+                  _expandedCategories.add(categoryKey);
+                }
+              });
+            },
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '$categoryLabel ($totalInCategory)',
+                          style: TextStyle(
+                            color: isCurrentCategory
+                                ? const Color(0xFF1B5E20)
+                                : const Color(0xFF1F2A1F),
+                            fontWeight: FontWeight.w900,
+                            fontSize: 13,
+                          ),
+                        ),
+                        if (subtitle.isNotEmpty) ...[
+                          const SizedBox(height: 3),
+                          Text(
+                            subtitle,
+                            style: const TextStyle(
+                              color: Color(0xFF6D7F62),
+                              fontWeight: FontWeight.w700,
+                              fontSize: 11.4,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Icon(
+                    isExpanded
+                        ? Icons.keyboard_arrow_up_rounded
+                        : Icons.keyboard_arrow_down_rounded,
+                    color: const Color(0xFF1B5E20),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (isExpanded) ...[
+            const Divider(height: 1),
+            if (sortedPrior.isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(12),
+                child: Text(
+                  'No prior offense records yet for this category.',
+                  style: TextStyle(
+                    color: Color(0xFF6D7F62),
+                    fontWeight: FontWeight.w700,
+                    fontSize: 11.8,
+                  ),
+                ),
+              )
+            else
+              Padding(
+                padding: const EdgeInsets.all(10),
+                child: Column(
+                  children: sortedPrior.map((caseDoc) {
+                    final data = caseDoc.data();
+                    final offenseIndex =
+                        sortedAll.indexWhere((doc) => doc.id == caseDoc.id) + 1;
+                    final type = _ViolationRecordsPageState._violationTypeValue(data);
+                    final status = _ViolationRecordsPageState._value(data['status']);
+                    final severity = _ViolationRecordsPageState._value(
+                      data['finalSeverity'] ?? data['concern'],
+                    );
+                    final date = _historyDate(data);
+                    final dateText = date == null
+                        ? '--'
+                        : DateFormat('MMM d, yyyy').format(date);
+
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(9),
+                        onTap: () {
+                          showDialog<void>(
+                            context: context,
+                            builder: (_) => _HistoryCaseDetailsDialogRecord(
+                              caseDoc: caseDoc,
+                              offenseLabel: '${_ordinal(offenseIndex)} Offense',
+                              categoryLabel: categoryLabel,
+                              onOpenCase: widget.onOpenCase,
+                            ),
+                          );
+                        },
+                        child: Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.02),
+                            borderRadius: BorderRadius.circular(9),
+                            border: Border.all(
+                              color: Colors.black.withValues(alpha: 0.06),
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      '${_ordinal(offenseIndex)} Offense',
+                                      style: const TextStyle(
+                                        color: Color(0xFF1F2A1F),
+                                        fontWeight: FontWeight.w900,
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 3),
+                                    Text(
+                                      type.isEmpty ? '--' : type,
+                                      style: const TextStyle(
+                                        color: Color(0xFF1F2A1F),
+                                        fontWeight: FontWeight.w800,
+                                        fontSize: 12.2,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      '$dateText - ${status.isEmpty ? '--' : toTitleCase(status)}${severity.isEmpty ? '' : ' - ${toTitleCase(severity)}'}',
+                                      style: const TextStyle(
+                                        color: Color(0xFF6D7F62),
+                                        fontWeight: FontWeight.w700,
+                                        fontSize: 11.1,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              if (widget.onOpenCase != null) ...[
+                                const SizedBox(width: 8),
+                                const Icon(
+                                  Icons.open_in_new_rounded,
+                                  color: Color(0xFF1B5E20),
+                                  size: 16,
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  }).toList(growable: false),
+                ),
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
-    if (studentUid.isEmpty) {
+    if (widget.studentUid.isEmpty) {
       return const Text(
         'No student history available for this case.',
         style: TextStyle(color: Color(0xFF6D7F62), fontWeight: FontWeight.w700),
       );
     }
 
-    return FutureBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      future: FirebaseFirestore.instance
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
           .collection('violation_cases')
-          .where('studentUid', isEqualTo: studentUid)
-          .get(),
+          .where('studentUid', isEqualTo: widget.studentUid)
+          .snapshots(),
       builder: (context, snap) {
-        if (snap.connectionState == ConnectionState.waiting) {
-          return const LinearProgressIndicator(minHeight: 2);
-        }
         if (!snap.hasData) {
-          return const Text(
-            'No history found.',
-            style: TextStyle(
-              color: Color(0xFF6D7F62),
-              fontWeight: FontWeight.w700,
+          return const Padding(
+            padding: EdgeInsets.symmetric(vertical: 16),
+            child: SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2.0),
             ),
           );
         }
+        final allDocs = snap.data!.docs;
+        final activeDocs = allDocs
+            .where((doc) => !_isCancelledCase(doc.data()))
+            .toList(growable: false);
+        final priorDocs = activeDocs
+            .where((d) => d.id != widget.currentCaseId)
+            .toList(growable: false);
 
-        final docs =
-            snap.data!.docs.where((d) => d.id != currentCaseId).toList()
-              ..sort((a, b) {
-                final ad = _ViolationRecordsPageState._bestDate(a.data());
-                final bd = _ViolationRecordsPageState._bestDate(b.data());
-                if (ad == null && bd == null) return 0;
-                if (ad == null) return 1;
-                if (bd == null) return -1;
-                return bd.compareTo(ad);
-              });
+        final groupedByKey =
+            <String, List<QueryDocumentSnapshot<Map<String, dynamic>>>>{};
+        final groupedAllByKey =
+            <String, List<QueryDocumentSnapshot<Map<String, dynamic>>>>{};
+        final labelsByKey = <String, String>{};
 
-        if (docs.isEmpty) {
-          return const Text(
-            'No prior case history for this student.',
-            style: TextStyle(
-              color: Color(0xFF6D7F62),
-              fontWeight: FontWeight.w700,
-            ),
-          );
+        for (final doc in activeDocs) {
+          final rawCategory = _ViolationRecordsPageState._categoryValue(doc.data());
+          final categoryKey = _normalizeCategoryKey(rawCategory);
+          groupedAllByKey.putIfAbsent(categoryKey, () => []).add(doc);
+        }
+        for (final doc in priorDocs) {
+          final rawCategory = _ViolationRecordsPageState._categoryValue(doc.data());
+          final categoryKey = _normalizeCategoryKey(rawCategory);
+          final categoryLabel = _displayCategoryLabel(rawCategory);
+          groupedByKey.putIfAbsent(categoryKey, () => []).add(doc);
+          labelsByKey.putIfAbsent(categoryKey, () => categoryLabel);
         }
 
-        int resolved = 0;
-        int unresolved = 0;
-        for (final d in docs) {
-          final status = _ViolationRecordsPageState._value(d.data()['status']);
-          final lower = status.toLowerCase();
-          if (lower.contains('resolved') && !lower.contains('unresolved')) {
-            resolved += 1;
-          } else {
-            unresolved += 1;
-          }
-        }
-
-        final lastDate = _ViolationRecordsPageState._bestDate(
-          docs.first.data(),
+        final currentCategoryKey = _normalizeCategoryKey(widget.currentCategory);
+        final currentCategoryLabel = _displayCategoryLabel(widget.currentCategory);
+        groupedByKey.putIfAbsent(
+          currentCategoryKey,
+          () => <QueryDocumentSnapshot<Map<String, dynamic>>>[],
         );
+        groupedAllByKey.putIfAbsent(
+          currentCategoryKey,
+          () => <QueryDocumentSnapshot<Map<String, dynamic>>>[],
+        );
+        labelsByKey[currentCategoryKey] = currentCategoryLabel;
+
+        if (priorDocs.isEmpty && groupedByKey.length <= 1) {
+          return const Center(
+            child: Padding(
+              padding: EdgeInsets.symmetric(vertical: 20),
+              child: Text(
+                'No prior history for this student.',
+                style: TextStyle(
+                  color: Color(0xFF6D7F62),
+                  fontWeight: FontWeight.w700,
+                  fontSize: 13,
+                ),
+              ),
+            ),
+          );
+        }
+
+        final entries = groupedByKey.entries.toList()
+          ..sort((a, b) {
+            final aIsCurrent = a.key == currentCategoryKey;
+            final bIsCurrent = b.key == currentCategoryKey;
+            if (aIsCurrent && !bIsCurrent) return -1;
+            if (!aIsCurrent && bIsCurrent) return 1;
+            final byCount = b.value.length.compareTo(a.value.length);
+            if (byCount != 0) return byCount;
+            return a.key.toLowerCase().compareTo(b.key.toLowerCase());
+          });
+
+        if (!_initializedDefaultExpanded) {
+          _initializedDefaultExpanded = true;
+          _expandedCategories.add(currentCategoryKey);
+        }
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _info('Total prior cases', '${docs.length}'),
-            const SizedBox(height: 8),
-            _info('Resolved prior cases', '$resolved'),
-            const SizedBox(height: 8),
-            _info('Unresolved prior cases', '$unresolved'),
-            const SizedBox(height: 8),
-            _info(
-              'Most recent prior case',
-              lastDate == null
-                  ? '--'
-                  : DateFormat('MMM d, yyyy - h:mm a').format(lastDate),
+            const Padding(
+              padding: EdgeInsets.only(bottom: 10),
+              child: Text(
+                'Offense history is grouped by category and excludes cancelled cases.',
+                style: TextStyle(
+                  color: Color(0xFF6D7F62),
+                  fontWeight: FontWeight.w700,
+                  fontSize: 11.8,
+                ),
+              ),
             ),
+            ...entries.map((entry) {
+              final categoryKey = entry.key;
+              final priorCases = entry.value;
+              final allCasesInCategory =
+                  groupedAllByKey[categoryKey] ??
+                  <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+              final categoryLabel =
+                  labelsByKey[categoryKey] ?? _displayCategoryLabel(categoryKey);
+              return _buildCategoryCard(
+                categoryKey: categoryKey,
+                categoryLabel: categoryLabel,
+                priorCases: priorCases,
+                allCasesInCategory: allCasesInCategory,
+                isCurrentCategory: categoryKey == currentCategoryKey,
+              );
+            }),
           ],
         );
       },
-    );
-  }
-
-  Widget _info(String label, String value) {
-    return Row(
-      children: [
-        SizedBox(
-          width: 165,
-          child: Text(
-            '$label:',
-            style: const TextStyle(
-              color: Color(0xFF6D7F62),
-              fontWeight: FontWeight.w800,
-            ),
-          ),
-        ),
-        Expanded(
-          child: Text(
-            value,
-            style: const TextStyle(
-              color: Color(0xFF1F2A1F),
-              fontWeight: FontWeight.w800,
-            ),
-          ),
-        ),
-      ],
     );
   }
 }
 
 class _DetailCard extends StatelessWidget {
   final String title;
+  final Widget? titleTrailing;
   final Widget child;
 
-  const _DetailCard({required this.title, required this.child});
+  const _DetailCard({required this.title, this.titleTrailing, required this.child});
 
   @override
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(AppSpacing.sm),
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: const Color(0xFFF8FBF8),
         borderRadius: BorderRadius.circular(AppRadii.md),
-        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+        border: Border.all(color: Colors.black.withValues(alpha: 0.06)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            title,
-            style: const TextStyle(
-              color: Color(0xFF1F2A1F),
-              fontWeight: FontWeight.w900,
-              fontSize: 14.5,
-            ),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  title,
+                  style: const TextStyle(
+                    color: Color(0xFF1F2A1F),
+                    fontWeight: FontWeight.w900,
+                    fontSize: 14.5,
+                  ),
+                ),
+              ),
+              if (titleTrailing != null) ...[
+                const SizedBox(width: 8),
+                titleTrailing!,
+              ],
+            ],
           ),
           const SizedBox(height: 10),
           child,
         ],
       ),
     );
+  }
+}
+
+class _HistoryCaseDetailsDialogRecord extends StatelessWidget {
+  final QueryDocumentSnapshot<Map<String, dynamic>> caseDoc;
+  final String offenseLabel;
+  final String categoryLabel;
+  final ValueChanged<QueryDocumentSnapshot<Map<String, dynamic>>>? onOpenCase;
+
+  const _HistoryCaseDetailsDialogRecord({
+    required this.caseDoc,
+    required this.offenseLabel,
+    required this.categoryLabel,
+    this.onOpenCase,
+  });
+
+  static Widget _kv(String k, String v) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 122,
+          child: Text(
+            '$k:',
+            style: const TextStyle(
+              color: Color(0xFF6D7F62),
+              fontWeight: FontWeight.w900,
+              fontSize: 12.2,
+            ),
+          ),
+        ),
+        Expanded(
+          child: Text(
+            v,
+            style: const TextStyle(
+              color: Color(0xFF1F2A1F),
+              fontWeight: FontWeight.w700,
+              fontSize: 12.4,
+              height: 1.3,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final d = caseDoc.data();
+    final caseCode = _ViolationRecordsPageState._caseCode(d, caseDoc.id);
+    final violation = _ViolationRecordsPageState._violationTypeValue(d);
+    final status = _ViolationRecordsPageState._value(d['status']);
+    final severity = _ViolationRecordsPageState._value(d['finalSeverity'] ?? d['concern']);
+    final reportedAt = _tsToDate(d['createdAt']);
+    final incidentAt =
+        _tsToDate(d['incidentAt']) ?? _tsToDate(d['incidentDate']) ?? _tsToDate(d['dateOfIncident']);
+    final reportedBy = _ViolationRecordsPageState._reporterValue(d);
+    final narrative = _ViolationRecordsPageState._value(d['narrative'] ?? d['description']);
+
+    return AlertDialog(
+      backgroundColor: Colors.white,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      titlePadding: const EdgeInsets.fromLTRB(24, 18, 12, 0),
+      title: Row(
+        children: [
+          Expanded(
+            child: Text(
+              offenseLabel,
+              style: const TextStyle(
+                color: Color(0xFF1B5E20),
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ),
+          IconButton(
+            onPressed: () => Navigator.pop(context),
+            tooltip: 'Close',
+            icon: const Icon(Icons.close_rounded, color: Color(0xFF6D7F62)),
+            style: IconButton.styleFrom(
+              backgroundColor: Colors.black.withValues(alpha: 0.06),
+            ),
+          ),
+        ],
+      ),
+      content: SizedBox(
+        width: 560,
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _kv('Case Code', caseCode),
+              const SizedBox(height: 8),
+              _kv('Category', categoryLabel),
+              const SizedBox(height: 8),
+              _kv('Violation Type', violation.isEmpty ? '--' : violation),
+              const SizedBox(height: 8),
+              _kv('Status', status.isEmpty ? '--' : toTitleCase(status)),
+              const SizedBox(height: 8),
+              _kv('Severity', severity.isEmpty ? '--' : toTitleCase(severity)),
+              const SizedBox(height: 8),
+              _kv(
+                'Date Reported',
+                reportedAt == null
+                    ? '--'
+                    : DateFormat('MMM d, yyyy - h:mm a').format(reportedAt),
+              ),
+              const SizedBox(height: 8),
+              _kv(
+                'Date of Incident',
+                incidentAt == null
+                    ? '--'
+                    : DateFormat('MMM d, yyyy - h:mm a').format(incidentAt),
+              ),
+              const SizedBox(height: 8),
+              _kv('Reported By', reportedBy),
+              if (narrative.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                const Text(
+                  'Incident Summary',
+                  style: TextStyle(
+                    color: Color(0xFF6D7F62),
+                    fontWeight: FontWeight.w900,
+                    fontSize: 12.2,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.03),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: Colors.black.withValues(alpha: 0.08),
+                    ),
+                  ),
+                  child: Text(
+                    narrative,
+                    style: const TextStyle(
+                      color: Color(0xFF1F2A1F),
+                      fontWeight: FontWeight.w700,
+                      fontSize: 12.4,
+                      height: 1.35,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+      actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+      actions: [
+        if (onOpenCase != null)
+          OutlinedButton.icon(
+            onPressed: () {
+              Navigator.pop(context);
+              onOpenCase?.call(caseDoc);
+            },
+            icon: const Icon(Icons.open_in_new_rounded),
+            label: const Text('Open Case'),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: const Color(0xFF1B5E20),
+              side: BorderSide(
+                color: const Color(0xFF1B5E20).withValues(alpha: 0.35),
+              ),
+            ),
+          ),
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Close'),
+        ),
+      ],
+    );
+  }
+}
+
+class _RecordOffenseIndicator {
+  final String label;
+  final String subtitle;
+  final int offenseNumber;
+
+  const _RecordOffenseIndicator({
+    required this.label,
+    required this.subtitle,
+    required this.offenseNumber,
+  });
+}
+
+Future<_RecordOffenseIndicator> _resolveRecordOffenseIndicator({
+  required String studentUid,
+  required String currentCaseId,
+  required String currentCategory,
+}) async {
+  if (studentUid.isEmpty || currentCategory.trim().isEmpty || currentCategory == '--') {
+    return const _RecordOffenseIndicator(
+      label: '--',
+      subtitle: 'No category available for offense progression.',
+      offenseNumber: 0,
+    );
+  }
+
+  final snap = await FirebaseFirestore.instance
+      .collection('violation_cases')
+      .where('studentUid', isEqualTo: studentUid)
+      .get();
+
+  final activeCases = snap.docs.where((d) => !_isCancelledCase(d.data())).toList();
+  final key = currentCategory.trim().toLowerCase();
+  final sameCategory = activeCases
+      .where((d) {
+        final category = _ViolationRecordsPageState._categoryValue(d.data())
+            .trim()
+            .toLowerCase();
+        return category == key;
+      })
+      .toList()
+    ..sort((a, b) {
+      final ad = _offenseSortDate(a.data()) ?? DateTime(2000);
+      final bd = _offenseSortDate(b.data()) ?? DateTime(2000);
+      return ad.compareTo(bd);
+    });
+
+  if (sameCategory.isEmpty) {
+    return const _RecordOffenseIndicator(
+      label: '--',
+      subtitle: 'No prior offense records in this category.',
+      offenseNumber: 0,
+    );
+  }
+
+  final idx = sameCategory.indexWhere((d) => d.id == currentCaseId);
+  final offenseNumber = idx >= 0 ? idx + 1 : sameCategory.length;
+  final label = '${_ordinal(offenseNumber)} Offense';
+  final subtitle = offenseNumber <= 1
+      ? 'This appears to be the first recorded offense in this category.'
+      : 'Current case is the $label in this category.';
+
+  return _RecordOffenseIndicator(
+    label: label,
+    subtitle: subtitle,
+    offenseNumber: offenseNumber,
+  );
+}
+
+bool _isCancelledCase(Map<String, dynamic> data) {
+  final status = _ViolationRecordsPageState._value(data['status']).toLowerCase();
+  return status.contains('cancel');
+}
+
+DateTime? _offenseSortDate(Map<String, dynamic> data) {
+  return _tsToDate(data['incidentAt']) ??
+      _tsToDate(data['incidentDate']) ??
+      _tsToDate(data['dateOfIncident']);
+}
+
+DateTime? _tsToDate(dynamic value) => value is Timestamp ? value.toDate() : null;
+
+String _ordinal(int value) {
+  final v = value.abs();
+  final mod100 = v % 100;
+  if (mod100 >= 11 && mod100 <= 13) return '${value}th';
+  switch (v % 10) {
+    case 1:
+      return '${value}st';
+    case 2:
+      return '${value}nd';
+    case 3:
+      return '${value}rd';
+    default:
+      return '${value}th';
   }
 }
 
@@ -2921,6 +4033,82 @@ Future<String?> _resolveEvidenceUrl(String rawUrl) async {
   } catch (_) {
     return null;
   }
+}
+
+Future<String> _resolveImageSourceUrl(String source) async {
+  final raw = source.trim();
+  if (raw.isEmpty) return '';
+  if (raw.startsWith('http://') || raw.startsWith('https://')) return raw;
+  final resolved = await _resolveEvidenceUrl(raw);
+  return resolved ?? '';
+}
+
+Future<String> _resolveStudentProfilePhotoUrl({
+  required String studentUid,
+  required Map<String, dynamic> caseData,
+}) async {
+  String pickCaseValue() {
+    final candidates = [
+      caseData['studentPhotoUrl'],
+      caseData['studentProfilePhotoUrl'],
+      caseData['photoUrl'],
+      caseData['profilePhotoUrl'],
+      caseData['reportedStudentPhotoUrl'],
+    ];
+    for (final value in candidates) {
+      final v = (value ?? '').toString().trim();
+      if (v.isNotEmpty) return v;
+    }
+    return '';
+  }
+
+  final fromCase = pickCaseValue();
+  if (fromCase.isNotEmpty) {
+    final resolved = await _resolveImageSourceUrl(fromCase);
+    if (resolved.isNotEmpty) return resolved;
+  }
+
+  final uid = studentUid.trim();
+  if (uid.isEmpty) return '';
+
+  try {
+    final userDoc = await FirebaseFirestore.instance.collection('users').doc(uid).get();
+    final userData = userDoc.data() ?? const <String, dynamic>{};
+    final studentProfile =
+        userData['studentProfile'] as Map<String, dynamic>? ?? const <String, dynamic>{};
+    final employeeProfile =
+        userData['employeeProfile'] as Map<String, dynamic>? ?? const <String, dynamic>{};
+    final source = (userData['photoUrl'] ??
+            userData['profilePhotoUrl'] ??
+            studentProfile['photoUrl'] ??
+            studentProfile['profilePhotoUrl'] ??
+            employeeProfile['photoUrl'] ??
+            employeeProfile['profilePhotoUrl'] ??
+            '')
+        .toString()
+        .trim();
+    if (source.isEmpty) return '';
+    return _resolveImageSourceUrl(source);
+  } catch (_) {
+    return '';
+  }
+}
+
+Future<void> _openProfilePhotoViewer(
+  BuildContext context, {
+  required String sourceUrl,
+  required String studentName,
+}) async {
+  final resolvedUrl = await _resolveImageSourceUrl(sourceUrl);
+  if (resolvedUrl.isEmpty || !context.mounted) return;
+  await showDialog<void>(
+    context: context,
+    barrierColor: Colors.black.withValues(alpha: 0.72),
+    builder: (_) => _ProfilePhotoViewerDialog(
+      photoUrl: resolvedUrl,
+      studentName: studentName,
+    ),
+  );
 }
 
 bool _looksLikeImageUrl(String url) {
@@ -3096,6 +4284,104 @@ class _EvidenceImageDialog extends StatelessWidget {
                           color: Color(0xFF6D7F62),
                           fontWeight: FontWeight.w700,
                         ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ProfilePhotoViewerDialog extends StatelessWidget {
+  final String photoUrl;
+  final String studentName;
+
+  const _ProfilePhotoViewerDialog({
+    required this.photoUrl,
+    required this.studentName,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final size = MediaQuery.of(context).size;
+    final dialogWidth = size.width > 760 ? 640.0 : size.width * 0.94;
+    final dialogHeight = size.height > 620 ? 560.0 : size.height * 0.88;
+
+    return Dialog(
+      backgroundColor: Colors.black,
+      insetPadding: const EdgeInsets.all(16),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(AppRadii.xl),
+      ),
+      child: SizedBox(
+        width: dialogWidth,
+        height: dialogHeight,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 10, 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      studentName.isEmpty ? 'Profile Photo' : studentName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close_rounded, color: Colors.white),
+                    style: IconButton.styleFrom(
+                      backgroundColor: Colors.white.withValues(alpha: 0.14),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(10, 4, 10, 10),
+                child: InteractiveViewer(
+                  minScale: 0.8,
+                  maxScale: 4.0,
+                  child: Center(
+                    child: Image.network(
+                      photoUrl,
+                      fit: BoxFit.contain,
+                      loadingBuilder: (context, child, progress) {
+                        if (progress == null) return child;
+                        return const Center(
+                          child: CircularProgressIndicator(color: Colors.white),
+                        );
+                      },
+                      errorBuilder: (_, __, ___) => const Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.broken_image_outlined,
+                            color: Colors.white70,
+                            size: 42,
+                          ),
+                          SizedBox(height: 8),
+                          Text(
+                            'Unable to load profile photo.',
+                            style: TextStyle(
+                              color: Colors.white70,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ),

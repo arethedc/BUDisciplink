@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 import '../../../services/academic_settings_service.dart';
+import 'package:apps/pages/shared/widgets/app_inline_notice.dart';
 
 const bg = Color(0xFFF5F6FB);
 const headerGreen = Color(0xFF2F6C44);
@@ -375,7 +376,7 @@ class _AcademicYearManagePageState extends State<AcademicYearManagePage> {
   }
 
   void _toast(String msg) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    AppScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 }
 
@@ -694,3 +695,4 @@ class _Error extends StatelessWidget {
     );
   }
 }
+

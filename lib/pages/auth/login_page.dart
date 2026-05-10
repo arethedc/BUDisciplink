@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../services/user_service.dart';
 import '../../services/role_router.dart';
 import '../shared/widgets/app_branding.dart';
 import '../auth/forgot_password_page.dart';
+import 'package:apps/pages/shared/widgets/app_inline_notice.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -21,10 +23,84 @@ class _LoginPageState extends State<LoginPage> {
   bool _obscurePassword = true;
 
   // ===== DESIGN THEME (copied from reference) =====
-  static const bg = Color(0xFFF6FAF6);
+  static const bg = Colors.white;
   static const primary = Color(0xFF1B5E20);
   static const hint = Color(0xFF6D7F62);
   static const textDark = Color(0xFF1F2A1F);
+
+  int? _toEpochMs(DateTime? value) {
+    if (value == null) return null;
+    return value.toUtc().millisecondsSinceEpoch;
+  }
+
+  String _friendlyAuthMessage(FirebaseAuthException e) {
+    switch (e.code) {
+      case 'invalid-credential':
+      case 'wrong-password':
+      case 'user-not-found':
+        return 'Invalid email or password.';
+      case 'invalid-email':
+        return 'Please enter a valid email address.';
+      case 'too-many-requests':
+        return 'Too many attempts. Please wait a moment and try again.';
+      case 'network-request-failed':
+        return 'Network error. Check your internet connection and try again.';
+      case 'operation-not-allowed':
+        return 'Email/password sign-in is not enabled in Firebase Auth.';
+      default:
+        return e.message ?? 'Login failed.';
+    }
+  }
+
+  Future<bool> _appendLoginLog(User user) async {
+    final uid = user.uid.trim();
+    if (uid.isEmpty) return false;
+    final safeEmail = (user.email ?? '').trim();
+    final nowEpoch = DateTime.now().millisecondsSinceEpoch;
+    final authSignInEpoch = _toEpochMs(user.metadata.lastSignInTime);
+    final eventEpoch = authSignInEpoch ?? nowEpoch;
+    final userRef = FirebaseFirestore.instance.collection('users').doc(uid);
+    final logData = <String, dynamic>{
+      'action': 'logged_in',
+      'title': 'User logged in',
+      'details': safeEmail.isEmpty
+          ? 'Signed in successfully.'
+          : 'Signed in successfully as $safeEmail.',
+      'actorUid': uid,
+      'actorName': safeEmail.isEmpty ? 'User' : safeEmail,
+      'actorRole': '',
+      'createdAt': FieldValue.serverTimestamp(),
+      'createdAtEpochMs': eventEpoch,
+      'authLastSignInEpochMs': eventEpoch,
+    };
+
+    try {
+      await userRef.set({
+        'lastLoginAt': FieldValue.serverTimestamp(),
+        'lastLoginAtEpochMs': eventEpoch,
+        'lastLoginAuthEpochMs': eventEpoch,
+      }, SetOptions(merge: true));
+
+      Object? lastError;
+      for (var attempt = 0; attempt < 2; attempt++) {
+        try {
+          final logDocId = 'login_${eventEpoch}_${nowEpoch}_$attempt';
+          await userRef.collection('auth_logs').doc(logDocId).set(logData);
+          return true;
+        } catch (e) {
+          lastError = e;
+          if (attempt == 0) {
+            await Future.delayed(const Duration(milliseconds: 120));
+          }
+        }
+      }
+      debugPrint('Failed to append login log for $uid: $lastError');
+      return false;
+    } catch (e) {
+      debugPrint('Failed to append login log for $uid: $e');
+      return false;
+    }
+  }
 
   Future<void> login() async {
     if (isLoading) return;
@@ -62,21 +138,30 @@ class _LoginPageState extends State<LoginPage> {
 
       // 3️⃣ Ensure user doc exists (only after verified)
       await UserService().ensureUserDocExists();
+      final logged = await _appendLoginLog(authUser);
+      if (!logged && mounted) {
+        AppScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Logged in, but activity log was not saved.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
 
       // 4️⃣ Route normally
       if (!mounted) return;
       await RoleRouter.route(context);
     } on FirebaseAuthException catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(e.message ?? 'Login failed'),
+          content: Text(_friendlyAuthMessage(e)),
           backgroundColor: Colors.red,
         ),
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
       );
     } finally {
@@ -410,3 +495,4 @@ class _LoginPageState extends State<LoginPage> {
     );
   }
 }
+

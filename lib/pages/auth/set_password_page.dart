@@ -3,6 +3,7 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../shared/widgets/app_branding.dart';
+import 'package:apps/pages/shared/widgets/app_inline_notice.dart';
 
 class SetPasswordPage extends StatefulWidget {
   const SetPasswordPage({super.key});
@@ -12,7 +13,7 @@ class SetPasswordPage extends StatefulWidget {
 }
 
 class _SetPasswordPageState extends State<SetPasswordPage> {
-  static const bg = Color(0xFFF6FAF6);
+  static const bg = Colors.white;
   static const primary = Color(0xFF1B5E20);
   static const hint = Color(0xFF6D7F62);
   static const textDark = Color(0xFF1F2A1F);
@@ -106,7 +107,7 @@ class _SetPasswordPageState extends State<SetPasswordPage> {
       });
 
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('New activation email sent. Please check your inbox.'),
           backgroundColor: Colors.green,
@@ -127,7 +128,7 @@ class _SetPasswordPageState extends State<SetPasswordPage> {
           await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
         }
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
+        AppScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
               'New activation email sent. Please check your inbox.',
@@ -313,7 +314,7 @@ class _SetPasswordPageState extends State<SetPasswordPage> {
         newPassword: password,
       );
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Password set successfully. Please log in.'),
           backgroundColor: Colors.green,
@@ -356,7 +357,7 @@ class _SetPasswordPageState extends State<SetPasswordPage> {
       suffixIcon: suffixIcon,
       errorText: errorText,
       filled: true,
-      fillColor: enabled ? Colors.white : const Color(0xFFF1F4F1),
+      fillColor: Colors.white,
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(12),
         borderSide: BorderSide(color: Colors.grey[300]!),
@@ -869,3 +870,4 @@ class _SetPasswordPageState extends State<SetPasswordPage> {
     );
   }
 }
+

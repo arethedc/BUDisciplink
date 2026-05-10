@@ -5,6 +5,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../../services/role_router.dart';
 import '../shared/widgets/logout_confirm_dialog.dart';
+import 'package:apps/pages/shared/widgets/app_inline_notice.dart';
 
 enum _VerifyLinkState { none, expired, alreadyVerified }
 
@@ -18,7 +19,7 @@ class VerifyEmailPage extends StatefulWidget {
 class _VerifyEmailPageState extends State<VerifyEmailPage>
     with WidgetsBindingObserver {
   // Theme (match your app)
-  static const bg = Color(0xFFF6FAF6);
+  static const bg = Colors.white;
   static const primary = Color(0xFF1B5E20);
   static const hint = Color(0xFF6D7F62);
   static const textDark = Color(0xFF1F2A1F);
@@ -188,7 +189,7 @@ class _VerifyEmailPageState extends State<VerifyEmailPage>
         return true;
       }
       setState(() => _processingActionLink = false);
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(e.message ?? 'Could not verify this email link.'),
           backgroundColor: Colors.orange,
@@ -197,7 +198,7 @@ class _VerifyEmailPageState extends State<VerifyEmailPage>
     } catch (_) {
       if (!mounted) return true;
       setState(() => _processingActionLink = false);
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Could not verify this email link.'),
           backgroundColor: Colors.orange,
@@ -244,7 +245,7 @@ class _VerifyEmailPageState extends State<VerifyEmailPage>
       _startCooldown(30);
 
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text("Verification email sent to ${user.email ?? ''}."),
           backgroundColor: Colors.green,
@@ -257,7 +258,7 @@ class _VerifyEmailPageState extends State<VerifyEmailPage>
         msg = "Too many requests. Please wait a few minutes then try again.";
         _startCooldown(60);
       }
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(msg), backgroundColor: Colors.orange),
       );
     } catch (_) {
@@ -306,7 +307,7 @@ class _VerifyEmailPageState extends State<VerifyEmailPage>
       if (fresh != null && fresh.emailVerified) {
         await _finishVerified();
       } else if (!silent && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        AppScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
               "Not verified yet. Please click the link in your email then try again.",
@@ -408,6 +409,7 @@ class _VerifyEmailPageState extends State<VerifyEmailPage>
                     child: _verified
                         ? _VerifiedState(
                             showLoginButton: _verifiedFromActionLink,
+                            isSignupFlow: _isSignupFlow,
                             onGoToLogin: _goToLogin,
                           )
                         : _verifyLinkState != _VerifyLinkState.none
@@ -504,7 +506,9 @@ class _VerifyEmailPageState extends State<VerifyEmailPage>
                                     const SizedBox(width: 10),
                                     Expanded(
                                       child: Text(
-                                        "Open your email, click the verification link, then come back here.\n\nTip: Check Spam/Promotions.",
+                                        _isSignupFlow
+                                            ? "Open your email, click the verification link, then come back here.\n\nAfter verification, log in and complete your student profile.\n\nTip: Check Spam/Promotions."
+                                            : "Open your email, click the verification link, then come back here.\n\nTip: Check Spam/Promotions.",
                                         style: TextStyle(
                                           color: textDark.withValues(
                                             alpha: 0.85,
@@ -627,10 +631,12 @@ class _VerifyEmailPageState extends State<VerifyEmailPage>
 class _VerifiedState extends StatelessWidget {
   const _VerifiedState({
     required this.showLoginButton,
+    required this.isSignupFlow,
     required this.onGoToLogin,
   });
 
   final bool showLoginButton;
+  final bool isSignupFlow;
   final VoidCallback onGoToLogin;
 
   @override
@@ -661,10 +667,12 @@ class _VerifiedState extends StatelessWidget {
           textAlign: TextAlign.center,
         ),
         const SizedBox(height: 8),
-        const Text(
-          "Your email has been verified. You can now log in to your account.",
+        Text(
+          isSignupFlow
+              ? "Your email has been verified.\nLog in and complete your student profile to continue."
+              : "Your email has been verified. You can now log in to your account.",
           textAlign: TextAlign.center,
-          style: TextStyle(
+          style: const TextStyle(
             color: Color(0xFF6D7F62),
             fontWeight: FontWeight.w700,
             height: 1.3,
@@ -730,3 +738,4 @@ class _VerifyLinkStateView extends StatelessWidget {
     );
   }
 }
+

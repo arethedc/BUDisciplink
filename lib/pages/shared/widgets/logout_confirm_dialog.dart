@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-const _bg = Color(0xFFF6FAF6);
+const _bg = Colors.white;
 const _primary = Color(0xFF1B5E20);
 const _textDark = Color(0xFF1F2A1F);
 

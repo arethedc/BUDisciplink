@@ -2,20 +2,30 @@ import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import '../shared/widgets/modern_table_layout.dart';
 
 class MySubmittedCasesPage extends StatefulWidget {
-  const MySubmittedCasesPage({super.key});
+  final bool showCounselingTab;
+  final VoidCallback? onOpenViolationReport;
+  final VoidCallback? onOpenCounselingReferral;
+
+  const MySubmittedCasesPage({
+    super.key,
+    this.showCounselingTab = true,
+    this.onOpenViolationReport,
+    this.onOpenCounselingReferral,
+  });
 
   @override
   State<MySubmittedCasesPage> createState() => _MySubmittedCasesPageState();
 }
 
 class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
-  // Ã¢Å“â€¦ Same theme as TeacherReportScreen
+  // ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ Same theme as TeacherReportScreen
   static const bg = Colors.white;
   static const primaryColor = Color(0xFF1B5E20);
   static const textDark = Color(0xFF1F2A1F);
@@ -25,7 +35,11 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
   int _tab = 0; // 0 = Violation, 1 = Counselling
   String? _filterMonthKey;
   String? _filterStatus;
+  String _statusFilterKey = 'all';
   String? _selectedId;
+  String _searchQuery = '';
+  bool _isRefreshingTable = false;
+  final TextEditingController _searchCtrl = TextEditingController();
   final ScrollController _listScrollController = ScrollController();
   String? _violationStreamUid;
   String? _counselingStreamUid;
@@ -37,6 +51,8 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
   final ValueNotifier<int> _counselingCount = ValueNotifier<int>(0);
   final Map<String, Future<String>> _studentProgramFutureCache =
       <String, Future<String>>{};
+  final Map<String, Future<String>> _studentPhotoFutureCache =
+      <String, Future<String>>{};
 
   @override
   void dispose() {
@@ -44,6 +60,7 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
     _counselingCountSub?.cancel();
     _violationCount.dispose();
     _counselingCount.dispose();
+    _searchCtrl.dispose();
     _listScrollController.dispose();
     super.dispose();
   }
@@ -54,6 +71,8 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
     _violationReportsStream = FirebaseFirestore.instance
         .collection('violation_cases')
         .where('reportedByUid', isEqualTo: uid)
+        .orderBy('createdAt', descending: true)
+        .limit(300)
         .snapshots();
     _violationCountSub?.cancel();
     _violationCountSub = _violationReportsStream!.listen((snapshot) {
@@ -66,11 +85,16 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
     _counselingStreamUid = uid;
     _counselingReportsStream = FirebaseFirestore.instance
         .collection('counseling_cases')
-        .where('referredByUid', isEqualTo: uid)
+        .where('referralReporterUids', arrayContains: uid)
+        .orderBy('createdAt', descending: true)
+        .limit(300)
         .snapshots();
     _counselingCountSub?.cancel();
     _counselingCountSub = _counselingReportsStream!.listen((snapshot) {
-      _counselingCount.value = snapshot.size;
+      final scopedCount = snapshot.docs.where((doc) {
+        return _isProfessorCounselingReportForUser(doc.data(), uid);
+      }).length;
+      _counselingCount.value = scopedCount;
     });
   }
 
@@ -184,18 +208,51 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
     return const <String>[];
   }
 
+  bool _isProfessorCounselingReportForUser(
+    Map<String, dynamic> data,
+    String uid,
+  ) {
+    final normalizedUid = uid.trim();
+    if (normalizedUid.isEmpty) return false;
+
+    if (_str(data['referredByUid']) == normalizedUid &&
+        _str(data['referredByRole']).toLowerCase().trim() == 'professor') {
+      return true;
+    }
+
+    if (_stringList(data['referralReporterUids']).contains(normalizedUid)) {
+      return true;
+    }
+
+    final entries = data['referralEntries'];
+    if (entries is Iterable) {
+      for (final entry in entries.whereType<Map>()) {
+        final mapped = entry.map(
+          (key, value) => MapEntry(key.toString(), value),
+        );
+        if (_str(mapped['referredByUid']) == normalizedUid &&
+            _str(mapped['referredByRole']).toLowerCase().trim() ==
+                'professor') {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
   Future<String> _resolveStudentProgram({
     required String studentUid,
     required String fallbackProgram,
   }) {
     final fallback = _str(fallbackProgram);
-    if (fallback.isNotEmpty && fallback != 'â€”' && fallback != '--') {
+    if (fallback.isNotEmpty && fallback != '--') {
       return Future<String>.value(fallback);
     }
 
     final uid = _str(studentUid);
     if (uid.isEmpty) {
-      return Future<String>.value('â€”');
+      return Future<String>.value('--');
     }
 
     return _studentProgramFutureCache.putIfAbsent(uid, () async {
@@ -213,7 +270,51 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
             userData['programId'] ??
             userData['program'],
       );
-      return fromProfile.isEmpty ? 'â€”' : fromProfile;
+      return fromProfile.isEmpty ? '--' : fromProfile;
+    });
+  }
+
+  Future<String> _resolveImageSourceUrl(String source) async {
+    final value = _str(source);
+    if (value.isEmpty) return '';
+    final isHttp = value.startsWith('http://') || value.startsWith('https://');
+    if (isHttp) return value;
+    try {
+      if (value.startsWith('gs://')) {
+        return await FirebaseStorage.instance
+            .refFromURL(value)
+            .getDownloadURL();
+      }
+      return await FirebaseStorage.instance.ref(value).getDownloadURL();
+    } catch (_) {
+      return '';
+    }
+  }
+
+  Future<String> _resolveStudentPhotoUrl(String studentUid) {
+    final uid = _str(studentUid);
+    if (uid.isEmpty) return Future<String>.value('');
+    return _studentPhotoFutureCache.putIfAbsent(uid, () async {
+      final userDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid)
+          .get();
+      final userData = userDoc.data() ?? const <String, dynamic>{};
+      final studentProfile =
+          userData['studentProfile'] as Map<String, dynamic>? ??
+          const <String, dynamic>{};
+      final employeeProfile =
+          userData['employeeProfile'] as Map<String, dynamic>? ??
+          const <String, dynamic>{};
+      final source = _str(
+        userData['photoUrl'] ??
+            userData['profilePhotoUrl'] ??
+            studentProfile['photoUrl'] ??
+            studentProfile['profilePhotoUrl'] ??
+            employeeProfile['photoUrl'] ??
+            employeeProfile['profilePhotoUrl'],
+      );
+      return _resolveImageSourceUrl(source);
     });
   }
 
@@ -379,17 +480,466 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
     return parts.join(" - ");
   }
 
+  static const List<String> _statusFilterOrder = <String>[
+    'all',
+    'under_review',
+    'action_set',
+    'unresolved',
+    'resolved',
+    'rejected',
+  ];
+
+  static const Map<String, String> _statusFilterLabels = <String, String>{
+    'all': 'All',
+    'under_review': 'Under Review',
+    'action_set': 'Action Set',
+    'unresolved': 'Unresolved',
+    'resolved': 'Resolved',
+    'rejected': 'Rejected',
+  };
+
+  Future<void> _refreshCurrentTable() async {
+    if (_isRefreshingTable) return;
+    setState(() => _isRefreshingTable = true);
+    await Future<void>.delayed(const Duration(milliseconds: 450));
+    if (!mounted) return;
+    setState(() => _isRefreshingTable = false);
+  }
+
+  void _onSearchInputChanged(String value) {
+    final normalized = value.trim().toLowerCase();
+    if (_searchQuery == normalized) return;
+    setState(() {
+      _searchQuery = normalized;
+      _selectedId = null;
+    });
+  }
+
+  void _clearSearchQuery() {
+    if (_searchCtrl.text.isEmpty && _searchQuery.isEmpty) return;
+    _searchCtrl.clear();
+    setState(() {
+      _searchQuery = '';
+      _selectedId = null;
+    });
+  }
+
+  bool _matchesSearch(_SubmittedReport report) {
+    final needle = _searchQuery;
+    if (needle.isEmpty) return true;
+    final haystack = <String>[
+      _displayReportCode(report),
+      report.studentName,
+      report.studentId,
+      report.program,
+      report.concern,
+      report.category,
+      report.violation,
+      report.statusText,
+      _fmtShort(report.submittedAt),
+    ].join(' ').toLowerCase();
+    return haystack.contains(needle);
+  }
+
+  String _statusKeyForReport(_SubmittedReport report) {
+    switch (report.status) {
+      case _ReportStatus.actionSet:
+        return 'action_set';
+      case _ReportStatus.unresolved:
+        return 'unresolved';
+      case _ReportStatus.resolved:
+        return 'resolved';
+      case _ReportStatus.rejected:
+        return 'rejected';
+      case _ReportStatus.pending:
+      case _ReportStatus.underReview:
+        return 'under_review';
+    }
+  }
+
+  bool _matchesStatusFilter(_SubmittedReport report, String statusKey) {
+    if (statusKey == 'all') return true;
+    return _statusKeyForReport(report) == statusKey;
+  }
+
+  Map<String, int> _statusFilterCounts(List<_SubmittedReport> reports) {
+    final counts = <String, int>{for (final key in _statusFilterOrder) key: 0};
+    for (final report in reports) {
+      final key = _statusKeyForReport(report);
+      counts[key] = (counts[key] ?? 0) + 1;
+      counts['all'] = (counts['all'] ?? 0) + 1;
+    }
+    return counts;
+  }
+
+  Widget _buildStatusFilterBar(Map<String, int> counts) {
+    Widget chip(String key) {
+      final selected = _statusFilterKey == key;
+      final label = _statusFilterLabels[key] ?? key;
+      final count = counts[key] ?? 0;
+      return InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () {
+          if (_statusFilterKey == key) return;
+          setState(() {
+            _statusFilterKey = key;
+            _selectedId = null;
+          });
+        },
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 160),
+          curve: Curves.easeOut,
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+          decoration: BoxDecoration(
+            color: selected ? primaryColor.withOpacity(0.12) : Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: selected
+                  ? primaryColor.withOpacity(0.36)
+                  : Colors.black.withOpacity(0.10),
+            ),
+          ),
+          child: Text(
+            '$label ($count)',
+            style: TextStyle(
+              color: selected ? primaryColor : textDark,
+              fontWeight: selected ? FontWeight.w900 : FontWeight.w700,
+              fontSize: 13,
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            for (int i = 0; i < _statusFilterOrder.length; i++) ...[
+              chip(_statusFilterOrder[i]),
+              if (i != _statusFilterOrder.length - 1) const SizedBox(width: 8),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHandbookStyleSearchBar({
+    bool shouldConstrainWidth = true,
+  }) {
+    final width = MediaQuery.sizeOf(context).width;
+    final isDesktop = width >= 900;
+    final constrainedWidth = width >= 1500
+        ? 660.0
+        : width >= 1300
+        ? 580.0
+        : 520.0;
+    final height = isDesktop ? 56.0 : 48.0;
+    final borderRadius = isDesktop ? 16.0 : 18.0;
+    final iconSize = isDesktop ? 24.0 : 22.0;
+    final fontSize = isDesktop ? 15.0 : 13.5;
+
+    final searchField = ValueListenableBuilder<TextEditingValue>(
+      valueListenable: _searchCtrl,
+      builder: (context, value, _) {
+        final hasText = value.text.trim().isNotEmpty;
+        return Container(
+          height: height,
+          padding: EdgeInsets.symmetric(horizontal: isDesktop ? 20 : 12),
+          decoration: BoxDecoration(
+            color: Colors.white.withOpacity(0.75),
+            borderRadius: BorderRadius.circular(borderRadius),
+            border: Border.all(color: Colors.black12),
+            boxShadow: isDesktop
+                ? [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.05),
+                      blurRadius: 10,
+                      offset: const Offset(0, 2),
+                    ),
+                  ]
+                : null,
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.search_rounded, color: hintColor, size: iconSize),
+              SizedBox(width: isDesktop ? 12 : 8),
+              Expanded(
+                child: TextField(
+                  controller: _searchCtrl,
+                  onChanged: _onSearchInputChanged,
+                  style: TextStyle(
+                    fontSize: fontSize,
+                    fontWeight: FontWeight.w600,
+                    color: textDark,
+                  ),
+                  decoration: InputDecoration(
+                    hintText: 'Search case, student, violation, date...',
+                    border: InputBorder.none,
+                    enabledBorder: InputBorder.none,
+                    focusedBorder: InputBorder.none,
+                    disabledBorder: InputBorder.none,
+                    filled: false,
+                    isDense: true,
+                    contentPadding: EdgeInsets.zero,
+                    hintStyle: TextStyle(
+                      color: hintColor,
+                      fontWeight: FontWeight.w600,
+                      fontSize: fontSize,
+                    ),
+                  ),
+                ),
+              ),
+              if (hasText)
+                IconButton(
+                  tooltip: 'Clear search',
+                  onPressed: _clearSearchQuery,
+                  icon: Icon(
+                    Icons.close_rounded,
+                    color: hintColor.withOpacity(0.85),
+                    size: isDesktop ? 20 : 18,
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+
+    final refreshButton = Tooltip(
+      message: 'Refresh table',
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: _isRefreshingTable ? null : _refreshCurrentTable,
+        child: Container(
+          width: height,
+          height: height,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: Colors.white.withOpacity(0.75),
+            border: Border.all(color: Colors.black12),
+            boxShadow: isDesktop
+                ? [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.05),
+                      blurRadius: 10,
+                      offset: const Offset(0, 2),
+                    ),
+                  ]
+                : null,
+          ),
+          child: _isRefreshingTable
+              ? SizedBox(
+                  width: isDesktop ? 18 : 16,
+                  height: isDesktop ? 18 : 16,
+                  child: const CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: hintColor,
+                  ),
+                )
+              : Icon(
+                  Icons.refresh_rounded,
+                  color: hintColor.withOpacity(0.9),
+                  size: isDesktop ? 20 : 18,
+                ),
+        ),
+      ),
+    );
+
+    Widget searchWithRefresh() {
+      final mobileActions = !isDesktop ? _buildMobileReportActionButtons() : null;
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Expanded(child: searchField),
+              const SizedBox(width: 8),
+              refreshButton,
+            ],
+          ),
+          if (mobileActions != null) ...[
+            const SizedBox(height: 10),
+            mobileActions,
+          ],
+        ],
+      );
+    }
+
+    if (!shouldConstrainWidth || !isDesktop) return searchWithRefresh();
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: SizedBox(width: constrainedWidth, child: searchWithRefresh()),
+    );
+  }
+
+  Widget? _buildFullHeaderActions({
+    required bool useCompactHeaderActions,
+  }) {
+    if (useCompactHeaderActions) return null;
+    if (widget.onOpenViolationReport == null &&
+        widget.onOpenCounselingReferral == null) {
+      return null;
+    }
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (widget.onOpenViolationReport != null) ...[
+          FilledButton.icon(
+            onPressed: widget.onOpenViolationReport,
+            style: FilledButton.styleFrom(
+              backgroundColor: primaryColor,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+              elevation: 1,
+            ),
+            icon: const Icon(Icons.report_rounded, size: 20),
+            label: const Text(
+              'Report Violation',
+              style: TextStyle(fontWeight: FontWeight.w900, fontSize: 14),
+            ),
+          ),
+          const SizedBox(width: 10),
+        ],
+        if (widget.onOpenCounselingReferral != null)
+          OutlinedButton.icon(
+            onPressed: widget.onOpenCounselingReferral,
+            style: OutlinedButton.styleFrom(
+              foregroundColor: primaryColor,
+              side: BorderSide(color: primaryColor.withValues(alpha: 0.35)),
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+            ),
+            icon: const Icon(Icons.support_agent_rounded, size: 20),
+            label: const Text(
+              'Counselling Referral',
+              style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget? _buildMobileReportActionButtons() {
+    if (widget.onOpenViolationReport == null &&
+        widget.onOpenCounselingReferral == null) {
+      return null;
+    }
+
+    if (widget.onOpenViolationReport != null &&
+        widget.onOpenCounselingReferral != null) {
+      return Row(
+        children: [
+          Expanded(
+            child: FilledButton.icon(
+              onPressed: widget.onOpenViolationReport,
+              style: FilledButton.styleFrom(
+                backgroundColor: primaryColor,
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                elevation: 1,
+              ),
+              icon: const Icon(Icons.report_rounded, size: 18),
+              label: const Text(
+                'Report Violation',
+                style: TextStyle(fontWeight: FontWeight.w900, fontSize: 13.5),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: OutlinedButton.icon(
+              onPressed: widget.onOpenCounselingReferral,
+              style: OutlinedButton.styleFrom(
+                foregroundColor: primaryColor,
+                side: BorderSide(color: primaryColor.withValues(alpha: 0.35)),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+              icon: const Icon(Icons.support_agent_rounded, size: 18),
+              label: const Text(
+                'Counselling Referral',
+                style: TextStyle(fontWeight: FontWeight.w800, fontSize: 13.5),
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+
+    if (widget.onOpenViolationReport != null) {
+      return SizedBox(
+        width: double.infinity,
+        child: FilledButton.icon(
+          onPressed: widget.onOpenViolationReport,
+          style: FilledButton.styleFrom(
+            backgroundColor: primaryColor,
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
+            elevation: 1,
+          ),
+          icon: const Icon(Icons.report_rounded, size: 18),
+          label: const Text(
+            'Report Violation',
+            style: TextStyle(fontWeight: FontWeight.w900, fontSize: 13.5),
+          ),
+        ),
+      );
+    }
+
+    return SizedBox(
+      width: double.infinity,
+      child: FilledButton.icon(
+        onPressed: widget.onOpenCounselingReferral,
+        style: FilledButton.styleFrom(
+          backgroundColor: primaryColor,
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
+          elevation: 1,
+        ),
+        icon: const Icon(Icons.support_agent_rounded, size: 18),
+        label: const Text(
+          'Counselling Referral',
+          style: TextStyle(fontWeight: FontWeight.w900, fontSize: 13.5),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final uid = FirebaseAuth.instance.currentUser?.uid;
 
-    if (uid == null)
+    if (uid == null) {
       return const Scaffold(body: Center(child: Text('Not logged in.')));
+    }
+    if (!widget.showCounselingTab && _tab != 0) {
+      _tab = 0;
+    }
     _ensureViolationReportsStream(uid);
-    _ensureCounselingReportsStream(uid);
-    final activeStream = _tab == 0
-        ? _violationReportsStream
-        : _counselingReportsStream;
+    if (widget.showCounselingTab) {
+      _ensureCounselingReportsStream(uid);
+    }
+    final activeStream = (widget.showCounselingTab && _tab == 1)
+        ? _counselingReportsStream
+        : _violationReportsStream;
 
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: activeStream,
@@ -399,13 +949,23 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
         if (docs == null) {
           return const Center(child: CircularProgressIndicator());
         }
-        final all = docs.map((doc) {
+        final sourceDocs = (widget.showCounselingTab && _tab == 1)
+            ? docs
+                  .where(
+                    (doc) => _isProfessorCounselingReportForUser(
+                      doc.data(),
+                      uid,
+                    ),
+                  )
+                  .toList(growable: false)
+            : docs;
+        final all = sourceDocs.map<_SubmittedReport?>((doc) {
           final d = doc.data();
           if (_tab == 0) {
             final rawStatus = (d['status'] ?? 'Submitted').toString();
             final incidentAt = _tsToDate(d['incidentAt']);
             final createdAt = _tsToDate(d['createdAt']);
-            final submittedAt = createdAt ?? incidentAt ?? DateTime.now();
+            if (incidentAt == null || createdAt == null) return null;
             final caseCode = _str(d['caseCode']);
             final concern = _prettyConcern(
               (d['concern'] ?? d['reportedConcernType']).toString(),
@@ -445,17 +1005,19 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
               studentUid: _str(d['studentUid']),
               studentName: _str(d['studentName']),
               studentId: _str(d['studentNo']),
-              program: program.isEmpty ? '—' : program,
-              concern: concern.isEmpty ? '—' : concern,
-              category: category.isEmpty ? '—' : category,
+              program: program.isEmpty ? 'â€”' : program,
+              concern: concern.isEmpty ? 'â€”' : concern,
+              category: category.isEmpty ? 'â€”' : category,
               violation: violation.isEmpty ? 'Violation' : violation,
-              incidentAt: incidentAt ?? submittedAt,
-              submittedAt: submittedAt,
-              location: _str(d['location']).isEmpty ? '—' : _str(d['location']),
+              incidentAt: incidentAt,
+              submittedAt: createdAt,
+              location: _str(d['location']).isEmpty
+                  ? 'â€”'
+                  : _str(d['location']),
               status: _mapStatus(rawStatus),
               statusText: _displayStatus(rawStatus),
               description: _str(d['description']).isEmpty
-                  ? '—'
+                  ? 'â€”'
                   : _str(d['description']),
               facultyNote: _str(d['meetingFacultyNote']),
               sanctionType: _str(d['sanctionType']),
@@ -475,7 +1037,7 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
           final rawStatus = (d['status'] ?? 'Submitted').toString();
           final referralDate = _tsToDate(d['referralDate']);
           final createdAt = _tsToDate(d['createdAt']);
-          final submittedAt = createdAt ?? referralDate ?? DateTime.now();
+          if (referralDate == null || createdAt == null) return null;
           final counselingType = _prettyCounselingType(
             _str(d['counselingType']),
           );
@@ -496,16 +1058,16 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
             studentUid: _str(d['studentUid']),
             studentName: _str(d['studentName']),
             studentId: _str(d['studentNo']),
-            program: program.isEmpty ? '—' : program,
+            program: program.isEmpty ? 'â€”' : program,
             concern: 'Counselling Referral',
             category: counselingType.isEmpty ? 'General' : counselingType,
             violation: reasonSummary,
-            incidentAt: referralDate ?? submittedAt,
-            submittedAt: submittedAt,
-            location: '—',
+            incidentAt: referralDate,
+            submittedAt: createdAt,
+            location: 'â€”',
             status: _mapStatus(rawStatus),
             statusText: _displayStatus(rawStatus),
-            description: comments.isEmpty ? '—' : comments,
+            description: comments.isEmpty ? 'â€”' : comments,
             facultyNote: reasonSummary,
             sanctionType: '',
             finalSeverity: '',
@@ -519,54 +1081,52 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
             evidenceUrls: const <String>[],
             kind: _ReportKind.counseling,
           );
-        }).toList();
+        }).whereType<_SubmittedReport>().toList();
         all.sort((a, b) => b.submittedAt.compareTo(a.submittedAt));
 
-        // filter logic
-        List<_SubmittedReport> list = all;
-        if (_filterMonthKey != null) {
-          list = list
-              .where((r) => _monthKey(r.submittedAt) == _filterMonthKey)
-              .toList();
-        }
-        if (_filterStatus != null) {
-          list = list.where((r) => r.statusText == _filterStatus).toList();
-        }
+        final roleScoped = all;
+        final searched = roleScoped
+            .where(_matchesSearch)
+            .toList(growable: false);
+        final filtered = searched;
 
-        final grouped = _groupByMonth(list);
-        final monthsSorted = grouped.keys.toList()
-          ..sort((a, b) => _monthSortValue(b).compareTo(_monthSortValue(a)));
-        final desktopWide = MediaQuery.sizeOf(context).width >= 1100;
+        final viewportWidth = MediaQuery.sizeOf(context).width;
+        final desktopWide = viewportWidth >= 900;
+        final detailsPaneWidth = (viewportWidth * 0.33)
+            .clamp(320.0, 420.0)
+            .toDouble();
 
-        if (_selectedId != null && !list.any((r) => r.id == _selectedId)) {
+        if (_selectedId != null &&
+            !filtered.any((report) => report.id == _selectedId)) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted) setState(() => _selectedId = null);
           });
         }
         _SubmittedReport? selectedReport;
         if (_selectedId != null) {
-          for (final report in list) {
+          for (final report in filtered) {
             if (report.id == _selectedId) {
               selectedReport = report;
               break;
             }
           }
         }
-        final shouldShowDesktopSplit = desktopWide;
-        final shouldShowDetails =
-            shouldShowDesktopSplit && selectedReport != null;
+        final shouldShowDetails = desktopWide && selectedReport != null;
 
         return Scaffold(
           backgroundColor: bg,
           body: ModernTableLayout(
+            detailsWidth: detailsPaneWidth,
             header: ModernTableHeader(
-              title: 'My Reports',
-              subtitle: _tab == 0
-                  ? 'View and track your submitted violation cases'
-                  : 'View and track your submitted counselling referrals',
-              searchBar: const SizedBox(),
+              showTitleSection: false,
+              showTopControlsWhenTitleHidden: true,
+              showSearchBar: true,
+              searchBar: _buildHandbookStyleSearchBar(),
+              action: _buildFullHeaderActions(
+                useCompactHeaderActions: viewportWidth < 900,
+              ),
               tabs: DefaultTabController(
-                length: 2,
+                length: widget.showCounselingTab ? 2 : 1,
                 initialIndex: _tab,
                 child: TabBar(
                   isScrollable: true,
@@ -579,8 +1139,8 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
                     setState(() {
                       _tab = index;
                       _selectedId = null;
-                      _filterMonthKey = null;
-                      _filterStatus = null;
+                      _searchCtrl.clear();
+                      _searchQuery = '';
                     });
                   },
                   tabs: [
@@ -590,95 +1150,423 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
                         _violationCount,
                       ),
                     ),
-                    Tab(
-                      child: _buildTabLabelWithCount(
-                        'Counselling',
-                        _counselingCount,
+                    if (widget.showCounselingTab)
+                      Tab(
+                        child: _buildTabLabelWithCount(
+                          'Counselling',
+                          _counselingCount,
+                        ),
                       ),
-                    ),
                   ],
                 ),
               ),
-              filters: [
-                _buildFilterChip(
-                  'Month',
-                  _filterMonthKey ?? 'All',
-                  _getAvailableMonths(all),
-                  (v) {
-                    setState(() => _filterMonthKey = v == 'All' ? null : v);
-                  },
-                ),
-                _buildViolationStatusFilterChip(
-                  reports: all,
-                  current: _filterStatus,
-                  onSelected: (next) {
-                    setState(() => _filterStatus = next);
-                  },
+              filters: const [],
+            ),
+            body: Column(
+              children: [
+                Expanded(
+                  child: _buildReportsContent(
+                    reports: filtered,
+                    desktopWide: desktopWide,
+                  ),
                 ),
               ],
             ),
-            body: list.isEmpty
-                ? const Center(
-                    child: Text(
-                      'No reports found.',
-                      style: TextStyle(
-                        color: hintColor,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  )
-                : ListView.builder(
-                    key: const PageStorageKey('prof_my_reports_list'),
-                    controller: _listScrollController,
-                    padding: const EdgeInsets.all(24),
-                    itemCount: monthsSorted.length,
-                    itemBuilder: (context, i) {
-                      final month = monthsSorted[i];
-                      final monthReports = grouped[month]!;
-                      return Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 16),
-                            child: Text(
-                              month.toUpperCase(),
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w900,
-                                color: hintColor,
-                                letterSpacing: 1.5,
-                                fontSize: 13,
-                              ),
-                            ),
-                          ),
-                          ...monthReports.map((r) {
-                            final isSelected = _selectedId == r.id;
-                            return _buildReportCard(
-                              r,
-                              isSelected: isSelected,
-                              onTap: () {
-                                if (desktopWide) {
-                                  setState(
-                                    () =>
-                                        _selectedId = isSelected ? null : r.id,
-                                  );
-                                  return;
-                                }
-                                _openDetails(r);
-                              },
-                            );
-                          }),
-                        ],
-                      );
-                    },
-                  ),
             showDetails: shouldShowDetails,
             details: shouldShowDetails
                 ? _buildDesktopDetailsPanel(selectedReport)
                 : null,
-            detailsWidth: 480,
           ),
         );
       },
+    );
+  }
+
+  Widget _buildReportsContent({
+    required List<_SubmittedReport> reports,
+    required bool desktopWide,
+  }) {
+    if (reports.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.inbox_outlined, size: 64, color: Colors.grey[300]),
+            const SizedBox(height: 16),
+            const Text(
+              'No cases found',
+              style: TextStyle(color: hintColor, fontWeight: FontWeight.bold),
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (!desktopWide) {
+      return ListView.builder(
+        key: const PageStorageKey('prof_my_reports_cards'),
+        controller: _listScrollController,
+        padding: const EdgeInsets.all(14),
+        itemCount: reports.length,
+        itemBuilder: (context, index) {
+          final report = reports[index];
+          final isSelected = _selectedId == report.id;
+          final dateText = _fmtShort(report.submittedAt);
+          final subtitle = report.kind == _ReportKind.counseling
+              ? 'Counselling | ${report.category}'
+              : report.violation;
+
+          return GestureDetector(
+            onTap: () {
+              setState(() => _selectedId = report.id);
+              _openDetails(report);
+            },
+            child: Container(
+              margin: const EdgeInsets.only(bottom: 12),
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: isSelected
+                    ? primaryColor.withOpacity(0.05)
+                    : Colors.white,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: isSelected
+                      ? primaryColor
+                      : Colors.black.withOpacity(0.05),
+                  width: isSelected ? 2 : 1,
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.02),
+                    blurRadius: 10,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                _displayReportCode(report),
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w900,
+                                  color: primaryColor,
+                                ),
+                              ),
+                            ),
+                            Text(
+                              dateText,
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: hintColor,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          report.studentName,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                            color: textDark,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Row(
+                          children: [
+                            _buildConcernBadge(report.concern),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                subtitle,
+                                style: const TextStyle(
+                                  color: hintColor,
+                                  fontSize: 13,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Icon(Icons.chevron_right, color: Colors.grey),
+                ],
+              ),
+            ),
+          );
+        },
+      );
+    }
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
+      child: Container(
+        width: double.infinity,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+        ),
+        foregroundDecoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(16),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final tableWidth = constraints.maxWidth.toDouble();
+              final detailsOpen = _selectedId != null;
+              final compactTable = detailsOpen || tableWidth < 1120;
+              final tableHorizontalMargin = compactTable ? 8.0 : 12.0;
+              final tableColumnSpacing = compactTable ? 12.0 : 18.0;
+              final totalWeight = 1.15 + 2.35 + 1.40 + 2.35 + 1.20 + 1.35;
+              final usableWidth =
+                  (tableWidth -
+                          (tableHorizontalMargin * 2) -
+                          (tableColumnSpacing * (6 - 1)))
+                      .clamp(420.0, double.infinity)
+                      .toDouble();
+
+              double colWidth(
+                double weight,
+                double minWidth, {
+                double? compactMinWidth,
+              }) {
+                final value = usableWidth * (weight / totalWeight);
+                final effectiveMin = compactTable
+                    ? (compactMinWidth ?? minWidth)
+                    : minWidth;
+                return value < effectiveMin ? effectiveMin : value;
+              }
+
+              final codeCellWidth = colWidth(1.15, 104, compactMinWidth: 86);
+              final studentCellWidth = colWidth(
+                2.35,
+                210,
+                compactMinWidth: 170,
+              );
+              final concernCellWidth = colWidth(1.40, 128, compactMinWidth: 92);
+              final violationCellWidth = colWidth(
+                2.35,
+                220,
+                compactMinWidth: 162,
+              );
+              final dateCellWidth = colWidth(1.20, 116, compactMinWidth: 92);
+              final statusCellWidth = colWidth(1.35, 126, compactMinWidth: 110);
+
+              return SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(minWidth: constraints.maxWidth),
+                  child: DataTable(
+                    showCheckboxColumn: false,
+                    headingRowColor: WidgetStateProperty.all(bg),
+                    dataRowMinHeight: 56,
+                    dataRowMaxHeight: 64,
+                    horizontalMargin: tableHorizontalMargin,
+                    columnSpacing: tableColumnSpacing,
+                    headingTextStyle: const TextStyle(
+                      color: hintColor,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 0.2,
+                      fontSize: 12,
+                    ),
+                    columns: [
+                      DataColumn(
+                        label: SizedBox(
+                          width: codeCellWidth,
+                          child: _tableHeaderText('CODE'),
+                        ),
+                      ),
+                      DataColumn(
+                        label: SizedBox(
+                          width: studentCellWidth,
+                          child: _tableHeaderText('STUDENT'),
+                        ),
+                      ),
+                      DataColumn(
+                        label: SizedBox(
+                          width: concernCellWidth,
+                          child: _tableHeaderText('CONCERN'),
+                        ),
+                      ),
+                      DataColumn(
+                        label: SizedBox(
+                          width: violationCellWidth,
+                          child: _tableHeaderText('VIOLATION'),
+                        ),
+                      ),
+                      DataColumn(
+                        label: SizedBox(
+                          width: dateCellWidth,
+                          child: _tableHeaderText('DATE'),
+                        ),
+                      ),
+                      DataColumn(
+                        label: SizedBox(
+                          width: statusCellWidth,
+                          child: _tableHeaderText('STATUS'),
+                        ),
+                      ),
+                    ],
+                    rows: [
+                      for (int i = 0; i < reports.length; i++)
+                        () {
+                          final report = reports[i];
+                          final isSelected = _selectedId == report.id;
+                          final detailsText =
+                              report.kind == _ReportKind.counseling
+                              ? report.category
+                              : report.violation;
+                          return DataRow.byIndex(
+                            index: i,
+                            selected: isSelected,
+                            color: WidgetStateProperty.resolveWith<Color?>((
+                              states,
+                            ) {
+                              if (isSelected) {
+                                return primaryColor.withOpacity(0.10);
+                              }
+                              return Colors.white;
+                            }),
+                            onSelectChanged: (_) {
+                              setState(() {
+                                _selectedId = isSelected ? null : report.id;
+                              });
+                            },
+                            cells: [
+                              DataCell(
+                                SizedBox(
+                                  width: codeCellWidth,
+                                  child: Text(
+                                    _displayReportCode(report),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: primaryColor,
+                                      fontWeight: FontWeight.w900,
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              DataCell(
+                                SizedBox(
+                                  width: studentCellWidth,
+                                  child: Column(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        report.studentName,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          color: textDark,
+                                          fontWeight: FontWeight.w800,
+                                          fontSize: 13,
+                                        ),
+                                      ),
+                                      Text(
+                                        report.studentId.isEmpty
+                                            ? '--'
+                                            : report.studentId,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          color: hintColor,
+                                          fontWeight: FontWeight.w700,
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                              DataCell(
+                                SizedBox(
+                                  width: concernCellWidth,
+                                  child: Align(
+                                    alignment: Alignment.centerLeft,
+                                    child: _buildConcernBadge(report.concern),
+                                  ),
+                                ),
+                              ),
+                              DataCell(
+                                SizedBox(
+                                  width: violationCellWidth,
+                                  child: Text(
+                                    detailsText.isEmpty ? '--' : detailsText,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: textDark,
+                                      fontWeight: FontWeight.w700,
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              DataCell(
+                                SizedBox(
+                                  width: dateCellWidth,
+                                  child: Text(
+                                    _fmtShort(report.submittedAt),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: hintColor,
+                                      fontWeight: FontWeight.w700,
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              DataCell(
+                                SizedBox(
+                                  width: statusCellWidth,
+                                  child: Align(
+                                    alignment: Alignment.centerLeft,
+                                    child: _buildStatusBadge(report.statusText),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          );
+                        }(),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _tableHeaderText(String text) {
+    return Text(
+      text,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: const TextStyle(
+        color: hintColor,
+        fontWeight: FontWeight.w900,
+        fontSize: 12,
+        letterSpacing: 0.2,
+      ),
     );
   }
 
@@ -877,24 +1765,28 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: Colors.black.withOpacity(0.08)),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.04),
-            blurRadius: 14,
-            offset: const Offset(0, 8),
+            color: Colors.black.withValues(alpha: 0.03),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
           ),
         ],
       ),
       child: Column(
         children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
+          Container(
+            padding: const EdgeInsets.fromLTRB(14, 14, 10, 8),
             child: Row(
               children: [
-                _caseCodeBadge(_displayReportCode(report)),
-                const SizedBox(width: 12),
+                const Icon(
+                  Icons.assignment_outlined,
+                  color: primaryColor,
+                  size: 20,
+                ),
+                const SizedBox(width: 8),
                 Expanded(
                   child: Text(
                     report.kind == _ReportKind.counseling
@@ -903,20 +1795,25 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
-                      color: textDark,
+                      color: primaryColor,
                       fontWeight: FontWeight.w900,
-                      fontSize: 16,
+                      fontSize: 17,
                     ),
                   ),
                 ),
-                _buildStatusBadge(report.statusText),
+                IconButton(
+                  onPressed: () => setState(() => _selectedId = null),
+                  icon: const Icon(Icons.close_rounded, color: hintColor),
+                  tooltip: 'Close details',
+                ),
               ],
             ),
           ),
+          const SizedBox(height: 8),
           const Divider(height: 1),
           Expanded(
             child: SingleChildScrollView(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
               child: _buildReadOnlyCaseDetailsBody(report),
             ),
           ),
@@ -929,48 +1826,87 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => DraggableScrollableSheet(
-        initialChildSize: 0.7,
-        maxChildSize: 0.9,
-        minChildSize: 0.5,
-        builder: (_, controller) => Container(
-          decoration: const BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-          ),
-          padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
-          child: ListView(
-            controller: controller,
-            children: [
-              Row(
-                children: [
-                  _caseCodeBadge(_displayReportCode(r)),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      r.kind == _ReportKind.counseling
-                          ? 'Referral Details'
-                          : 'Case Details',
-                      style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w900,
-                        color: textDark,
+      showDragHandle: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (sheetContext) {
+        final media = MediaQuery.of(sheetContext);
+        final reservedTop = media.padding.top + kToolbarHeight + 8;
+        final modalHeight = (media.size.height - reservedTop)
+            .clamp(420.0, media.size.height * 0.92)
+            .toDouble();
+        return SafeArea(
+          top: false,
+          child: SizedBox(
+            height: modalHeight,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: Colors.black.withValues(alpha: 0.08),
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.03),
+                      blurRadius: 10,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.fromLTRB(14, 14, 10, 8),
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.assignment_outlined,
+                            color: primaryColor,
+                            size: 20,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              r.kind == _ReportKind.counseling
+                                  ? 'Referral Details'
+                                  : 'Case Details',
+                              style: const TextStyle(
+                                color: primaryColor,
+                                fontSize: 17,
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                          ),
+                          IconButton(
+                            onPressed: () => Navigator.pop(sheetContext),
+                            icon: const Icon(
+                              Icons.close_rounded,
+                              color: hintColor,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                  ),
-                  IconButton(
-                    onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.close),
-                  ),
-                ],
+                    const SizedBox(height: 8),
+                    const Divider(height: 1),
+                    Expanded(
+                      child: SingleChildScrollView(
+                        padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
+                        child: _buildReadOnlyCaseDetailsBody(r),
+                      ),
+                    ),
+                  ],
+                ),
               ),
-              const Divider(),
-              _buildReadOnlyCaseDetailsBody(r),
-            ],
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 
@@ -979,123 +1915,40 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
       return _buildCounselingDetailsBody(report);
     }
 
-    final isUnderReview =
-        report.status == _ReportStatus.pending ||
-        report.status == _ReportStatus.underReview;
     final isResolved = report.status == _ReportStatus.resolved;
-
-    if (isUnderReview) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _ReadOnlyDetailCard(
-            title: 'Student Information',
-            child: Column(
-              children: [
-                _readOnlyKv('Student', report.studentName),
-                const SizedBox(height: 8),
-                _readOnlyKv('Student No', report.studentId),
-                const SizedBox(height: 8),
-                _readOnlyProgramKv(report),
-              ],
-            ),
-          ),
-          const SizedBox(height: 12),
-          _ReadOnlyDetailCard(
-            title: 'Incident Summary',
-            child: Column(
-              children: [
-                _readOnlyKv('Concern', report.concern),
-                const SizedBox(height: 8),
-                _readOnlyKv('Category', report.category),
-                const SizedBox(height: 8),
-                _readOnlyKv('Violation Type', report.violation),
-                const SizedBox(height: 8),
-                _readOnlyKv('Date Reported', _fmtLong(report.incidentAt)),
-                if (report.reporterName.isNotEmpty) ...[
-                  const SizedBox(height: 8),
-                  _readOnlyKv(
-                    'Reported By',
-                    report.reporterRole.isEmpty
-                        ? report.reporterName
-                        : '${report.reporterName} (${report.reporterRole})',
-                  ),
-                ],
-              ],
-            ),
-          ),
-          const SizedBox(height: 12),
-          _ReadOnlyDetailCard(
-            title: 'Incident Description',
-            child: Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.03),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.black.withOpacity(0.08)),
-              ),
-              child: Text(
-                report.description,
-                style: const TextStyle(
-                  color: textDark,
-                  fontWeight: FontWeight.w600,
-                  height: 1.35,
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(height: 12),
-          _ReadOnlyDetailCard(
-            title: 'Evidence',
-            child: _buildEvidenceSection(report),
-          ),
-        ],
-      );
-    }
+    final reportedBy = report.reporterName.isEmpty
+        ? '--'
+        : report.reporterRole.isEmpty
+        ? report.reporterName
+        : '${report.reporterName} (${report.reporterRole})';
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _ReadOnlyDetailCard(
-          title: 'Student Information',
-          child: Column(
-            children: [
-              _readOnlyKv('Student', report.studentName),
-              const SizedBox(height: 8),
-              _readOnlyKv('Student No', report.studentId),
-              const SizedBox(height: 8),
-              _readOnlyProgramKv(report),
-            ],
-          ),
-        ),
+        _buildReadOnlyStudentInfoCard(report),
         const SizedBox(height: 12),
         _ReadOnlyDetailCard(
           title: 'Incident Summary',
           child: Column(
             children: [
-              _readOnlyKv('Concern', report.concern),
+              _readOnlyKv(
+                'Concern',
+                report.concern.isEmpty
+                    ? '--'
+                    : _toTitleCaseText(report.concern),
+              ),
               const SizedBox(height: 8),
               _readOnlyKv('Category', report.category),
               const SizedBox(height: 8),
               _readOnlyKv('Violation Type', report.violation),
               const SizedBox(height: 8),
-              _readOnlyKv('Date Reported', _fmtLong(report.incidentAt)),
+              _readOnlyKv('Date Reported', _fmtTsLong(report.submittedAt)),
               const SizedBox(height: 8),
-              _readOnlyKv('Submitted At', _fmtTsLong(report.submittedAt)),
-              if (!isResolved) ...[
-                const SizedBox(height: 8),
-                _readOnlyKv('Status', report.statusText),
-              ],
-              if (report.reporterName.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                _readOnlyKv(
-                  'Reported By',
-                  report.reporterRole.isEmpty
-                      ? report.reporterName
-                      : '${report.reporterName} (${report.reporterRole})',
-                ),
-              ],
+              _readOnlyKv('Date of Incident', _fmtTsLong(report.incidentAt)),
+              const SizedBox(height: 8),
+              _readOnlyKv('Reported By', reportedBy),
+              const SizedBox(height: 8),
+              _readOnlyKv('Case Code', _displayReportCode(report)),
             ],
           ),
         ),
@@ -1104,25 +1957,26 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
           title: 'Incident Description',
           child: Container(
             width: double.infinity,
-            padding: const EdgeInsets.all(12),
+            padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
-              color: Colors.black.withOpacity(0.03),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.black.withOpacity(0.08)),
+              color: Colors.black.withValues(alpha: 0.03),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
             ),
             child: Text(
               report.description,
               style: const TextStyle(
                 color: textDark,
                 fontWeight: FontWeight.w600,
-                height: 1.35,
+                height: 1.4,
+                fontSize: 14.5,
               ),
             ),
           ),
         ),
         const SizedBox(height: 12),
         _ReadOnlyDetailCard(
-          title: 'Evidence',
+          title: 'Evidence (${report.evidenceUrls.length})',
           child: _buildEvidenceSection(report),
         ),
         if (report.finalSeverity.isNotEmpty ||
@@ -1179,18 +2033,19 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
             title: 'OSA Note to Reporter',
             child: Container(
               width: double.infinity,
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.03),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.black.withOpacity(0.08)),
+                color: Colors.black.withValues(alpha: 0.03),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
               ),
               child: Text(
                 report.facultyNote,
                 style: const TextStyle(
                   color: textDark,
                   fontWeight: FontWeight.w600,
-                  height: 1.35,
+                  height: 1.4,
+                  fontSize: 14.5,
                 ),
               ),
             ),
@@ -1204,23 +2059,14 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _ReadOnlyDetailCard(
-          title: 'Student Information',
-          child: Column(
-            children: [
-              _readOnlyKv('Student', report.studentName),
-              const SizedBox(height: 8),
-              _readOnlyKv('Student No', report.studentId),
-              const SizedBox(height: 8),
-              _readOnlyProgramKv(report),
-            ],
-          ),
-        ),
+        _buildReadOnlyStudentInfoCard(report),
         const SizedBox(height: 12),
         _ReadOnlyDetailCard(
           title: 'Referral Summary',
           child: Column(
             children: [
+              _readOnlyKv('Case Code', _displayReportCode(report)),
+              const SizedBox(height: 8),
               _readOnlyKv('Referral Type', report.category),
               const SizedBox(height: 8),
               _readOnlyKv('Submitted At', _fmtTsLong(report.submittedAt)),
@@ -1268,48 +2114,29 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
     );
   }
 
-  Widget _caseCodeBadge(String caseCode) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: primaryColor.withOpacity(0.12),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: primaryColor.withOpacity(0.25)),
-      ),
-      child: Text(
-        caseCode,
-        style: const TextStyle(
-          color: primaryColor,
-          fontWeight: FontWeight.w900,
-          fontSize: 12,
-        ),
-      ),
-    );
-  }
-
   Widget _readOnlyKv(String label, String value) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         SizedBox(
-          width: 110,
+          width: 116,
           child: Text(
-            '$label:',
+            label + ':',
             style: const TextStyle(
               color: hintColor,
               fontWeight: FontWeight.w900,
-              fontSize: 12.2,
+              fontSize: 13,
             ),
           ),
         ),
         Expanded(
           child: Text(
-            value.isEmpty ? 'â€”' : value,
+            value.isEmpty ? '--' : value,
             style: const TextStyle(
               color: textDark,
               fontWeight: FontWeight.w700,
-              fontSize: 12.8,
-              height: 1.2,
+              fontSize: 13,
+              height: 1.3,
             ),
           ),
         ),
@@ -1317,17 +2144,155 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
     );
   }
 
-  Widget _readOnlyProgramKv(_SubmittedReport report) {
-    return FutureBuilder<String>(
-      future: _resolveStudentProgram(
-        studentUid: report.studentUid,
-        fallbackProgram: report.program,
+  Widget _buildReadOnlyStudentInfoCard(_SubmittedReport report) {
+    return _ReadOnlyDetailCard(
+      title: 'Student Information',
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          FutureBuilder<String>(
+            future: _resolveStudentPhotoUrl(report.studentUid),
+            initialData: '',
+            builder: (context, snapshot) {
+              final photoUrl = _str(snapshot.data);
+              return MouseRegion(
+                cursor: photoUrl.isEmpty
+                    ? SystemMouseCursors.basic
+                    : SystemMouseCursors.click,
+                child: GestureDetector(
+                  onTap: photoUrl.isEmpty
+                      ? null
+                      : () => _openProfilePhotoViewer(
+                          sourceUrl: photoUrl,
+                          studentName: report.studentName,
+                        ),
+                  child: Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      Container(
+                        width: 46,
+                        height: 46,
+                        decoration: BoxDecoration(
+                          color: const Color(
+                            0xFF1B5E20,
+                          ).withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: const Color(
+                              0xFF1B5E20,
+                            ).withValues(alpha: 0.25),
+                          ),
+                        ),
+                        child: photoUrl.isEmpty
+                            ? const Icon(
+                                Icons.person_rounded,
+                                color: Color(0xFF1B5E20),
+                                size: 24,
+                              )
+                            : ClipRRect(
+                                borderRadius: BorderRadius.circular(11),
+                                child: Image.network(
+                                  photoUrl,
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (context, error, stackTrace) =>
+                                      const Icon(
+                                        Icons.person_rounded,
+                                        color: Color(0xFF1B5E20),
+                                        size: 24,
+                                      ),
+                                ),
+                              ),
+                      ),
+                      if (photoUrl.isNotEmpty)
+                        Positioned(
+                          right: -4,
+                          bottom: -4,
+                          child: Container(
+                            width: 17,
+                            height: 17,
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF1B5E20),
+                              borderRadius: BorderRadius.circular(999),
+                              border: Border.all(
+                                color: Colors.white,
+                                width: 1.3,
+                              ),
+                            ),
+                            child: const Icon(
+                              Icons.open_in_full_rounded,
+                              color: Colors.white,
+                              size: 10,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  report.studentName.isEmpty ? '--' : report.studentName,
+                  style: const TextStyle(
+                    color: textDark,
+                    fontWeight: FontWeight.w900,
+                    fontSize: 17,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  report.studentId.isEmpty
+                      ? 'Student No: --'
+                      : 'Student No: ' + report.studentId,
+                  style: const TextStyle(
+                    color: hintColor,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                FutureBuilder<String>(
+                  future: _resolveStudentProgram(
+                    studentUid: report.studentUid,
+                    fallbackProgram: report.program,
+                  ),
+                  initialData: report.program,
+                  builder: (context, snapshot) {
+                    final program = _str(snapshot.data);
+                    return Text(
+                      'Program: ' + (program.isEmpty ? '--' : program),
+                      style: const TextStyle(
+                        color: hintColor,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
-      initialData: report.program,
-      builder: (context, snapshot) {
-        final program = _str(snapshot.data);
-        return _readOnlyKv('Program', program.isEmpty ? 'â€”' : program);
-      },
+    );
+  }
+
+  Future<void> _openProfilePhotoViewer({
+    required String sourceUrl,
+    required String studentName,
+  }) async {
+    final resolvedUrl = await _resolveImageSourceUrl(sourceUrl);
+    if (resolvedUrl.isEmpty || !mounted) return;
+    showDialog<void>(
+      context: context,
+      barrierColor: Colors.black.withValues(alpha: 0.72),
+      builder: (_) => _ProfilePhotoViewerDialog(
+        photoUrl: resolvedUrl,
+        studentName: studentName,
+      ),
     );
   }
 
@@ -1347,45 +2312,126 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
       );
     }
 
-    return Wrap(
-      spacing: 10,
-      runSpacing: 10,
-      children: urls.map((url) {
-        final isPdf = _isLikelyPdf(url);
-        return InkWell(
-          onTap: () => _openEvidencePreview(url, isPdf: isPdf),
-          borderRadius: BorderRadius.circular(10),
-          child: Container(
-            width: 110,
-            height: 74,
-            decoration: BoxDecoration(
-              color: Colors.black.withOpacity(0.04),
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: Colors.black.withOpacity(0.08)),
-            ),
-            clipBehavior: Clip.antiAlias,
-            child: isPdf
-                ? const Center(
-                    child: Icon(
-                      Icons.picture_as_pdf_rounded,
-                      color: Color(0xFFB71C1C),
-                      size: 28,
+    final show = urls.length > 6 ? 6 : urls.length;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Tap an image to view.',
+          style: TextStyle(
+            color: hintColor,
+            fontWeight: FontWeight.w700,
+            fontSize: 12,
+          ),
+        ),
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: List.generate(show, (i) {
+            final url = urls[i];
+            final isPdf = _isLikelyPdf(url);
+            return InkWell(
+              borderRadius: BorderRadius.circular(12),
+              onTap: () => _openEvidencePreview(url, isPdf: isPdf),
+              child: Stack(
+                children: [
+                  Container(
+                    width: 100,
+                    height: 70,
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.04),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: Colors.black.withValues(alpha: 0.08),
+                      ),
                     ),
-                  )
-                : Image.network(
-                    url,
-                    fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) => const Center(
-                      child: Icon(Icons.broken_image_rounded, color: hintColor),
+                    clipBehavior: Clip.antiAlias,
+                    child: isPdf
+                        ? const Center(
+                            child: Icon(
+                              Icons.picture_as_pdf_rounded,
+                              color: Color(0xFFB71C1C),
+                              size: 24,
+                            ),
+                          )
+                        : Image.network(
+                            url,
+                            fit: BoxFit.cover,
+                            loadingBuilder: (context, child, progress) {
+                              if (progress == null) return child;
+                              return Center(
+                                child: SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: primaryColor.withValues(alpha: 0.7),
+                                  ),
+                                ),
+                              );
+                            },
+                            errorBuilder: (_, __, ___) => const Center(
+                              child: Icon(
+                                Icons.broken_image_outlined,
+                                color: hintColor,
+                                size: 22,
+                              ),
+                            ),
+                          ),
+                  ),
+                  Positioned(
+                    top: 6,
+                    right: 6,
+                    child: Container(
+                      padding: const EdgeInsets.all(3),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.6),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: const Icon(
+                        Icons.open_in_new_rounded,
+                        size: 12,
+                        color: Colors.white,
+                      ),
                     ),
                   ),
-          ),
-        );
-      }).toList(),
+                  if (isPdf)
+                    Positioned(
+                      left: 6,
+                      bottom: 6,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.red.withValues(alpha: 0.85),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: const Text(
+                          'PDF',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w800,
+                            fontSize: 10.5,
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            );
+          }),
+        ),
+      ],
     );
   }
 
   Future<void> _openEvidencePreview(String url, {required bool isPdf}) async {
+    final resolvedUrl = await _resolveImageSourceUrl(url);
+    if (resolvedUrl.isEmpty || !mounted) return;
     await showDialog<void>(
       context: context,
       builder: (context) => Dialog(
@@ -1420,7 +2466,7 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
                               ),
                               const SizedBox(height: 8),
                               Text(
-                                url,
+                                resolvedUrl,
                                 style: const TextStyle(
                                   color: Colors.white54,
                                   fontSize: 12,
@@ -1438,7 +2484,7 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
                         minScale: 0.8,
                         child: Center(
                           child: Image.network(
-                            url,
+                            resolvedUrl,
                             fit: BoxFit.contain,
                             errorBuilder: (_, __, ___) => const Text(
                               'Failed to load image',
@@ -1498,45 +2544,75 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
 
   Widget _buildStatusBadge(String status) {
     final s = status.toLowerCase().trim();
-    final bool isResolved = s.contains('resolved') && !s.contains('unresolved');
-    final bool isUnderReview =
-        s.contains('review') ||
+    final isResolved = s.contains('resolved') && !s.contains('unresolved');
+    final isActionSet =
+        s.contains('action set') ||
+        s.contains('with meeting') ||
+        s.contains('monitoring');
+    final isUnderReview =
+        s.contains('under review') ||
         s.contains('submitted') ||
         s.contains('pending');
-    final bool isUnresolved = s.contains('unresolved');
-    final bool isActionSet =
-        s.contains('action set') || s.contains('with meeting');
-    final bool isRejected = s.contains('rejected') || s.contains('dismiss');
 
-    Color fill = Colors.black.withOpacity(0.04);
-    Color border = Colors.black.withOpacity(0.10);
-    Color text = hintColor;
-
-    if (isResolved || isActionSet) {
-      fill = primaryColor.withOpacity(0.10);
-      border = primaryColor.withOpacity(0.30);
-      text = primaryColor;
-    } else if (isUnresolved || isRejected) {
-      fill = Colors.red.withOpacity(0.10);
-      border = Colors.red.withOpacity(0.25);
-      text = Colors.red.shade900;
-    } else if (isUnderReview) {
-      fill = Colors.black.withOpacity(0.04);
-      border = Colors.black.withOpacity(0.10);
-      text = hintColor;
-    }
+    Color tone = const Color(0xFF455A64);
+    if (isResolved) tone = const Color(0xFF2E7D32);
+    if (isActionSet) tone = const Color(0xFF0D47A1);
+    if (isUnderReview) tone = const Color(0xFFD97706);
 
     return Container(
       constraints: const BoxConstraints(maxWidth: 220),
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: tone.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: tone.withValues(alpha: 0.24)),
+      ),
+      child: Text(
+        status,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          color: tone,
+          fontWeight: FontWeight.w800,
+          fontSize: 12,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildConcernBadge(String concern) {
+    final normalized = concern.toLowerCase().trim();
+    final isSerious = normalized.contains('serious');
+    final isBasic = normalized.contains('basic');
+
+    final Color fill = isSerious
+        ? Colors.orange.withValues(alpha: 0.10)
+        : isBasic
+        ? primaryColor.withValues(alpha: 0.10)
+        : Colors.black.withValues(alpha: 0.04);
+    final Color border = isSerious
+        ? Colors.orange.withValues(alpha: 0.30)
+        : isBasic
+        ? primaryColor.withValues(alpha: 0.25)
+        : Colors.black.withValues(alpha: 0.12);
+    final Color text = isSerious
+        ? Colors.orange.shade900
+        : isBasic
+        ? primaryColor
+        : hintColor;
+
+    return Container(
+      constraints: const BoxConstraints(minWidth: 64, maxWidth: 130),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(
         color: fill,
         borderRadius: BorderRadius.circular(999),
         border: Border.all(color: border),
       ),
       child: Text(
-        status,
+        concern.isEmpty ? '--' : concern,
+        maxLines: 1,
         overflow: TextOverflow.ellipsis,
+        textAlign: TextAlign.center,
         style: TextStyle(
           color: text,
           fontWeight: FontWeight.w900,
@@ -1557,18 +2633,11 @@ class _ReadOnlyDetailCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.black.withOpacity(0.08)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.02),
-            blurRadius: 8,
-            offset: const Offset(0, 4),
-          ),
-        ],
+        color: const Color(0xFFF8FBF8),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.black.withValues(alpha: 0.06)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1578,12 +2647,109 @@ class _ReadOnlyDetailCard extends StatelessWidget {
             style: const TextStyle(
               color: Color(0xFF1F2A1F),
               fontWeight: FontWeight.w900,
-              fontSize: 13.5,
+              fontSize: 14.5,
             ),
           ),
           const SizedBox(height: 10),
           child,
         ],
+      ),
+    );
+  }
+}
+
+class _ProfilePhotoViewerDialog extends StatelessWidget {
+  final String photoUrl;
+  final String studentName;
+
+  const _ProfilePhotoViewerDialog({
+    required this.photoUrl,
+    required this.studentName,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final size = MediaQuery.of(context).size;
+    final dialogWidth = size.width > 760 ? 640.0 : size.width * 0.94;
+    final dialogHeight = size.height > 620 ? 560.0 : size.height * 0.88;
+
+    return Dialog(
+      backgroundColor: Colors.black,
+      insetPadding: const EdgeInsets.all(16),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: SizedBox(
+        width: dialogWidth,
+        height: dialogHeight,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 10, 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      studentName.isEmpty ? 'Profile Photo' : studentName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close_rounded, color: Colors.white),
+                    style: IconButton.styleFrom(
+                      backgroundColor: Colors.white.withValues(alpha: 0.14),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(10, 4, 10, 10),
+                child: InteractiveViewer(
+                  minScale: 0.8,
+                  maxScale: 4.0,
+                  child: Center(
+                    child: Image.network(
+                      photoUrl,
+                      fit: BoxFit.contain,
+                      loadingBuilder: (context, child, progress) {
+                        if (progress == null) return child;
+                        return const Center(
+                          child: CircularProgressIndicator(color: Colors.white),
+                        );
+                      },
+                      errorBuilder: (context, error, stackTrace) =>
+                          const Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                Icons.broken_image_outlined,
+                                color: Colors.white70,
+                                size: 42,
+                              ),
+                              SizedBox(height: 8),
+                              Text(
+                                'Failed to load profile photo',
+                                style: TextStyle(
+                                  color: Colors.white70,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ],
+                          ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1727,7 +2893,6 @@ class _TabChip extends StatelessWidget {
 
   static const primaryColor = Color(0xFF2F6C44);
   static const textDark = Color(0xFF243024);
-
   @override
   Widget build(BuildContext context) {
     return InkWell(
@@ -1822,7 +2987,7 @@ class _MonthHeader extends StatelessWidget {
   }
 }
 
-// Ã¢Å“â€¦ Wrap layout (no Grid overflow)
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ Wrap layout (no Grid overflow)
 class _ReportsWrap extends StatelessWidget {
   final double scale;
   final int crossAxisCount;
@@ -1902,7 +3067,7 @@ class _ReportCard extends StatelessWidget {
                 children: [
                   Text(
                     report.studentName.isEmpty
-                        ? "Ã¢â‚¬â€"
+                        ? "ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â"
                         : report.studentName,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
@@ -2112,7 +3277,7 @@ class _ReportCard extends StatelessWidget {
           ),
           Expanded(
             child: Text(
-              value.isEmpty ? "Ã¢â‚¬â€" : value,
+              value.isEmpty ? "ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â" : value,
               style: TextStyle(
                 color: textDark,
                 fontWeight: FontWeight.w800,
@@ -2177,10 +3342,9 @@ class _StatusPill extends StatelessWidget {
     required this.label,
   });
 
-  static const textDark = Color(0xFF243024);
-
   @override
   Widget build(BuildContext context) {
+    final tone = status.dotColor;
     return Container(
       constraints: BoxConstraints(maxWidth: 120 * scale),
       padding: EdgeInsets.symmetric(
@@ -2188,17 +3352,17 @@ class _StatusPill extends StatelessWidget {
         vertical: 6 * scale,
       ),
       decoration: BoxDecoration(
-        color: status.dotColor.withOpacity(0.12),
+        color: tone.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: status.dotColor.withOpacity(0.28)),
+        border: Border.all(color: tone.withValues(alpha: 0.24)),
       ),
       child: Text(
         label,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
         style: TextStyle(
-          color: textDark,
-          fontWeight: FontWeight.w900,
+          color: tone,
+          fontWeight: FontWeight.w800,
           fontSize: (11.8 * scale).clamp(11.8, 13.2),
         ),
       ),
@@ -2232,7 +3396,7 @@ class _EmptyState extends StatelessWidget {
           ),
           SizedBox(height: 8 * scale),
           Text(
-            "You havenÃ¢â‚¬â„¢t submitted any reports yet.",
+            "You havenÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢t submitted any reports yet.",
             textAlign: TextAlign.center,
             style: TextStyle(
               color: hintColor,
@@ -2532,17 +3696,17 @@ extension _ReportStatusX on _ReportStatus {
   Color get dotColor {
     switch (this) {
       case _ReportStatus.pending:
-        return const Color(0xFFE6B800);
+        return const Color(0xFFD97706);
       case _ReportStatus.underReview:
-        return const Color(0xFF2B7BBB);
+        return const Color(0xFFD97706);
       case _ReportStatus.actionSet:
-        return const Color(0xFF2E8B57);
+        return const Color(0xFF0D47A1);
       case _ReportStatus.unresolved:
-        return const Color(0xFFB23B3B);
+        return const Color(0xFF455A64);
       case _ReportStatus.resolved:
-        return const Color(0xFF2E8B57);
+        return const Color(0xFF2E7D32);
       case _ReportStatus.rejected:
-        return const Color(0xFFB23B3B);
+        return const Color(0xFF455A64);
     }
   }
 }

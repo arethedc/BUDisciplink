@@ -1,14 +1,25 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:apps/pages/shared/widgets/app_layout_tokens.dart';
 
-class StudentNotificationsPage extends StatelessWidget {
+enum _StudentNotificationsFilter { all, unread }
+
+class StudentNotificationsPage extends StatefulWidget {
   const StudentNotificationsPage({super.key});
+
+  @override
+  State<StudentNotificationsPage> createState() =>
+      _StudentNotificationsPageState();
+}
+
+class _StudentNotificationsPageState extends State<StudentNotificationsPage> {
+  _StudentNotificationsFilter _filter = _StudentNotificationsFilter.all;
 
   @override
   Widget build(BuildContext context) {
     const primary = Color(0xFF1B5E20);
-    const bg = Color(0xFFF6FAF6);
+    const bg = Colors.white;
     const muted = Color(0xFF6D7F62);
 
     final user = FirebaseAuth.instance.currentUser;
@@ -29,6 +40,7 @@ class StudentNotificationsPage extends StatelessWidget {
         .doc(user.uid)
         .collection('notifications')
         .orderBy('createdAt', descending: true)
+        .limit(200)
         .snapshots();
 
     return Scaffold(
@@ -61,139 +73,200 @@ class StudentNotificationsPage extends StatelessWidget {
                     }
 
                     final docs = snap.data!.docs.toList();
+                    final unreadCount = docs
+                        .where((doc) => _tsToDate(doc.data()['readAt']) == null)
+                        .length;
+                    final filteredDocs =
+                        _filter == _StudentNotificationsFilter.unread
+                        ? docs
+                              .where(
+                                (doc) =>
+                                    _tsToDate(doc.data()['readAt']) == null,
+                              )
+                              .toList()
+                        : docs;
 
-                    if (docs.isEmpty) {
-                      return const Center(
-                        child: Padding(
-                          padding: EdgeInsets.all(18),
-                          child: Text(
-                            'No notifications yet.',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              color: muted,
-                              fontWeight: FontWeight.w900,
-                            ),
+                    return Column(
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(14, 12, 14, 8),
+                          child: _buildStudentNotificationsFilterBar(
+                            selected: _filter,
+                            unreadCount: unreadCount,
+                            onChanged: (next) {
+                              if (_filter == next) return;
+                              setState(() => _filter = next);
+                            },
                           ),
                         ),
-                      );
-                    }
-
-                    return ListView.separated(
-                      padding: const EdgeInsets.all(14),
-                      itemCount: docs.length,
-                      separatorBuilder: (context, index) =>
-                          const SizedBox(height: 10),
-                      itemBuilder: (context, i) {
-                        final doc = docs[i];
-                        final d = doc.data();
-
-                        final title = _safeStr(d['title']).isEmpty
-                            ? 'Notification'
-                            : _safeStr(d['title']);
-                        final body = _safeStr(d['body']);
-                        final createdAt = _tsToDate(d['createdAt']);
-                        final readAt = _tsToDate(d['readAt']);
-                        final isUnread = readAt == null;
-
-                        return InkWell(
-                          borderRadius: BorderRadius.circular(18),
-                          onTap: () async {
-                            await _openDetails(context, doc);
-                          },
-                          child: Container(
-                            padding: const EdgeInsets.all(14),
-                            decoration: BoxDecoration(
-                              color: Colors.white,
-                              borderRadius: BorderRadius.circular(18),
-                              border: Border.all(
-                                color: isUnread
-                                    ? primary.withValues(alpha: 0.25)
-                                    : Colors.black.withValues(alpha: 0.08),
-                                width: isUnread ? 1.4 : 1,
-                              ),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.black.withValues(alpha: 0.03),
-                                  blurRadius: 10,
-                                  offset: const Offset(0, 6),
-                                ),
-                              ],
-                            ),
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Container(
-                                  width: 38,
-                                  height: 38,
-                                  decoration: BoxDecoration(
-                                    color: isUnread
-                                        ? primary.withValues(alpha: 0.14)
-                                        : Colors.black.withValues(alpha: 0.05),
-                                    borderRadius: BorderRadius.circular(12),
+                        Expanded(
+                          child: filteredDocs.isEmpty
+                              ? Center(
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(18),
+                                    child: Text(
+                                      _filter ==
+                                              _StudentNotificationsFilter.unread
+                                          ? 'No unread notifications.'
+                                          : 'No notifications yet.',
+                                      textAlign: TextAlign.center,
+                                      style: const TextStyle(
+                                        color: muted,
+                                        fontWeight: FontWeight.w900,
+                                      ),
+                                    ),
                                   ),
-                                  child: Icon(
-                                    isUnread
-                                        ? Icons.notifications_active_rounded
-                                        : Icons.notifications_none_rounded,
-                                    color: isUnread ? primary : muted,
-                                    size: 20,
+                                )
+                              : ListView.separated(
+                                  padding: const EdgeInsets.fromLTRB(
+                                    14,
+                                    0,
+                                    14,
+                                    14,
                                   ),
-                                ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Row(
-                                        children: [
-                                          Expanded(
-                                            child: Text(
-                                              title,
-                                              maxLines: 1,
-                                              overflow: TextOverflow.ellipsis,
-                                              style: TextStyle(
-                                                color: Colors.black,
-                                                fontWeight: isUnread
-                                                    ? FontWeight.w900
-                                                    : FontWeight.w800,
+                                  itemCount: filteredDocs.length,
+                                  separatorBuilder: (context, index) =>
+                                      const SizedBox(height: 10),
+                                  itemBuilder: (context, i) {
+                                    final doc = filteredDocs[i];
+                                    final d = doc.data();
+
+                                    final title = _safeStr(d['title']).isEmpty
+                                        ? 'Notification'
+                                        : _safeStr(d['title']);
+                                    final body = _safeStr(d['body']);
+                                    final createdAt = _tsToDate(d['createdAt']);
+                                    final readAt = _tsToDate(d['readAt']);
+                                    final isUnread = readAt == null;
+
+                                    return InkWell(
+                                      borderRadius: BorderRadius.circular(18),
+                                      onTap: () async {
+                                        await _openDetails(context, doc);
+                                      },
+                                      child: Container(
+                                        padding: const EdgeInsets.all(14),
+                                        decoration: BoxDecoration(
+                                          color: Colors.white,
+                                          borderRadius: BorderRadius.circular(
+                                            18,
+                                          ),
+                                          border: Border.all(
+                                            color: isUnread
+                                                ? primary.withValues(
+                                                    alpha: 0.25,
+                                                  )
+                                                : Colors.black.withValues(
+                                                    alpha: 0.08,
+                                                  ),
+                                            width: isUnread ? 1.4 : 1,
+                                          ),
+                                          boxShadow: [
+                                            BoxShadow(
+                                              color: Colors.black.withValues(
+                                                alpha: 0.03,
+                                              ),
+                                              blurRadius: 10,
+                                              offset: const Offset(0, 6),
+                                            ),
+                                          ],
+                                        ),
+                                        child: Row(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Container(
+                                              width: 38,
+                                              height: 38,
+                                              decoration: BoxDecoration(
+                                                color: isUnread
+                                                    ? primary.withValues(
+                                                        alpha: 0.14,
+                                                      )
+                                                    : Colors.black.withValues(
+                                                        alpha: 0.05,
+                                                      ),
+                                                borderRadius:
+                                                    BorderRadius.circular(12),
+                                              ),
+                                              child: Icon(
+                                                isUnread
+                                                    ? Icons
+                                                          .notifications_active_rounded
+                                                    : Icons
+                                                          .notifications_none_rounded,
+                                                color: isUnread
+                                                    ? primary
+                                                    : muted,
+                                                size: 20,
                                               ),
                                             ),
-                                          ),
-                                          const SizedBox(width: 8),
-                                          Text(
-                                            createdAt == null
-                                                ? '--'
-                                                : _fmtWhen(createdAt),
-                                            style: const TextStyle(
-                                              color: muted,
-                                              fontWeight: FontWeight.w800,
-                                              fontSize: 12,
+                                            const SizedBox(width: 12),
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                children: [
+                                                  Row(
+                                                    children: [
+                                                      Expanded(
+                                                        child: Text(
+                                                          title,
+                                                          maxLines: 1,
+                                                          overflow: TextOverflow
+                                                              .ellipsis,
+                                                          style: TextStyle(
+                                                            color: Colors.black,
+                                                            fontWeight: isUnread
+                                                                ? FontWeight
+                                                                      .w900
+                                                                : FontWeight
+                                                                      .w800,
+                                                          ),
+                                                        ),
+                                                      ),
+                                                      const SizedBox(width: 8),
+                                                      Text(
+                                                        createdAt == null
+                                                            ? '--'
+                                                            : _fmtWhen(
+                                                                createdAt,
+                                                              ),
+                                                        style: const TextStyle(
+                                                          color: muted,
+                                                          fontWeight:
+                                                              FontWeight.w800,
+                                                          fontSize: 12,
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                  if (body.isNotEmpty) ...[
+                                                    const SizedBox(height: 6),
+                                                    Text(
+                                                      body,
+                                                      maxLines: 2,
+                                                      overflow:
+                                                          TextOverflow.ellipsis,
+                                                      style: const TextStyle(
+                                                        color: muted,
+                                                        fontWeight:
+                                                            FontWeight.w700,
+                                                        height: 1.2,
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ],
+                                              ),
                                             ),
-                                          ),
-                                        ],
-                                      ),
-                                      if (body.isNotEmpty) ...[
-                                        const SizedBox(height: 6),
-                                        Text(
-                                          body,
-                                          maxLines: 2,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: const TextStyle(
-                                            color: muted,
-                                            fontWeight: FontWeight.w700,
-                                            height: 1.2,
-                                          ),
+                                          ],
                                         ),
-                                      ],
-                                    ],
-                                  ),
+                                      ),
+                                    );
+                                  },
                                 ),
-                              ],
-                            ),
-                          ),
-                        );
-                      },
+                        ),
+                      ],
                     );
                   },
                 ),
@@ -259,6 +332,71 @@ class StudentNotificationsPage extends StatelessWidget {
       ),
     );
   }
+}
+
+Widget _buildStudentNotificationsFilterBar({
+  required _StudentNotificationsFilter selected,
+  required int unreadCount,
+  required ValueChanged<_StudentNotificationsFilter> onChanged,
+}) {
+  const filterRadius = AppRadii.md;
+  final options = <(_StudentNotificationsFilter, String)>[
+    (_StudentNotificationsFilter.all, 'All'),
+    (
+      _StudentNotificationsFilter.unread,
+      unreadCount <= 0 ? 'Unread' : 'Unread ($unreadCount)',
+    ),
+  ];
+
+  Widget filterTab(_StudentNotificationsFilter value, String label) {
+    final selectedTab = selected == value;
+    return InkWell(
+      borderRadius: BorderRadius.circular(filterRadius),
+      onTap: () => onChanged(value),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 160),
+        curve: Curves.easeOut,
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+        decoration: BoxDecoration(
+          color: selectedTab
+              ? const Color(0xFF1B5E20).withValues(alpha: 0.12)
+              : Colors.white,
+          borderRadius: BorderRadius.circular(filterRadius),
+          border: Border.all(
+            color: selectedTab
+                ? const Color(0xFF1B5E20).withValues(alpha: 0.36)
+                : Colors.black.withValues(alpha: 0.1),
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: selectedTab
+                ? const Color(0xFF1B5E20)
+                : const Color(0xFF1F2A1F),
+            fontWeight: selectedTab ? FontWeight.w900 : FontWeight.w700,
+            fontSize: 13,
+          ),
+        ),
+      ),
+    );
+  }
+
+  return Align(
+    alignment: Alignment.centerLeft,
+    child: SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (var i = 0; i < options.length; i++) ...[
+            filterTab(options[i].$1, options[i].$2),
+            if (i != options.length - 1) const SizedBox(width: 8),
+          ],
+        ],
+      ),
+    ),
+  );
 }
 
 class _ErrorState extends StatelessWidget {

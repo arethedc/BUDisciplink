@@ -24,7 +24,7 @@ class _SignUpPageState extends State<SignUpPage> {
   String? _error;
 
   // ===== DESIGN THEME (from your reference) =====
-  static const bg = Color(0xFFF6FAF6);
+  static const bg = Colors.white;
   static const primary = Color(0xFF1B5E20);
   static const hint = Color(0xFF6D7F62);
   static const textDark = Color(0xFF1F2A1F);
@@ -293,7 +293,7 @@ class _SignUpPageState extends State<SignUpPage> {
                           const SizedBox(height: 8),
 
                           const Text(
-                            "CREATE YOUR ACCOUNT",
+                            "CREATE STUDENT ACCOUNT",
                             textAlign: TextAlign.center,
                             style: TextStyle(
                               color: primary,
@@ -307,12 +307,24 @@ class _SignUpPageState extends State<SignUpPage> {
                           const SizedBox(height: 14),
 
                           Text(
-                            "Create your account to continue",
+                            "Student self-sign up only",
                             textAlign: TextAlign.center,
                             style: TextStyle(
                               color: hint,
                               fontWeight: FontWeight.w700,
                               fontSize: 12.5,
+                            ),
+                          ),
+
+                          const SizedBox(height: 8),
+
+                          Text(
+                            "Faculty and staff accounts are created by admin.",
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: hint.withValues(alpha: 0.95),
+                              fontWeight: FontWeight.w700,
+                              fontSize: 11.8,
                             ),
                           ),
 
@@ -340,7 +352,7 @@ class _SignUpPageState extends State<SignUpPage> {
                               fontWeight: FontWeight.w700,
                             ),
                             decoration: _decor(
-                              label: 'Email',
+                              label: 'BU Outlook Email',
                               icon: Icons.email,
                             ),
                             validator: (v) {
@@ -385,8 +397,9 @@ class _SignUpPageState extends State<SignUpPage> {
                             ),
                             validator: (v) {
                               final s = v ?? '';
-                              if (s.trim().isEmpty)
+                              if (s.trim().isEmpty) {
                                 return 'Password is required';
+                              }
                               if (!_isStrongPassword(s)) {
                                 return 'Password is weak. Follow all requirements.';
                               }
@@ -470,8 +483,9 @@ class _SignUpPageState extends State<SignUpPage> {
                             validator: (v) {
                               final s = (v ?? '').trim();
                               if (s.isEmpty) return 'Please confirm password';
-                              if (v != _passCtrl.text)
+                              if (v != _passCtrl.text) {
                                 return 'Passwords do not match';
+                              }
                               return null;
                             },
                           ),
@@ -530,10 +544,10 @@ class _SignUpPageState extends State<SignUpPage> {
                                       ),
                                     )
                                   : const Text(
-                                      'Sign Up',
+                                      'Create Account',
                                       style: TextStyle(
                                         fontWeight: FontWeight.w900,
-                                        fontSize: 16,
+                                        fontSize: 15.5,
                                       ),
                                     ),
                             ),
@@ -589,7 +603,7 @@ class _SignUpPageState extends State<SignUpPage> {
                                 const SizedBox(width: 10),
                                 Expanded(
                                   child: Text(
-                                    "Use your BU Outlook email for sign up.",
+                                    "Student sign up only. Use your BU Outlook email.",
                                     style: TextStyle(
                                       color: textDark.withValues(alpha: 0.85),
                                       fontWeight: FontWeight.w700,

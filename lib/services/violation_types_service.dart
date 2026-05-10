@@ -1,6 +1,15 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 class ViolationTypesService {
+  static const int _defaultBookingWindowDays = 3;
+  static const int _defaultGraceWindowDays = 2;
+  static const int _immediateBookingWindowDays = 2;
+  static const List<String> fixedSeverityLevels = <String>[
+    'Minor',
+    'Moderate',
+    'Major',
+  ];
+
   final FirebaseFirestore _db;
   ViolationTypesService({FirebaseFirestore? db})
     : _db = db ?? FirebaseFirestore.instance;
@@ -10,12 +19,36 @@ class ViolationTypesService {
 
   CollectionReference<Map<String, dynamic>> get _types =>
       _db.collection('violation_types');
-  CollectionReference<Map<String, dynamic>> get _reviewTypes =>
-      _db.collection('review_types');
   CollectionReference<Map<String, dynamic>> get _sanctionTypes =>
       _db.collection('sanction_types');
   CollectionReference<Map<String, dynamic>> get _setActions =>
       _db.collection('action_types');
+
+  int _defaultBookingDaysForActionId(String actionId) {
+    final normalized = actionId.trim().toLowerCase();
+    if (normalized == 'immediate_action_required') {
+      return _immediateBookingWindowDays;
+    }
+    return _defaultBookingWindowDays;
+  }
+
+  int _defaultGraceDaysForActionId(String actionId) {
+    final normalized = actionId.trim().toLowerCase();
+    if (normalized == 'immediate_action_required') return 0;
+    return _defaultGraceWindowDays;
+  }
+
+  int _normalizeBookingDays(int? value, int fallback) {
+    final raw = value ?? fallback;
+    if (raw < 1) return fallback;
+    return raw;
+  }
+
+  int _normalizeGraceDays(int? value, int fallback) {
+    final raw = value ?? fallback;
+    if (raw < 0) return fallback;
+    return raw;
+  }
 
   // ============================================
   // CATEGORIES
@@ -24,7 +57,7 @@ class ViolationTypesService {
   Stream<QuerySnapshot<Map<String, dynamic>>> streamCategories({
     String? concern, // filter by basic | serious
   }) {
-    Query<Map<String, dynamic>> query = _categories.orderBy('order');
+    Query<Map<String, dynamic>> query = _categories;
     if (concern != null) {
       query = query.where('concern', isEqualTo: concern);
     }
@@ -35,14 +68,12 @@ class ViolationTypesService {
     required String categoryId, // e.g., dress_code
     required String concern, // basic | serious
     required String name,
-    required int order,
     bool isActive = true,
   }) async {
     final ref = _categories.doc(categoryId);
     await ref.set({
       'concern': concern.toLowerCase().trim(),
       'name': name.trim(),
-      'order': order,
       'isActive': isActive,
       'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
@@ -52,7 +83,7 @@ class ViolationTypesService {
   Future<void> updateCategory({
     required String categoryId,
     String? name,
-    int? order,
+    String? concern,
     bool? isActive,
   }) async {
     final updates = <String, dynamic>{
@@ -60,10 +91,28 @@ class ViolationTypesService {
     };
 
     if (name != null) updates['name'] = name.trim();
-    if (order != null) updates['order'] = order;
+    if (concern != null && concern.trim().isNotEmpty) {
+      updates['concern'] = concern.toLowerCase().trim();
+    }
     if (isActive != null) updates['isActive'] = isActive;
 
-    await _categories.doc(categoryId).update(updates);
+    final batch = _db.batch();
+    batch.update(_categories.doc(categoryId), updates);
+
+    if (updates.containsKey('concern')) {
+      final concernValue = updates['concern'] as String;
+      final typesSnap = await _types
+          .where('categoryId', isEqualTo: categoryId)
+          .get();
+      for (final doc in typesSnap.docs) {
+        batch.update(doc.reference, {
+          'concern': concernValue,
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+      }
+    }
+
+    await batch.commit();
   }
 
   Future<void> deleteCategory(String categoryId) async {
@@ -102,6 +151,12 @@ class ViolationTypesService {
     return query.snapshots();
   }
 
+  Stream<QuerySnapshot<Map<String, dynamic>>> streamTypesByCategoryRaw(
+    String categoryId,
+  ) {
+    return _types.where('categoryId', isEqualTo: categoryId.trim()).snapshots();
+  }
+
   Future<QuerySnapshot<Map<String, dynamic>>> getTypesByCategory(
     String categoryId,
   ) {
@@ -119,15 +174,27 @@ class ViolationTypesService {
     String? descriptionHint,
     bool isActive = true,
   }) async {
+    final trimmedCategoryId = categoryId.trim();
+    final existingTypes = await _types
+        .where('categoryId', isEqualTo: trimmedCategoryId)
+        .get();
+    var maxOrder = 0;
+    for (final doc in existingTypes.docs) {
+      final raw = doc.data()['order'];
+      final next = raw is num ? raw.toInt() : 0;
+      if (next > maxOrder) maxOrder = next;
+    }
+
     final ref = _types.doc(typeId);
     await ref.set({
-      'categoryId': categoryId.trim(),
+      'categoryId': trimmedCategoryId,
       'concern': concern.toLowerCase().trim(),
       'label': label.trim(),
       'descriptionHint':
           (descriptionHint == null || descriptionHint.trim().isEmpty)
           ? null
           : descriptionHint.trim(),
+      'order': maxOrder + 1,
       'isActive': isActive,
       'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
@@ -161,43 +228,28 @@ class ViolationTypesService {
     await _types.doc(typeId).delete();
   }
 
-  // ============================================
-  // REVIEW TYPES
-  // ============================================
-
-  Stream<QuerySnapshot<Map<String, dynamic>>> streamReviewTypes() {
-    return _reviewTypes.orderBy('order').snapshots();
+  Future<void> saveCategoryOrder(List<String> orderedCategoryIds) async {
+    if (orderedCategoryIds.isEmpty) return;
+    final batch = _db.batch();
+    for (var i = 0; i < orderedCategoryIds.length; i++) {
+      batch.update(_categories.doc(orderedCategoryIds[i]), {
+        'order': i + 1,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+    }
+    await batch.commit();
   }
 
-  Future<void> createReviewType({
-    required String reviewTypeId,
-    required String label,
-    String? description,
-    required bool meetingRequired,
-    required int order,
-    bool isActive = true,
-  }) async {
-    await _reviewTypes.doc(reviewTypeId.trim()).set({
-      'label': label.trim(),
-      'description': description == null || description.trim().isEmpty
-          ? null
-          : description.trim(),
-      'meetingRequired': meetingRequired,
-      'order': order,
-      'isActive': isActive,
-      'createdAt': FieldValue.serverTimestamp(),
-      'updatedAt': FieldValue.serverTimestamp(),
-    });
-  }
-
-  Future<void> updateReviewTypeActive({
-    required String reviewTypeId,
-    required bool isActive,
-  }) async {
-    await _reviewTypes.doc(reviewTypeId.trim()).update({
-      'isActive': isActive,
-      'updatedAt': FieldValue.serverTimestamp(),
-    });
+  Future<void> saveTypeOrder(List<String> orderedTypeIds) async {
+    if (orderedTypeIds.isEmpty) return;
+    final batch = _db.batch();
+    for (var i = 0; i < orderedTypeIds.length; i++) {
+      batch.update(_types.doc(orderedTypeIds[i]), {
+        'order': i + 1,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+    }
+    await batch.commit();
   }
 
   // ============================================
@@ -213,16 +265,48 @@ class ViolationTypesService {
     required String label,
     String? description,
     required bool meetingRequired,
-    required int order,
+    int? bookingWindowDays,
+    int? graceWindowDays,
+    int? order,
     bool isActive = true,
   }) async {
+    int resolvedOrder = order ?? 1;
+    if (order == null) {
+      final existing = await _setActions.get();
+      var maxOrder = 0;
+      for (final doc in existing.docs) {
+        final raw = doc.data()['order'];
+        final next = raw is num ? raw.toInt() : 0;
+        if (next > maxOrder) maxOrder = next;
+      }
+      resolvedOrder = maxOrder + 1;
+    }
+
+    final normalizedId = setActionId.trim();
+    final fallbackBooking = _defaultBookingDaysForActionId(normalizedId);
+    final fallbackGrace = _defaultGraceDaysForActionId(normalizedId);
+    final normalizedBookingDays = _normalizeBookingDays(
+      bookingWindowDays,
+      fallbackBooking,
+    );
+    final normalizedGraceDays = meetingRequired
+        ? _normalizeGraceDays(
+            graceWindowDays,
+            normalizedId.toLowerCase() == 'immediate_action_required'
+                ? 0
+                : fallbackGrace,
+          )
+        : 0;
+
     await _setActions.doc(setActionId.trim()).set({
       'label': label.trim(),
       'description': description == null || description.trim().isEmpty
           ? null
           : description.trim(),
       'meetingRequired': meetingRequired,
-      'order': order,
+      'bookingWindowDays': normalizedBookingDays,
+      'graceWindowDays': normalizedGraceDays,
+      'order': resolvedOrder,
       'isActive': isActive,
       'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
@@ -239,6 +323,66 @@ class ViolationTypesService {
     });
   }
 
+  Future<void> updateSetAction({
+    required String setActionId,
+    String? label,
+    String? description,
+    bool? meetingRequired,
+    int? bookingWindowDays,
+    int? graceWindowDays,
+    int? order,
+    bool? isActive,
+  }) async {
+    final actionId = setActionId.trim();
+    final existingDoc = await _setActions.doc(actionId).get();
+    if (!existingDoc.exists) {
+      throw Exception('Action type not found.');
+    }
+    final existing = existingDoc.data() ?? const <String, dynamic>{};
+    final existingMeetingRequired = existing['meetingRequired'] == true;
+    final effectiveMeetingRequired = meetingRequired ?? existingMeetingRequired;
+    final defaultBooking = _defaultBookingDaysForActionId(actionId);
+    final defaultGrace = _defaultGraceDaysForActionId(actionId);
+    final existingBooking = (existing['bookingWindowDays'] as num?)?.toInt();
+    final existingGrace = (existing['graceWindowDays'] as num?)?.toInt();
+
+    final resolvedBookingDays = _normalizeBookingDays(
+      bookingWindowDays,
+      existingBooking ?? defaultBooking,
+    );
+    final resolvedGraceDays = effectiveMeetingRequired
+        ? _normalizeGraceDays(
+            graceWindowDays,
+            existingGrace ??
+                (actionId.toLowerCase() == 'immediate_action_required'
+                    ? 0
+                    : defaultGrace),
+          )
+        : 0;
+
+    final updates = <String, dynamic>{
+      'updatedAt': FieldValue.serverTimestamp(),
+    };
+    if (label != null) updates['label'] = label.trim();
+    if (description != null) {
+      updates['description'] = description.trim().isEmpty
+          ? null
+          : description.trim();
+    }
+    if (meetingRequired != null) updates['meetingRequired'] = meetingRequired;
+    if (bookingWindowDays != null || existing['bookingWindowDays'] == null) {
+      updates['bookingWindowDays'] = resolvedBookingDays;
+    }
+    if (meetingRequired != null ||
+        graceWindowDays != null ||
+        existing['graceWindowDays'] == null) {
+      updates['graceWindowDays'] = resolvedGraceDays;
+    }
+    if (order != null) updates['order'] = order;
+    if (isActive != null) updates['isActive'] = isActive;
+    await _setActions.doc(setActionId.trim()).update(updates);
+  }
+
   Future<List<Map<String, dynamic>>> fetchActiveActionTypes() async {
     final snap = await _setActions.orderBy('order').get();
     return snap.docs
@@ -249,11 +393,38 @@ class ViolationTypesService {
             'id': doc.id,
             'label': (data['label'] ?? '').toString().trim(),
             'meetingRequired': data['meetingRequired'] == true,
+            'bookingWindowDays': _normalizeBookingDays(
+              (data['bookingWindowDays'] as num?)?.toInt(),
+              _defaultBookingDaysForActionId(doc.id),
+            ),
+            'graceWindowDays': (data['meetingRequired'] == true)
+                ? _normalizeGraceDays(
+                    (data['graceWindowDays'] as num?)?.toInt(),
+                    _defaultGraceDaysForActionId(doc.id),
+                  )
+                : 0,
             'order': (data['order'] as num?)?.toInt() ?? 0,
           };
         })
         .where((item) => (item['label'] as String).isNotEmpty)
         .toList(growable: false);
+  }
+
+  Future<List<String>> fetchActiveConcernOptions() async {
+    final snap = await _categories.where('isActive', isEqualTo: true).get();
+    final seen = <String>{};
+    final result = <String>[];
+    for (final doc in snap.docs) {
+      final concern = (doc.data()['concern'] ?? '').toString().trim();
+      if (concern.isEmpty) continue;
+      final key = concern.toLowerCase();
+      if (seen.add(key)) result.add(key);
+    }
+    return result;
+  }
+
+  Future<List<String>> fetchSeverityLevels() async {
+    return fixedSeverityLevels;
   }
 
   Future<List<Map<String, dynamic>>> fetchActiveSetActions() {
@@ -273,9 +444,21 @@ class ViolationTypesService {
     required String label,
     String? description,
     String? severity,
-    required int order,
+    int? order,
     bool isActive = true,
   }) async {
+    int resolvedOrder = order ?? 1;
+    if (order == null) {
+      final existing = await _sanctionTypes.get();
+      var maxOrder = 0;
+      for (final doc in existing.docs) {
+        final raw = doc.data()['order'];
+        final next = raw is num ? raw.toInt() : 0;
+        if (next > maxOrder) maxOrder = next;
+      }
+      resolvedOrder = maxOrder + 1;
+    }
+
     await _sanctionTypes.doc(sanctionTypeId.trim()).set({
       'label': label.trim(),
       'description': description == null || description.trim().isEmpty
@@ -284,7 +467,7 @@ class ViolationTypesService {
       'severity': severity == null || severity.trim().isEmpty
           ? null
           : severity.trim(),
-      'order': order,
+      'order': resolvedOrder,
       'isActive': isActive,
       'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
@@ -299,6 +482,31 @@ class ViolationTypesService {
       'isActive': isActive,
       'updatedAt': FieldValue.serverTimestamp(),
     });
+  }
+
+  Future<void> updateSanctionType({
+    required String sanctionTypeId,
+    String? label,
+    String? description,
+    String? severity,
+    int? order,
+    bool? isActive,
+  }) async {
+    final updates = <String, dynamic>{
+      'updatedAt': FieldValue.serverTimestamp(),
+    };
+    if (label != null) updates['label'] = label.trim();
+    if (description != null) {
+      updates['description'] = description.trim().isEmpty
+          ? null
+          : description.trim();
+    }
+    if (severity != null) {
+      updates['severity'] = severity.trim().isEmpty ? null : severity.trim();
+    }
+    if (order != null) updates['order'] = order;
+    if (isActive != null) updates['isActive'] = isActive;
+    await _sanctionTypes.doc(sanctionTypeId.trim()).update(updates);
   }
 
   Future<List<Map<String, dynamic>>> fetchActiveSanctionTypes() async {
@@ -331,6 +539,8 @@ class ViolationTypesService {
         'description':
             'No meeting required. Case can be resolved after assessment.',
         'meetingRequired': false,
+        'bookingWindowDays': 3,
+        'graceWindowDays': 0,
         'order': 1,
       },
       {
@@ -338,6 +548,8 @@ class ViolationTypesService {
         'label': 'Formal Warning',
         'description': 'No meeting required. Formal warning is recorded.',
         'meetingRequired': false,
+        'bookingWindowDays': 3,
+        'graceWindowDays': 0,
         'order': 2,
       },
       {
@@ -345,6 +557,8 @@ class ViolationTypesService {
         'label': 'OSA Check-in (soft meeting)',
         'description': 'Meeting required for follow-up.',
         'meetingRequired': true,
+        'bookingWindowDays': 3,
+        'graceWindowDays': 2,
         'order': 3,
       },
       {
@@ -352,6 +566,8 @@ class ViolationTypesService {
         'label': 'Parent/Guardian Conference',
         'description': 'Meeting required with parent/guardian coordination.',
         'meetingRequired': true,
+        'bookingWindowDays': 3,
+        'graceWindowDays': 2,
         'order': 4,
       },
       {
@@ -359,6 +575,8 @@ class ViolationTypesService {
         'label': 'OSA Endorsement / Disciplinary Call',
         'description': 'Meeting required with disciplinary handling.',
         'meetingRequired': true,
+        'bookingWindowDays': 3,
+        'graceWindowDays': 2,
         'order': 5,
       },
       {
@@ -366,6 +584,8 @@ class ViolationTypesService {
         'label': 'Immediate Action Required',
         'description': 'Meeting required with urgent intervention.',
         'meetingRequired': true,
+        'bookingWindowDays': 2,
+        'graceWindowDays': 0,
         'order': 6,
       },
     ];
@@ -393,6 +613,8 @@ class ViolationTypesService {
         'label': item['label'],
         'description': item['description'],
         'meetingRequired': item['meetingRequired'],
+        'bookingWindowDays': item['bookingWindowDays'],
+        'graceWindowDays': item['graceWindowDays'],
         'order': item['order'],
         'isActive': true,
         'createdAt': now,

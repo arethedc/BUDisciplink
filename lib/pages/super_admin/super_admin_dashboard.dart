@@ -2,6 +2,7 @@ import 'package:apps/pages/osa_admin/osa_cases_page.dart';
 import 'package:apps/pages/shared/notifications/app_notifications_ui.dart';
 import 'package:apps/pages/shared/profile/unified_profile_page.dart';
 import 'package:apps/pages/shared/welcome_screen_page.dart';
+import 'package:apps/pages/shared/widgets/app_branding.dart';
 import 'package:apps/pages/shared/widgets/app_theme_tokens.dart';
 import 'package:apps/pages/shared/widgets/logout_confirm_dialog.dart';
 import 'package:apps/pages/shared/widgets/responsive_layout_tokens.dart';
@@ -35,7 +36,8 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
   final List<Widget> _pages = [
     SuperAdminHomePage(),
     OsaCasesPage(),
-    HbHandbookPage(),
+    HbHandbookPage(hideTopHeader: true),
+    const UnifiedProfilePage(),
   ];
 
   final List<_NavItem> _navItems = const [
@@ -52,18 +54,14 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
         return "Manage Users";
       case 2:
         return "Handbook";
+      case 3:
+        return "Profile";
       default:
         return "Super Administrator";
     }
   }
 
   void _go(int i) => setState(() => _currentIndex = i);
-
-  Future<void> _openProfile() async {
-    await Navigator.of(
-      context,
-    ).push(MaterialPageRoute(builder: (_) => const UnifiedProfilePage()));
-  }
 
   Future<void> _logout() async {
     final confirmed = await showLogoutConfirmDialog(context);
@@ -90,9 +88,14 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
 
   Future<void> _openNotificationsPage() async {
     _closeDesktopNotifications();
-    await Navigator.of(
-      context,
-    ).push(MaterialPageRoute(builder: (_) => const AppNotificationsPage()));
+    await Navigator.of(context).push(
+      PageRouteBuilder<void>(
+        pageBuilder: (context, animation, secondaryAnimation) =>
+            const AppNotificationsPage(),
+        transitionDuration: Duration.zero,
+        reverseTransitionDuration: Duration.zero,
+      ),
+    );
   }
 
   String _displayName(Map<String, dynamic> data, User user) {
@@ -141,6 +144,7 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
             final shell = ResponsiveLayoutTokens.resolveShellLayout(
               width: constraints.maxWidth,
               height: constraints.maxHeight,
+              allowCompactDesktopDrawer: true,
             );
 
             final menuPanel = _AdminMenuPanel(
@@ -153,7 +157,7 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
               textDark: textDark,
               surface: surface,
               onSelect: _go,
-              onProfile: _openProfile,
+              onProfile: () => _go(3),
               onLogout: _logout,
             );
 
@@ -182,7 +186,7 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
                   },
                   onProfile: () {
                     Navigator.of(context).maybePop();
-                    _openProfile();
+                    _go(3);
                   },
                   onLogout: () {
                     Navigator.of(context).maybePop();
@@ -199,6 +203,10 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
                   _openNotificationsPage();
                 }
               },
+              notificationsUid: user.uid,
+              suppressIncomingNotificationToasts: _showDesktopNotifications,
+              hideNotificationsBadge: _showDesktopNotifications,
+              enableNotificationSound: false,
               showDesktopOverlay: shell.isDesktop && _showDesktopNotifications,
               onDismissDesktopOverlay: _closeDesktopNotifications,
               desktopOverlay: DesktopNotificationsPanel(
@@ -258,158 +266,196 @@ class _AdminMenuPanel extends StatelessWidget {
     return Container(
       color: surface,
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // ✅ Header
-          Container(
-            padding: const EdgeInsets.fromLTRB(16, 42, 16, 18),
-            width: double.infinity,
-            decoration: BoxDecoration(
-              color: surface,
-              border: Border(
-                bottom: BorderSide(color: primary.withValues(alpha: 0.12)),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 16, 12, 6),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  AppBranding.logo(width: 28, height: 28),
+                  const SizedBox(width: 8),
+                  Text(
+                    'BUDiscipLink',
+                    style: TextStyle(
+                      color: primary,
+                      fontWeight: FontWeight.w900,
+                      fontSize: 15,
+                      letterSpacing: 0.2,
+                    ),
+                  ),
+                ],
               ),
             ),
-            child: Row(
-              children: [
-                Icon(Icons.security_rounded, size: 52, color: primary),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 14),
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(14),
+                onTap: onProfile,
+                child: Ink(
+                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+                  decoration: BoxDecoration(
+                    color: primary.withValues(
+                      alpha: currentIndex == 3 ? 0.86 : 0.80,
+                    ),
+                    borderRadius: BorderRadius.circular(14),
+                    boxShadow: [
+                      BoxShadow(
+                        color: primary.withValues(alpha: 0.22),
+                        blurRadius: 10,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: Row(
                     children: [
-                      Text(
-                        accountName,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontWeight: FontWeight.w900,
-                          color: primary,
+                      Container(
+                        width: 44,
+                        height: 44,
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.16),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: const Icon(
+                          Icons.person_outline_rounded,
+                          size: 24,
+                          color: Colors.white,
                         ),
                       ),
-                      const SizedBox(height: 4),
-                      Text(
-                        accountEmail,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: hint,
-                          fontWeight: FontWeight.w700,
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              accountName,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w900,
+                                color: Colors.white,
+                                fontSize: 14,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              accountEmail,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                color: Colors.white.withValues(alpha: 0.90),
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              'Super Administrator',
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                color: Colors.white.withValues(alpha: 0.92),
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     ],
                   ),
                 ),
-              ],
+              ),
             ),
           ),
+          Expanded(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.only(top: 10, bottom: 16),
+              child: Column(
+                children: [
+                  ...navItems.asMap().entries.map((entry) {
+                    final i = entry.key;
+                    final item = entry.value;
+                    final active = currentIndex == i;
 
-          const SizedBox(height: 10),
+                    final Color iconColor = active
+                        ? primary
+                        : textDark.withValues(alpha: 0.85);
+                    final Color textColor = active
+                        ? primary
+                        : textDark.withValues(alpha: 0.92);
 
-          // ✅ Nav items
-          ...navItems.asMap().entries.map((entry) {
-            final i = entry.key;
-            final item = entry.value;
-            final active = currentIndex == i;
-
-            final Color iconColor = active
-                ? primary
-                : textDark.withValues(alpha: 0.85);
-            final Color textColor = active
-                ? primary
-                : textDark.withValues(alpha: 0.92);
-
-            return InkWell(
-              onTap: () => onSelect(i),
+                    return InkWell(
+                      onTap: () => onSelect(i),
+                      child: Container(
+                        margin: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 4,
+                        ),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 12,
+                        ),
+                        decoration: BoxDecoration(
+                          color: active
+                              ? primary.withValues(alpha: 0.10)
+                              : Colors.transparent,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(item.icon, color: iconColor),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                item.label,
+                                style: TextStyle(
+                                  color: textColor,
+                                  fontWeight: active
+                                      ? FontWeight.w900
+                                      : FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  }),
+                ],
+              ),
+            ),
+          ),
+          Container(
+            decoration: BoxDecoration(
+              border: Border(
+                top: BorderSide(color: primary.withValues(alpha: 0.15)),
+              ),
+            ),
+            padding: const EdgeInsets.fromLTRB(10, 8, 10, 12),
+            child: InkWell(
+              onTap: onLogout,
+              borderRadius: BorderRadius.circular(12),
               child: Container(
-                margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                 padding: const EdgeInsets.symmetric(
                   horizontal: 14,
                   vertical: 12,
                 ),
-                decoration: BoxDecoration(
-                  color: active
-                      ? primary.withValues(alpha: 0.10)
-                      : Colors.transparent,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Row(
+                child: const Row(
                   children: [
-                    Icon(item.icon, color: iconColor),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        item.label,
-                        style: TextStyle(
-                          color: textColor,
-                          fontWeight: active
-                              ? FontWeight.w900
-                              : FontWeight.w700,
-                        ),
+                    Icon(Icons.logout_rounded, color: Colors.red),
+                    SizedBox(width: 12),
+                    Text(
+                      "Logout",
+                      style: TextStyle(
+                        color: Colors.red,
+                        fontWeight: FontWeight.w900,
                       ),
                     ),
                   ],
                 ),
-              ),
-            );
-          }),
-
-          const Spacer(),
-
-          Divider(color: primary.withValues(alpha: 0.15), height: 18),
-
-          // ✅ Paste these 2 blocks inside _AdminMenuPanel (same style as Student dashboard)
-          // Put them ABOVE the Logout section (before the Divider + Logout InkWell)
-
-          // ----------------- PROFILE BUTTON -----------------
-          InkWell(
-            onTap: onProfile,
-            child: Container(
-              margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Row(
-                children: [
-                  Icon(
-                    Icons.person_outline_rounded,
-                    color: textDark.withValues(alpha: 0.85),
-                  ),
-                  const SizedBox(width: 12),
-                  Text(
-                    "Profile",
-                    style: TextStyle(
-                      color: textDark.withValues(alpha: 0.92),
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-
-          Divider(color: primary.withValues(alpha: 0.15), height: 18),
-
-          // ✅ Logout
-          InkWell(
-            onTap: onLogout,
-            child: Container(
-              margin: const EdgeInsets.fromLTRB(10, 4, 10, 16),
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: const Row(
-                children: [
-                  Icon(Icons.logout_rounded, color: Colors.red),
-                  SizedBox(width: 12),
-                  Text(
-                    "Logout",
-                    style: TextStyle(
-                      color: Colors.red,
-                      fontWeight: FontWeight.w900,
-                    ),
-                  ),
-                ],
               ),
             ),
           ),

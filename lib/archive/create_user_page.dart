@@ -9,7 +9,6 @@ class CreateUserPage extends StatefulWidget {
 
 class _CreateUserPageState extends State<CreateUserPage> {
   String selectedRole = 'student';
-  String selectedYearLevel = '1st Year';
 
   @override
   Widget build(BuildContext context) {
@@ -120,30 +119,6 @@ class _CreateUserPageState extends State<CreateUserPage> {
               ),
               const SizedBox(height: 20),
 
-              // Year Level
-              DropdownButtonFormField<String>(
-                initialValue: selectedYearLevel,
-                decoration: InputDecoration(
-                  labelText: 'Year Level',
-                  prefixIcon:
-                  const Icon(Icons.timeline, color: Colors.green),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                ),
-                items: const [
-                  DropdownMenuItem(value: '1st Year', child: Text('1st Year')),
-                  DropdownMenuItem(value: '2nd Year', child: Text('2nd Year')),
-                  DropdownMenuItem(value: '3rd Year', child: Text('3rd Year')),
-                  DropdownMenuItem(value: '4th Year', child: Text('4th Year')),
-                ],
-                onChanged: (value) {
-                  setState(() {
-                    selectedYearLevel = value!;
-                  });
-                },
-              ),
-              const SizedBox(height: 20),
             ],
 
             // Temporary Password

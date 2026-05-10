@@ -54,7 +54,7 @@ class _DepartmentAdminDashboardState extends State<DepartmentAdminDashboard> {
       onOpenViolationAlertCase: (caseId) =>
           _openViolationAlerts(preselectCaseId: caseId),
     ),
-    const HbHandbookPage(),
+    const HbHandbookPage(hideTopHeader: true),
     DepartmentViolationAlertsPage(
       initialSelectedCaseId: _preselectedViolationCaseId,
     ),
@@ -63,7 +63,10 @@ class _DepartmentAdminDashboardState extends State<DepartmentAdminDashboard> {
       unsavedChangesController: _violationUnsaved,
     ),
     ProfessorCounselingPage(unsavedChangesController: _counselingUnsaved),
-    const MySubmittedCasesPage(),
+    MySubmittedCasesPage(
+      onOpenViolationReport: _openViolationReportModal,
+      onOpenCounselingReferral: _openCounselingReferralModal,
+    ),
     UserManagementPage(
       studentsOnlyScope: true,
       headerTitle: 'Student Management',
@@ -191,6 +194,14 @@ class _DepartmentAdminDashboardState extends State<DepartmentAdminDashboard> {
   }
 
   Future<void> _goAsync(int i) async {
+    if (i == 3) {
+      await _openViolationReportModal();
+      return;
+    }
+    if (i == 4) {
+      await _openCounselingReferralModal();
+      return;
+    }
     if (i == _currentIndex) return;
     final canLeave = await _confirmLeaveCurrentPage();
     if (!mounted || !canLeave) return;
@@ -202,6 +213,117 @@ class _DepartmentAdminDashboardState extends State<DepartmentAdminDashboard> {
         _previousIndexBeforeNotifications = i;
       }
     });
+  }
+
+  Future<void> _openFormModal({
+    required String title,
+    required Widget child,
+    String? subtitle,
+  }) async {
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        final isFlatHeaderModal =
+            title == 'Report Violation' || title == 'Counselling Referral';
+        final size = MediaQuery.of(dialogContext).size;
+        final isDesktop = size.width >= 900;
+        final maxWidth = isDesktop ? 1180.0 : size.width - 20;
+        final maxHeight = size.height * 0.92;
+        return Dialog(
+          insetPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+          clipBehavior: Clip.antiAlias,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          child: SizedBox(
+            width: maxWidth,
+            height: maxHeight,
+            child: Column(
+              children: [
+                Container(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 10, 10),
+                  decoration: BoxDecoration(
+                    color: isFlatHeaderModal ? Colors.white : surface,
+                    border: isFlatHeaderModal
+                        ? null
+                        : Border(
+                            bottom: BorderSide(
+                              color: Colors.black.withValues(alpha: 0.08),
+                            ),
+                          ),
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              title,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w900,
+                                color: textDark,
+                                fontSize: 16,
+                              ),
+                            ),
+                            if ((subtitle ?? '').trim().isNotEmpty) ...[
+                              const SizedBox(height: 4),
+                              Text(
+                                subtitle!.trim(),
+                                style: TextStyle(
+                                  color: hint.withValues(alpha: 0.95),
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 12.5,
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Close',
+                        onPressed: () => Navigator.of(dialogContext).pop(),
+                        icon: const Icon(Icons.close_rounded, size: 20),
+                        style: IconButton.styleFrom(
+                          backgroundColor: Colors.black.withValues(alpha: 0.06),
+                          visualDensity: VisualDensity.compact,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(child: child),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _openViolationReportModal() async {
+    final canLeave = await _confirmLeaveCurrentPage();
+    if (!mounted || !canLeave) return;
+    await _openFormModal(
+      title: 'Report Violation',
+      subtitle: 'Search a student, complete incident details, and submit.',
+      child: ViolationReportPage(
+        onOpenMyReportsInShell: () {
+          Navigator.of(context, rootNavigator: true).pop();
+          _go(5);
+        },
+      ),
+    );
+  }
+
+  Future<void> _openCounselingReferralModal() async {
+    final canLeave = await _confirmLeaveCurrentPage();
+    if (!mounted || !canLeave) return;
+    await _openFormModal(
+      title: 'Counselling Referral',
+      child: const ProfessorCounselingPage(),
+    );
   }
 
   void _goSettings(int pageIndex) {
@@ -324,6 +446,7 @@ class _DepartmentAdminDashboardState extends State<DepartmentAdminDashboard> {
             final shell = ResponsiveLayoutTokens.resolveShellLayout(
               width: constraints.maxWidth,
               height: constraints.maxHeight,
+              allowCompactDesktopDrawer: true,
             );
 
             final menuPanel = _DeptMenuPanel(
@@ -397,16 +520,46 @@ class _DepartmentAdminDashboardState extends State<DepartmentAdminDashboard> {
                 if (shell.isDesktop) {
                   _toggleDesktopNotifications();
                 } else {
-                  _openNotificationsPage();
+                  if (_currentIndex == _notificationsIndex) {
+                    final backIndex =
+                        _previousIndexBeforeNotifications == _notificationsIndex
+                        ? 0
+                        : _previousIndexBeforeNotifications;
+                    _go(backIndex);
+                  } else {
+                    _openNotificationsPage();
+                  }
                 }
               },
+              notificationsUid: user.uid,
+              suppressIncomingNotificationToasts:
+                  _showDesktopNotifications ||
+                  _currentIndex == _notificationsIndex,
+              hideNotificationsBadge:
+                  _showDesktopNotifications ||
+                  _currentIndex == _notificationsIndex,
+              enableNotificationSound: false,
               showDesktopOverlay: shell.isDesktop && _showDesktopNotifications,
               onDismissDesktopOverlay: _closeDesktopNotifications,
               desktopOverlay: DesktopNotificationsPanel(
                 uid: user.uid,
                 onClose: _closeDesktopNotifications,
                 onSeeAll: _openNotificationsPage,
+                onViewNotification: (intent) async {
+                  _closeDesktopNotifications();
+                  await _handleNotificationView(intent);
+                },
               ),
+              showBackButton:
+                  shell.usesDrawerSidebar &&
+                  _currentIndex == _notificationsIndex,
+              onBackPressed: () {
+                final backIndex =
+                    _previousIndexBeforeNotifications == _notificationsIndex
+                    ? 0
+                    : _previousIndexBeforeNotifications;
+                _go(backIndex);
+              },
             );
           },
         );
@@ -576,6 +729,10 @@ class _DeptMenuPanel extends StatelessWidget {
                   ...navItems.asMap().entries.map((entry) {
                     final i = entry.key;
                     final item = entry.value;
+                    if (item.label == 'Report Violation' ||
+                        item.label == 'Counselling Referral') {
+                      return const SizedBox.shrink();
+                    }
                     final active = currentIndex == i;
 
                     final iconColor = active

@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../pages/shared/handbook/handbook_sections_screen.dart';
+import '../pages/shared/handbook/hb_handbook_page.dart';
 import '../pages/professor/violation_report_page.dart';
 import 'student_list_page.dart';
 import 'create_user_page.dart';
@@ -145,7 +145,7 @@ class DashboardPage extends StatelessWidget {
               Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (context) => const HandbookSectionsScreen(),
+                  builder: (context) => const HbHandbookPage(),
                 ),
               );
             },

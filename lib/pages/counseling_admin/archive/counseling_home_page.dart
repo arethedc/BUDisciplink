@@ -6,7 +6,7 @@ import 'package:intl/intl.dart';
 class CounselingHomePage extends StatelessWidget {
   const CounselingHomePage({super.key});
 
-  static const bg = Color(0xFFF6FAF6);
+  static const bg = Colors.white;
   static const primary = Color(0xFF1B5E20);
   static const textDark = Color(0xFF1F2A1F);
   static const hint = Color(0xFF6D7F62);

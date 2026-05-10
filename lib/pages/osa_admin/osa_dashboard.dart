@@ -12,14 +12,15 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
-import 'osa_home_page.dart';
+import 'package:apps/pages/osa_admin/osa_home_page.dart';
 
-// ✅ SETTINGS SUB-PAGES (adjust paths to your project)
-import 'academic/academic_years_page.dart';
+// Settings sub-pages (adjust paths to your project)
 import 'handbook_workflow_page.dart';
 import 'handbook_docs_editor_page.dart';
 import 'meeting_schedule_page.dart';
+import 'institution_setup_page.dart';
 import '../professor/professor_counseling_page.dart';
+import '../professor/MySubmittedReportPage.dart';
 import '../professor/violation_report_page.dart';
 import 'student_management_page.dart';
 import 'user_management_page.dart';
@@ -41,16 +42,20 @@ class _OsaDashboardState extends State<OsaDashboard> {
   bool _showDesktopNotifications = false;
   ViolationRecordsFilterPreset? _recordsPreset;
   int _recordsPresetVersion = 0;
+  int _violationReviewReloadToken = 0;
   int _handbookEditorReloadToken = 0;
   String? _preselectedStudentUid;
   String? _preselectedViolationCaseId;
-  static const int _notificationsIndex = 15;
+  String? _preselectedReviewCaseId;
+  bool _forceReviewInboxOnOpen = false;
+  static const int _myReportsIndex = 15;
+  static const int _notificationsIndex = 16;
   final _violationUnsaved = UnsavedChangesController();
   final _counselingUnsaved = UnsavedChangesController();
+  final _handbookEditorUnsaved = UnsavedChangesController();
 
-  // ✅ Settings section open/close
+  // Settings section open/close
   bool _settingsOpen = false;
-  bool _handbookOpen = true;
 
   // ================== THEME (match reference dashboard) ==================
   static const bg = AppColors.background;
@@ -62,16 +67,24 @@ class _OsaDashboardState extends State<OsaDashboard> {
   // ================== PAGES ==================
   // Keep as a getter so hot reload reflects changes (initState doesn't rerun).
   List<Widget> get _pages => [
-    OsaHomePage(onOpenAcademicSettings: () => _goSettings(3)),
-    const HbHandbookPage(useSidebarDesktop: false),
+    OsaHomePage(
+      onOpenAcademicSettings: () => _goSettings(3),
+      onOpenViolationReview: () =>
+          _openViolationReviewAsync(toReviewInbox: true),
+      onOpenMeetingSchedule: () => _goSettings(7),
+      onOpenCase: (caseId) {
+        _openViolationReviewAsync(preselectCaseId: caseId);
+      },
+    ),
+    const HbHandbookPage(useSidebarDesktop: false, hideTopHeader: true),
     ViolationRecordsPage(
       key: ValueKey('violation-records-$_recordsPresetVersion'),
       initialFilterPreset: _recordsPreset,
       initialSelectedCaseId: _preselectedViolationCaseId,
     ),
 
-    // ✅ Settings sub-pages
-    const AcademicYearsPage(),
+    // Settings sub-pages
+    const InstitutionSetupPage(),
     const UserManagementPage(),
     StudentManagementPage(initialSelectedUserId: _preselectedStudentUid),
     const ViolationTypesPage(),
@@ -81,7 +94,7 @@ class _OsaDashboardState extends State<OsaDashboard> {
         setState(() {
           _handbookEditorReloadToken++;
           _currentIndex = 12;
-          _handbookOpen = true;
+          _settingsOpen = true;
         });
       },
     ),
@@ -95,18 +108,29 @@ class _OsaDashboardState extends State<OsaDashboard> {
         });
       },
     ),
-    const OsaViolationReviewPage(),
+    OsaViolationReviewPage(
+      key: ValueKey('osa-review-$_violationReviewReloadToken'),
+      initialSelectedCaseId: _preselectedReviewCaseId,
+      forceReviewInboxOnOpen: _forceReviewInboxOnOpen,
+      onOpenReportViolation: _openViolationReportModal,
+      onOpenCounselingReferral: _openCounselingReferralModal,
+    ),
     HandbookDocsEditorPage(
       key: ValueKey('hb-editor-$_handbookEditorReloadToken'),
+      unsavedChangesController: _handbookEditorUnsaved,
       onBack: () {
         setState(() {
           _currentIndex = 8;
-          _handbookOpen = true;
+          _settingsOpen = true;
         });
       },
     ),
     ViolationReportPage(unsavedChangesController: _violationUnsaved),
     ProfessorCounselingPage(unsavedChangesController: _counselingUnsaved),
+    MySubmittedCasesPage(
+      onOpenViolationReport: _openViolationReportModal,
+      onOpenCounselingReferral: _openCounselingReferralModal,
+    ),
     AppNotificationsContent(
       onBack: () {
         final backIndex =
@@ -128,15 +152,15 @@ class _OsaDashboardState extends State<OsaDashboard> {
       case 2:
         return "Violation Records";
       case 3:
-        return "Academic Settings";
+        return "Institution Setup";
 
-      // ✅ Settings pages
+      // Ã¢Å“â€¦ Settings pages
       case 4:
         return "User Management";
       case 5:
         return "Student Management";
       case 6:
-        return "Violation Settings";
+        return "Violation Setup";
       case 7:
         return "Meeting Schedule";
       case 8:
@@ -153,6 +177,8 @@ class _OsaDashboardState extends State<OsaDashboard> {
         return "Report Violation";
       case 14:
         return "Counselling Referral";
+      case _myReportsIndex:
+        return "My Reports";
       case _notificationsIndex:
         return "Notifications";
 
@@ -167,6 +193,8 @@ class _OsaDashboardState extends State<OsaDashboard> {
         return _violationUnsaved;
       case 14:
         return _counselingUnsaved;
+      case 12:
+        return _handbookEditorUnsaved;
       default:
         return null;
     }
@@ -175,6 +203,26 @@ class _OsaDashboardState extends State<OsaDashboard> {
   Future<bool> _confirmLeaveCurrentPage() async {
     final controller = _controllerForIndex(_currentIndex);
     if (controller == null || !controller.isDirty) return true;
+    if (controller.canSave) {
+      final choice = await showUnsavedChangesChoiceDialog(
+        context,
+        title: 'You have unsaved changes',
+        message: 'Do you want to save before leaving this page?',
+        stayLabel: 'Continue editing',
+        discardLabel: 'Discard and leave',
+        saveLabel: 'Save and leave',
+      );
+      if (choice == UnsavedChangesChoice.stay) return false;
+      if (choice == UnsavedChangesChoice.discard) {
+        controller.discardChanges();
+        return true;
+      }
+      final saved = await controller.saveChanges();
+      if (saved) {
+        controller.clear();
+      }
+      return saved;
+    }
     final leave = await showUnsavedChangesDialog(
       context,
       title: 'Leave current form?',
@@ -207,6 +255,14 @@ class _OsaDashboardState extends State<OsaDashboard> {
   }
 
   Future<void> _goAsync(int i) async {
+    if (i == 13) {
+      await _openViolationReportModal();
+      return;
+    }
+    if (i == 14) {
+      await _openCounselingReferralModal();
+      return;
+    }
     if (i == _currentIndex) return;
     final canLeave = await _confirmLeaveCurrentPage();
     if (!mounted || !canLeave) return;
@@ -217,10 +273,139 @@ class _OsaDashboardState extends State<OsaDashboard> {
       }
       if (i != 5) _preselectedStudentUid = null;
       if (i != 2) _preselectedViolationCaseId = null;
-      if (i == 1 || i == 8 || i == 12) {
-        _handbookOpen = true;
-      }
-      if (i >= 3 && i <= 7) _settingsOpen = true;
+      if (i != 11) _preselectedReviewCaseId = null;
+      if (i != 11) _forceReviewInboxOnOpen = false;
+      if (i >= 3 && i <= 8) _settingsOpen = true;
+    });
+  }
+
+  Future<void> _openFormModal({
+    required String title,
+    required Widget child,
+    String? subtitle,
+  }) async {
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        final isFlatHeaderModal =
+            title == 'Report Violation' || title == 'Counselling Referral';
+        final size = MediaQuery.of(dialogContext).size;
+        final isDesktop = size.width >= 900;
+        final maxWidth = isDesktop ? 1180.0 : size.width - 20;
+        final maxHeight = size.height * 0.92;
+        return Dialog(
+          insetPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+          clipBehavior: Clip.antiAlias,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          child: SizedBox(
+            width: maxWidth,
+            height: maxHeight,
+            child: Column(
+              children: [
+                Container(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 10, 10),
+                  decoration: BoxDecoration(
+                    color: isFlatHeaderModal ? Colors.white : surface,
+                    border: isFlatHeaderModal
+                        ? null
+                        : Border(
+                            bottom: BorderSide(
+                              color: Colors.black.withValues(alpha: 0.08),
+                            ),
+                          ),
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              title,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w900,
+                                color: textDark,
+                                fontSize: 16,
+                              ),
+                            ),
+                            if ((subtitle ?? '').trim().isNotEmpty) ...[
+                              const SizedBox(height: 4),
+                              Text(
+                                subtitle!.trim(),
+                                style: TextStyle(
+                                  color: hint.withValues(alpha: 0.95),
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 12.5,
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Close',
+                        onPressed: () => Navigator.of(dialogContext).pop(),
+                        icon: const Icon(Icons.close_rounded, size: 20),
+                        style: IconButton.styleFrom(
+                          backgroundColor: Colors.black.withValues(alpha: 0.06),
+                          visualDensity: VisualDensity.compact,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(child: child),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _openViolationReportModal() async {
+    final canLeave = await _confirmLeaveCurrentPage();
+    if (!mounted || !canLeave) return;
+    await _openFormModal(
+      title: 'Report Violation',
+      subtitle: 'Search a student, complete incident details, and submit.',
+      child: ViolationReportPage(
+        onOpenMyReportsInShell: () {
+          Navigator.of(context, rootNavigator: true).pop();
+          _go(_myReportsIndex);
+        },
+      ),
+    );
+  }
+
+  Future<void> _openCounselingReferralModal() async {
+    final canLeave = await _confirmLeaveCurrentPage();
+    if (!mounted || !canLeave) return;
+    await _openFormModal(
+      title: 'Counselling Referral',
+      child: ProfessorCounselingPage(
+        unsavedChangesController: _counselingUnsaved,
+      ),
+    );
+  }
+
+  Future<void> _openViolationReviewAsync({
+    String? preselectCaseId,
+    bool toReviewInbox = false,
+  }) async {
+    final canLeave = await _confirmLeaveCurrentPage();
+    if (!mounted || !canLeave) return;
+    setState(() {
+      _currentIndex = 11;
+      final caseId = (preselectCaseId ?? '').trim();
+      _preselectedReviewCaseId = caseId.isEmpty ? null : caseId;
+      _forceReviewInboxOnOpen = toReviewInbox || caseId.isNotEmpty;
+      _violationReviewReloadToken++;
+      _preselectedStudentUid = null;
+      _preselectedViolationCaseId = null;
     });
   }
 
@@ -251,26 +436,16 @@ class _OsaDashboardState extends State<OsaDashboard> {
     });
   }
 
-  Future<void> _openViolationRecordsAsync({String? preselectCaseId}) async {
-    final canLeave = await _confirmLeaveCurrentPage();
-    if (!mounted || !canLeave) return;
-    setState(() {
-      _currentIndex = 2;
-      _recordsPreset = const ViolationRecordsFilterPreset(clearExisting: true);
-      _recordsPresetVersion++;
-      final caseId = (preselectCaseId ?? '').trim();
-      _preselectedViolationCaseId = caseId.isEmpty ? null : caseId;
-      _preselectedStudentUid = null;
-    });
-  }
-
   Future<void> _handleNotificationView(AppNotificationViewIntent intent) async {
     switch (intent.target) {
       case AppNotificationViewTarget.pendingApproval:
         await _openStudentManagementAsync(preselectUserId: intent.studentUid);
         break;
       case AppNotificationViewTarget.violationAlert:
-        await _openViolationRecordsAsync(preselectCaseId: intent.caseId);
+        final caseRef = (intent.caseId ?? '').trim().isNotEmpty
+            ? intent.caseId
+            : intent.caseCode;
+        await _openViolationReviewAsync(preselectCaseId: caseRef);
         break;
     }
   }
@@ -328,6 +503,7 @@ class _OsaDashboardState extends State<OsaDashboard> {
   void dispose() {
     _violationUnsaved.dispose();
     _counselingUnsaved.dispose();
+    _handbookEditorUnsaved.dispose();
     super.dispose();
   }
 
@@ -376,9 +552,6 @@ class _OsaDashboardState extends State<OsaDashboard> {
               onToggleSettings: () =>
                   setState(() => _settingsOpen = !_settingsOpen),
               onSelectSettingsItem: (pageIndex) => _goSettings(pageIndex),
-              handbookOpen: _handbookOpen,
-              onToggleHandbook: () =>
-                  setState(() => _handbookOpen = !_handbookOpen),
               onLogout: _logout,
               accountTitle: accountTitle,
               accountEmail: accountEmail,
@@ -412,9 +585,6 @@ class _OsaDashboardState extends State<OsaDashboard> {
                     Navigator.of(context).maybePop();
                     _goSettings(pageIndex);
                   },
-                  handbookOpen: _handbookOpen,
-                  onToggleHandbook: () =>
-                      setState(() => _handbookOpen = !_handbookOpen),
                   onLogout: () {
                     Navigator.of(context).maybePop();
                     _logout();
@@ -430,16 +600,46 @@ class _OsaDashboardState extends State<OsaDashboard> {
                 if (shell.isDesktop) {
                   _toggleDesktopNotifications();
                 } else {
-                  _openNotificationsPage();
+                  if (_currentIndex == _notificationsIndex) {
+                    final backIndex =
+                        _previousIndexBeforeNotifications == _notificationsIndex
+                        ? 0
+                        : _previousIndexBeforeNotifications;
+                    _go(backIndex);
+                  } else {
+                    _openNotificationsPage();
+                  }
                 }
               },
+              notificationsUid: user.uid,
+              suppressIncomingNotificationToasts:
+                  _showDesktopNotifications ||
+                  _currentIndex == _notificationsIndex,
+              hideNotificationsBadge:
+                  _showDesktopNotifications ||
+                  _currentIndex == _notificationsIndex,
+              enableNotificationSound: false,
               showDesktopOverlay: shell.isDesktop && _showDesktopNotifications,
               onDismissDesktopOverlay: _closeDesktopNotifications,
               desktopOverlay: DesktopNotificationsPanel(
                 uid: user.uid,
                 onClose: _closeDesktopNotifications,
                 onSeeAll: _openNotificationsPage,
+                onViewNotification: (intent) async {
+                  _closeDesktopNotifications();
+                  await _handleNotificationView(intent);
+                },
               ),
+              showBackButton:
+                  shell.usesDrawerSidebar &&
+                  _currentIndex == _notificationsIndex,
+              onBackPressed: () {
+                final backIndex =
+                    _previousIndexBeforeNotifications == _notificationsIndex
+                    ? 0
+                    : _previousIndexBeforeNotifications;
+                _go(backIndex);
+              },
             );
           },
         );
@@ -465,9 +665,6 @@ class _MenuPanel extends StatelessWidget {
   final VoidCallback onToggleSettings;
   final ValueChanged<int> onSelectSettingsItem;
 
-  final bool handbookOpen;
-  final VoidCallback onToggleHandbook;
-
   final VoidCallback onLogout;
 
   final String accountTitle;
@@ -485,8 +682,6 @@ class _MenuPanel extends StatelessWidget {
     required this.settingsOpen,
     required this.onToggleSettings,
     required this.onSelectSettingsItem,
-    required this.handbookOpen,
-    required this.onToggleHandbook,
     required this.onLogout,
     required this.accountTitle,
     required this.accountEmail,
@@ -615,40 +810,14 @@ class _MenuPanel extends StatelessWidget {
                     textDark: textDark,
                     onTap: () => onSelect(0),
                   ),
-                  _ExpandableMenuItem(
+                  _MenuItem(
                     icon: Icons.menu_book_rounded,
                     label: 'Handbook',
-                    expanded: handbookOpen,
-                    active:
-                        currentIndex == 1 ||
-                        currentIndex == 8 ||
-                        currentIndex == 12,
+                    active: currentIndex == 1,
                     primary: primary,
                     textDark: textDark,
-                    hint: hint,
-                    onTap: onToggleHandbook,
+                    onTap: () => onSelect(1),
                   ),
-                  if (handbookOpen) ...[
-                    _SubItem(
-                      label: 'Handbook Section View',
-                      icon: Icons.menu_book_outlined,
-                      active: currentIndex == 1,
-                      primary: primary,
-                      textDark: textDark,
-                      hint: hint,
-                      onTap: () => onSelect(1),
-                    ),
-                    _SubItem(
-                      label: 'Manage Handbook',
-                      icon: Icons.published_with_changes_rounded,
-                      active: currentIndex == 8,
-                      primary: primary,
-                      textDark: textDark,
-                      hint: hint,
-                      onTap: () => onSelect(8),
-                    ),
-                    const SizedBox(height: 6),
-                  ],
                   _MenuItem(
                     icon: Icons.rule_rounded,
                     label: 'Violation Review',
@@ -674,20 +843,12 @@ class _MenuPanel extends StatelessWidget {
                     onTap: () => onSelect(10),
                   ),
                   _MenuItem(
-                    icon: Icons.report_rounded,
-                    label: 'Report Violation',
-                    active: currentIndex == 13,
+                    icon: Icons.article_outlined,
+                    label: 'My Reports',
+                    active: currentIndex == 15,
                     primary: primary,
                     textDark: textDark,
-                    onTap: () => onSelect(13),
-                  ),
-                  _MenuItem(
-                    icon: Icons.support_agent_rounded,
-                    label: 'Counselling Referral',
-                    active: currentIndex == 14,
-                    primary: primary,
-                    textDark: textDark,
-                    onTap: () => onSelect(14),
+                    onTap: () => onSelect(15),
                   ),
                   const SizedBox(height: 8),
                   Divider(color: primary.withValues(alpha: 0.15), height: 18),
@@ -737,8 +898,8 @@ class _MenuPanel extends StatelessWidget {
                   if (settingsOpen) ...[
                     const SizedBox(height: 4),
                     _SubItem(
-                      label: 'Academic Settings',
-                      icon: Icons.school_rounded,
+                      label: 'Institution Setup',
+                      icon: Icons.account_balance_rounded,
                       active: currentIndex == 3,
                       primary: primary,
                       textDark: textDark,
@@ -764,7 +925,7 @@ class _MenuPanel extends StatelessWidget {
                       onTap: () => onSelectSettingsItem(5),
                     ),
                     _SubItem(
-                      label: 'Violation Settings',
+                      label: 'Violation Setup',
                       icon: Icons.fact_check_rounded,
                       active: currentIndex == 6,
                       primary: primary,
@@ -780,6 +941,15 @@ class _MenuPanel extends StatelessWidget {
                       textDark: textDark,
                       hint: hint,
                       onTap: () => onSelectSettingsItem(7),
+                    ),
+                    _SubItem(
+                      label: 'Manage Handbook',
+                      icon: Icons.published_with_changes_rounded,
+                      active: currentIndex == 8 || currentIndex == 12,
+                      primary: primary,
+                      textDark: textDark,
+                      hint: hint,
+                      onTap: () => onSelectSettingsItem(8),
                     ),
                     const SizedBox(height: 6),
                   ],
@@ -867,64 +1037,6 @@ class _MenuItem extends StatelessWidget {
                   fontWeight: active ? FontWeight.w900 : FontWeight.w700,
                 ),
               ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ExpandableMenuItem extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final bool expanded;
-  final bool active;
-  final Color primary;
-  final Color textDark;
-  final Color hint;
-  final VoidCallback onTap;
-
-  const _ExpandableMenuItem({
-    required this.icon,
-    required this.label,
-    required this.expanded,
-    required this.active,
-    required this.primary,
-    required this.textDark,
-    required this.hint,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final iconColor = active ? primary : textDark.withValues(alpha: 0.85);
-    final textColor = active ? primary : textDark.withValues(alpha: 0.92);
-
-    return InkWell(
-      onTap: onTap,
-      child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(12),
-          color: expanded || active
-              ? primary.withValues(alpha: 0.08)
-              : Colors.transparent,
-        ),
-        child: Row(
-          children: [
-            Icon(icon, color: iconColor),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                label,
-                style: TextStyle(color: textColor, fontWeight: FontWeight.w900),
-              ),
-            ),
-            Icon(
-              expanded ? Icons.expand_less_rounded : Icons.expand_more_rounded,
-              color: hint,
             ),
           ],
         ),

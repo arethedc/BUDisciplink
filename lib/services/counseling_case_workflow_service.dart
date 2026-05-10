@@ -39,6 +39,27 @@ class CounselingCaseWorkflow {
 class CounselingCaseState {
   static String _safe(dynamic value) => (value ?? '').toString().trim();
 
+  static List<String> _safeList(dynamic value) {
+    if (value is Iterable) {
+      return value
+          .map((item) => _safe(item).toLowerCase())
+          .where((item) => item.isNotEmpty)
+          .toList();
+    }
+    return const <String>[];
+  }
+
+  static bool _hasStudentReferral(Map<String, dynamic> data) {
+    if (data['studentReferralSubmitted'] == true) return true;
+    if (_safe(data['referralSource']).toLowerCase() ==
+        CounselingCaseWorkflow.referralSourceStudent) {
+      return true;
+    }
+    return _safeList(data['referralSources']).contains(
+      CounselingCaseWorkflow.referralSourceStudent,
+    );
+  }
+
   static bool isCompleted(Map<String, dynamic> data) {
     final status = _safe(data['status']).toLowerCase();
     final workflow = _safe(data['workflowStatus']).toLowerCase();
@@ -87,6 +108,7 @@ class CounselingCaseState {
     final workflow = _safe(data['workflowStatus']).toLowerCase();
     final meeting = _safe(data['meetingStatus']).toLowerCase();
     return source == CounselingCaseWorkflow.referralSourceProfessor &&
+        !_hasStudentReferral(data) &&
         callSlip != CounselingCaseWorkflow.callSlipSent &&
         (meeting == CounselingCaseWorkflow.meetingAwaitingCallSlip ||
             workflow == CounselingCaseWorkflow.workflowSubmitted ||
@@ -164,6 +186,22 @@ class CounselingCaseWorkflowService {
     required Map<String, dynamic> reasons,
     required String comments,
   }) async {
+    final existingCase = await _findActiveCaseForStudent(studentUid);
+    if (existingCase != null) {
+      await _attachReferralToExistingCase(
+        caseId: existingCase.id,
+        caseData: existingCase.data(),
+        source: CounselingCaseWorkflow.referralSourceStudent,
+        counselingType: counselingType,
+        reasons: reasons,
+        comments: comments,
+        referredByUid: studentUid,
+        referredByRole: 'student',
+        referredBy: studentName,
+      );
+      return existingCase.id;
+    }
+
     final caseCode = await _academicSettings.generateCounselingCaseCode();
     final context = await _loadAcademicContext();
     final now = DateTime.now();
@@ -200,6 +238,24 @@ class CounselingCaseWorkflowService {
       'referredByRole': 'student',
       'classroomTeacher': '',
       'referredBy': studentName.trim(),
+      'studentReferralSubmitted': true,
+      'professorReferralSubmitted': false,
+      'referralSources': const [CounselingCaseWorkflow.referralSourceStudent],
+      'referralReporterUids': [studentUid.trim()],
+      'latestReferralSource': CounselingCaseWorkflow.referralSourceStudent,
+      'latestReferralAt': Timestamp.fromDate(now),
+      'referralEntries': [
+        _buildReferralEntry(
+          source: CounselingCaseWorkflow.referralSourceStudent,
+          counselingType: counselingType,
+          reasons: reasons,
+          comments: comments,
+          referredByUid: studentUid,
+          referredByRole: 'student',
+          referredBy: studentName,
+          submittedAt: now,
+        ),
+      ],
       'referralDate': Timestamp.fromDate(now),
       'reasons': reasons,
       'comments': comments.trim(),
@@ -233,6 +289,22 @@ class CounselingCaseWorkflowService {
     required Map<String, dynamic> reasons,
     required String comments,
   }) async {
+    final existingCase = await _findActiveCaseForStudent(studentUid);
+    if (existingCase != null) {
+      await _attachReferralToExistingCase(
+        caseId: existingCase.id,
+        caseData: existingCase.data(),
+        source: CounselingCaseWorkflow.referralSourceProfessor,
+        counselingType: counselingType,
+        reasons: reasons,
+        comments: comments,
+        referredByUid: professorUid,
+        referredByRole: 'professor',
+        referredBy: professorName,
+      );
+      return existingCase.id;
+    }
+
     final caseCode = await _academicSettings.generateCounselingCaseCode();
     final context = await _loadAcademicContext();
     final now = DateTime.now();
@@ -271,6 +343,24 @@ class CounselingCaseWorkflowService {
       'referredByRole': 'professor',
       'classroomTeacher': referredBy,
       'referredBy': referredBy,
+      'studentReferralSubmitted': false,
+      'professorReferralSubmitted': true,
+      'referralSources': const [CounselingCaseWorkflow.referralSourceProfessor],
+      'referralReporterUids': [professorUid.trim()],
+      'latestReferralSource': CounselingCaseWorkflow.referralSourceProfessor,
+      'latestReferralAt': Timestamp.fromDate(now),
+      'referralEntries': [
+        _buildReferralEntry(
+          source: CounselingCaseWorkflow.referralSourceProfessor,
+          counselingType: counselingType,
+          reasons: reasons,
+          comments: comments,
+          referredByUid: professorUid,
+          referredByRole: 'professor',
+          referredBy: referredBy,
+          submittedAt: now,
+        ),
+      ],
       'referralDate': Timestamp.fromDate(now),
       'reasons': reasons,
       'comments': comments.trim(),
@@ -307,6 +397,11 @@ class CounselingCaseWorkflowService {
       final data = snap.data() ?? <String, dynamic>{};
 
       final source = _safe(data['referralSource']).toLowerCase();
+      if (_hasStudentReferralSubmitted(data)) {
+        throw Exception(
+          'Call slip is no longer needed because the student already joined this counseling case.',
+        );
+      }
       if (source != CounselingCaseWorkflow.referralSourceProfessor) {
         throw Exception('Call slip is only available for professor referrals.');
       }
@@ -453,6 +548,7 @@ class CounselingCaseWorkflowService {
       final callSlipStatus = _safe(caseData['callSlipStatus']).toLowerCase();
       final source = _safe(caseData['referralSource']).toLowerCase();
       if (source == CounselingCaseWorkflow.referralSourceProfessor &&
+          !_hasStudentReferralSubmitted(caseData) &&
           callSlipStatus != CounselingCaseWorkflow.callSlipSent) {
         throw Exception(
           'Booking is not available yet. Please wait for counseling call slip.',
@@ -938,6 +1034,271 @@ class CounselingCaseWorkflowService {
         ? 'term1'
         : _safe(active['activeTermId']);
     return _AcademicContext(schoolYearId: schoolYearId, termId: termId);
+  }
+
+  Future<QueryDocumentSnapshot<Map<String, dynamic>>?> _findActiveCaseForStudent(
+    String studentUid,
+  ) async {
+    final normalizedStudentUid = studentUid.trim();
+    if (normalizedStudentUid.isEmpty) return null;
+
+    final snap = await _cases
+        .where('studentUid', isEqualTo: normalizedStudentUid)
+        .limit(20)
+        .get();
+
+    final activeDocs = snap.docs.where((doc) {
+      final data = doc.data();
+      return !CounselingCaseState.isClosed(data);
+    }).toList()
+      ..sort((a, b) => _caseSortDate(b.data()).compareTo(_caseSortDate(a.data())));
+
+    if (activeDocs.isEmpty) return null;
+    return activeDocs.first;
+  }
+
+  Future<void> _attachReferralToExistingCase({
+    required String caseId,
+    required Map<String, dynamic> caseData,
+    required String source,
+    required String counselingType,
+    required Map<String, dynamic> reasons,
+    required String comments,
+    required String referredByUid,
+    required String referredByRole,
+    required String referredBy,
+  }) async {
+    final normalizedSource = source.trim().toLowerCase();
+    final normalizedRole = referredByRole.trim().toLowerCase();
+    final normalizedName = referredBy.trim().isEmpty
+        ? (normalizedSource == CounselingCaseWorkflow.referralSourceStudent
+              ? _safe(caseData['studentName'])
+              : 'Professor')
+        : referredBy.trim();
+    final now = DateTime.now();
+    final bookingWindowStart = now.add(CounselingCaseWorkflow.bookingLeadTime);
+
+    final updatedSources = _mergeStringList(_stringList(caseData['referralSources']), [
+      normalizedSource,
+    ]);
+    final updatedReporterUids = _mergeStringList(
+      _stringList(caseData['referralReporterUids']),
+      [referredByUid.trim()],
+    );
+    final updatedEntries = [
+      ..._mapList(caseData['referralEntries']),
+      _buildReferralEntry(
+        source: normalizedSource,
+        counselingType: counselingType,
+        reasons: reasons,
+        comments: comments,
+        referredByUid: referredByUid,
+        referredByRole: normalizedRole,
+        referredBy: normalizedName,
+        submittedAt: now,
+      ),
+    ];
+
+    final update = <String, dynamic>{
+      'updatedAt': FieldValue.serverTimestamp(),
+      'referralSources': updatedSources,
+      'referralReporterUids': updatedReporterUids,
+      'referralEntries': updatedEntries,
+      'studentReferralSubmitted':
+          caseData['studentReferralSubmitted'] == true ||
+          updatedSources.contains(CounselingCaseWorkflow.referralSourceStudent),
+      'professorReferralSubmitted':
+          caseData['professorReferralSubmitted'] == true ||
+          updatedSources.contains(CounselingCaseWorkflow.referralSourceProfessor),
+      'latestReferralSource': normalizedSource,
+      'latestReferralAt': Timestamp.fromDate(now),
+      'reasons': _mergeReasons(caseData['reasons'], reasons),
+      'comments': _mergeComments(
+        existing: _safe(caseData['comments']),
+        incoming: comments,
+        source: normalizedSource,
+        referredBy: normalizedName,
+      ),
+    };
+
+    final existingType = _safe(caseData['counselingType']);
+    if (existingType.isEmpty) {
+      update['counselingType'] = counselingType.trim().toLowerCase();
+    }
+
+    if (normalizedSource == CounselingCaseWorkflow.referralSourceProfessor &&
+        normalizedName.isNotEmpty) {
+      update['classroomTeacher'] = normalizedName;
+    }
+
+    if (normalizedSource == CounselingCaseWorkflow.referralSourceStudent &&
+        CounselingCaseState.isAwaitingCallSlip(caseData)) {
+      update.addAll({
+        'workflowStatus': CounselingCaseWorkflow.workflowBookingRequired,
+        'meetingStatus': CounselingCaseWorkflow.meetingPendingStudentBooking,
+        'bookingStatus': CounselingCaseWorkflow.bookingPending,
+        'callSlipStatus': CounselingCaseWorkflow.callSlipNotRequired,
+        'bookingRequiredAt': Timestamp.fromDate(now),
+        'bookingWindowStartAt': Timestamp.fromDate(bookingWindowStart),
+        'bookingWindowEndAt': null,
+        'bookingDeadlineAt': null,
+      });
+    }
+
+    await _cases.doc(caseId).set(update, SetOptions(merge: true));
+
+    final sourceLabel = normalizedSource == CounselingCaseWorkflow.referralSourceStudent
+        ? 'self-referral'
+        : 'professor referral';
+    final openedBooking =
+        normalizedSource == CounselingCaseWorkflow.referralSourceStudent &&
+        CounselingCaseState.isAwaitingCallSlip(caseData);
+    final description = openedBooking
+        ? 'A student self-referral was linked to this active counseling case. Booking is now open for the student.'
+        : '${normalizedName.isEmpty ? 'A new' : normalizedName} $sourceLabel was linked to this active counseling case.';
+
+    await _appendCaseActivity(
+      caseId: caseId,
+      event: 'referral_linked',
+      title: 'Referral linked to active case',
+      description: description,
+      actorUid: referredByUid,
+      actorRole: normalizedRole,
+      meta: {
+        'linkedSource': normalizedSource,
+        'linkedByUid': referredByUid.trim(),
+        'linkedByRole': normalizedRole,
+        'bookingOpened': openedBooking,
+        'workflowStatus': openedBooking
+            ? CounselingCaseWorkflow.workflowBookingRequired
+            : _safe(caseData['workflowStatus']),
+        'meetingStatus': openedBooking
+            ? CounselingCaseWorkflow.meetingPendingStudentBooking
+            : _safe(caseData['meetingStatus']),
+      },
+    );
+  }
+
+  Map<String, dynamic> _buildReferralEntry({
+    required String source,
+    required String counselingType,
+    required Map<String, dynamic> reasons,
+    required String comments,
+    required String referredByUid,
+    required String referredByRole,
+    required String referredBy,
+    required DateTime submittedAt,
+  }) {
+    return {
+      'source': source.trim().toLowerCase(),
+      'counselingType': counselingType.trim().toLowerCase(),
+      'reasons': reasons,
+      'comments': comments.trim(),
+      'referredByUid': referredByUid.trim(),
+      'referredByRole': referredByRole.trim().toLowerCase(),
+      'referredBy': referredBy.trim(),
+      'submittedAt': Timestamp.fromDate(submittedAt),
+    };
+  }
+
+  Map<String, dynamic> _mergeReasons(dynamic existing, Map<String, dynamic> incoming) {
+    final merged = <String, dynamic>{};
+    if (existing is Map) {
+      for (final entry in existing.entries) {
+        merged[entry.key.toString()] = entry.value;
+      }
+    }
+    for (final entry in incoming.entries) {
+      final key = entry.key;
+      final incomingValue = entry.value;
+      final existingValue = merged[key];
+      if (incomingValue is List) {
+        final values = <String>{
+          ..._stringList(existingValue),
+          ..._stringList(incomingValue),
+        }.toList()
+          ..sort();
+        merged[key] = values;
+        continue;
+      }
+      final existingText = _safe(existingValue);
+      final incomingText = _safe(incomingValue);
+      if (incomingText.isEmpty) {
+        merged[key] = existingValue;
+      } else if (existingText.isEmpty) {
+        merged[key] = incomingText;
+      } else if (existingText.contains(incomingText)) {
+        merged[key] = existingText;
+      } else {
+        merged[key] = '$existingText | $incomingText';
+      }
+    }
+    return merged;
+  }
+
+  String _mergeComments({
+    required String existing,
+    required String incoming,
+    required String source,
+    required String referredBy,
+  }) {
+    final base = existing.trim();
+    final next = incoming.trim();
+    if (next.isEmpty) return base;
+
+    final label = source == CounselingCaseWorkflow.referralSourceStudent
+        ? 'Student self-referral'
+        : 'Professor referral${referredBy.trim().isEmpty ? '' : ' ($referredBy)'}';
+    final block = '$label:\n$next';
+
+    if (base.isEmpty) return block;
+    if (base.contains(block)) return base;
+    return '$base\n\n$block';
+  }
+
+  List<String> _stringList(dynamic raw) {
+    if (raw is Iterable) {
+      return raw
+          .map((item) => _safe(item))
+          .where((item) => item.isNotEmpty)
+          .toList();
+    }
+    return const <String>[];
+  }
+
+  List<String> _mergeStringList(List<String> existing, List<String> incoming) {
+    return <String>{...existing, ...incoming.where((item) => item.trim().isNotEmpty)}
+        .toList();
+  }
+
+  List<Map<String, dynamic>> _mapList(dynamic raw) {
+    if (raw is Iterable) {
+      return raw
+          .whereType<Map>()
+          .map(
+            (item) => item.map(
+              (key, value) => MapEntry(key.toString(), value),
+            ),
+          )
+          .toList();
+    }
+    return const <Map<String, dynamic>>[];
+  }
+
+  bool _hasStudentReferralSubmitted(Map<String, dynamic> data) {
+    if (data['studentReferralSubmitted'] == true) return true;
+    final source = _safe(data['referralSource']).toLowerCase();
+    if (source == CounselingCaseWorkflow.referralSourceStudent) return true;
+    return _stringList(data['referralSources'])
+        .map((item) => item.toLowerCase())
+        .contains(CounselingCaseWorkflow.referralSourceStudent);
+  }
+
+  DateTime _caseSortDate(Map<String, dynamic> data) {
+    return (data['updatedAt'] as Timestamp?)?.toDate() ??
+        (data['createdAt'] as Timestamp?)?.toDate() ??
+        (data['referralDate'] as Timestamp?)?.toDate() ??
+        DateTime.fromMillisecondsSinceEpoch(0);
   }
 
   Future<void> _appendCaseActivity({

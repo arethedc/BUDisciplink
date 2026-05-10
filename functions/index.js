@@ -1,7 +1,9 @@
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
 const { onSchedule } = require('firebase-functions/v2/scheduler');
+const { onDocumentCreated } = require('firebase-functions/v2/firestore');
 const { initializeApp } = require('firebase-admin/app');
 const { getAuth } = require('firebase-admin/auth');
+const { getMessaging } = require('firebase-admin/messaging');
 const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 const { genkit } = require('genkit');
 const { googleAI } = require('@genkit-ai/googleai');
@@ -15,6 +17,10 @@ const OSA_MODEL = 'googleai/gemini-2.5-flash-lite';
 const MAX_CONTEXT_CHARS = 16000;
 const MAX_SOURCE_CHARS = 1200;
 const MAX_IN_QUERY_VALUES = 10;
+const INVALID_FCM_TOKEN_ERRORS = new Set([
+  'messaging/registration-token-not-registered',
+  'messaging/invalid-registration-token',
+]);
 
 function normalizeString(value) {
   return (value ?? '').toString().trim();
@@ -22,6 +28,15 @@ function normalizeString(value) {
 
 function normalizeLower(value) {
   return normalizeString(value).toLowerCase();
+}
+
+function toStringMap(raw) {
+  if (!raw || typeof raw !== 'object') return {};
+  const out = {};
+  for (const [key, value] of Object.entries(raw)) {
+    out[key] = normalizeString(value);
+  }
+  return out;
 }
 
 function orderValue(value) {
@@ -70,106 +85,301 @@ async function generateText(model, prompt) {
 }
 
 async function getActiveVersionId() {
-  const snap = await db.collection('handbook_meta').doc('current').get();
-  const versionId = normalizeString(snap.data()?.activeVersionId);
+  const hbCurrentSnap = await db.collection('hb_version').doc('current').get();
+  const versionId = normalizeString(hbCurrentSnap.data()?.activeVersionId);
   if (!versionId) {
     throw new HttpsError(
       'failed-precondition',
-      'Missing handbook_meta/current.activeVersionId',
+      'Missing active handbook version id in hb_version/current.activeVersionId',
     );
   }
+
+  const versionSnap = await db.collection('hb_version').doc(versionId).get();
+  if (!versionSnap.exists) {
+    throw new HttpsError(
+      'failed-precondition',
+      `Active handbook version document not found: hb_version/${versionId}`,
+    );
+  }
+
+  const status = normalizeLower(versionSnap.data()?.status);
+  const normalizedStatus = status === 'active' ? 'active' : 'inactive';
+  if (normalizedStatus !== 'active') {
+    await db.collection('hb_version').doc(versionId).set({
+      status: 'active',
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+  }
+
   return versionId;
+}
+
+function sectionSort(a, b) {
+  const orderCompare = orderValue(a.sortOrder) - orderValue(b.sortOrder);
+  if (orderCompare !== 0) return orderCompare;
+  const titleCompare = normalizeString(a.title).localeCompare(
+    normalizeString(b.title),
+  );
+  if (titleCompare !== 0) return titleCompare;
+  return normalizeString(a.id).localeCompare(normalizeString(b.id));
+}
+
+function flattenSectionRows(sections) {
+  const byParent = new Map();
+  const byId = new Map();
+  for (const section of sections) {
+    const parentId = normalizeString(section.parentId);
+    if (!byParent.has(parentId)) byParent.set(parentId, []);
+    byParent.get(parentId).push(section);
+    byId.set(section.id, section);
+  }
+
+  for (const children of byParent.values()) {
+    children.sort(sectionSort);
+  }
+
+  const roots = sections
+    .filter((section) => {
+      const parentId = normalizeString(section.parentId);
+      return !parentId || !byId.has(parentId);
+    })
+    .sort(sectionSort);
+
+  const rows = [];
+  const visited = new Set();
+
+  const walk = (section, depth) => {
+    if (!section || visited.has(section.id)) return;
+    visited.add(section.id);
+    rows.push({ section, depth });
+    const children = byParent.get(section.id) || [];
+    for (const child of children) {
+      walk(child, depth + 1);
+    }
+  };
+
+  for (const root of roots) {
+    walk(root, 0);
+  }
+
+  for (const section of sections.sort(sectionSort)) {
+    if (!visited.has(section.id)) {
+      walk(section, 0);
+    }
+  }
+
+  return rows;
+}
+
+function buildDisplayCodeBySectionId(rows) {
+  const codeBySectionId = new Map();
+  const levelCounters = [];
+
+  for (const row of rows) {
+    const section = row.section || {};
+    if (section.useSectionNumbering === false) {
+      codeBySectionId.set(section.id, '');
+      continue;
+    }
+
+    const depth = row.depth < 0 ? 0 : row.depth;
+    while (levelCounters.length <= depth) {
+      levelCounters.push(0);
+    }
+    if (levelCounters.length > depth + 1) {
+      levelCounters.splice(depth + 1);
+    }
+    levelCounters[depth] += 1;
+
+    codeBySectionId.set(section.id, levelCounters.slice(0, depth + 1).join('.'));
+  }
+
+  return codeBySectionId;
+}
+
+function extractTextFromTablePayload(raw) {
+  const payload = normalizeString(raw);
+  if (!payload) return '';
+
+  try {
+    const decoded = JSON.parse(payload);
+    if (decoded && typeof decoded === 'object') {
+      const headers = Array.isArray(decoded.headers)
+        ? decoded.headers.map((value) => normalizeString(value))
+        : [];
+      const rows = Array.isArray(decoded.rows)
+        ? decoded.rows
+            .map((rawRow) => {
+              if (!Array.isArray(rawRow)) return [];
+              return rawRow.map((value) => normalizeString(value));
+            })
+        : [];
+
+      const lines = [];
+      const headerLine = headers.filter(Boolean).join(' | ');
+      if (headerLine) lines.push(headerLine);
+      for (const row of rows) {
+        const line = row.filter(Boolean).join(' | ');
+        if (line) lines.push(line);
+      }
+      return lines.join('\n').trim();
+    }
+  } catch (_) {
+    // best-effort only
+  }
+
+  return payload;
+}
+
+function extractTextFromQuillOps(ops) {
+  if (!Array.isArray(ops)) return '';
+  const parts = [];
+
+  for (const rawOp of ops) {
+    if (!rawOp || typeof rawOp !== 'object') continue;
+    const insert = rawOp.insert;
+    if (typeof insert === 'string') {
+      parts.push(insert);
+      continue;
+    }
+    if (!insert || typeof insert !== 'object') continue;
+
+    const tablePayload = normalizeString(insert['x-embed-table'] || insert.table);
+    if (tablePayload) {
+      const tableText = extractTextFromTablePayload(tablePayload);
+      if (tableText) parts.push(`\n${tableText}\n`);
+      continue;
+    }
+
+    const embedCaption = normalizeString(
+      insert.caption || insert.alt || insert.title || insert.url,
+    );
+    if (embedCaption) parts.push(embedCaption);
+  }
+
+  return parts.join('').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function extractContentText(rawContent) {
+  if (typeof rawContent === 'string') {
+    const trimmed = rawContent.trim();
+    if (!trimmed) return '';
+    try {
+      const decoded = JSON.parse(trimmed);
+      if (Array.isArray(decoded)) {
+        return extractTextFromQuillOps(decoded);
+      }
+      if (decoded && typeof decoded === 'object' && Array.isArray(decoded.ops)) {
+        return extractTextFromQuillOps(decoded.ops);
+      }
+    } catch (_) {
+      // Plain text fallback.
+    }
+    return trimmed;
+  }
+
+  if (Array.isArray(rawContent)) {
+    return extractTextFromQuillOps(rawContent);
+  }
+
+  if (rawContent && typeof rawContent === 'object' && Array.isArray(rawContent.ops)) {
+    return extractTextFromQuillOps(rawContent.ops);
+  }
+
+  return '';
+}
+
+async function loadContentMapBySection(versionId) {
+  const collections = ['hb_contents', 'hb_content'];
+  const contentBySectionId = new Map();
+
+  for (const collectionName of collections) {
+    let snap;
+    try {
+      snap = await db
+        .collection(collectionName)
+        .where('versionId', '==', versionId)
+        .get();
+    } catch (error) {
+      console.error(`failed reading ${collectionName} for handbook ai`, error);
+      continue;
+    }
+    if (!snap || snap.empty) continue;
+
+    for (const doc of snap.docs) {
+      const data = doc.data() || {};
+      const sectionId = normalizeString(data.sectionId) || doc.id;
+      if (!sectionId || contentBySectionId.has(sectionId)) continue;
+
+      const rawContent = data.content ?? data.publishedContent ?? data.body ?? '';
+      const plainText = extractContentText(rawContent);
+      if (!plainText) continue;
+
+      contentBySectionId.set(sectionId, plainText);
+    }
+
+    if (contentBySectionId.size > 0) break;
+  }
+
+  return contentBySectionId;
 }
 
 async function loadHandbookEntries() {
   const versionId = await getActiveVersionId();
 
-  const [sectionSnap, topicSnap] = await Promise.all([
-    db.collection('handbook_sections').where('versionId', '==', versionId).get(),
-    db.collection('handbook_topics').where('versionId', '==', versionId).get(),
-  ]);
+  const sectionSnap = await db
+    .collection('hb_section')
+    .where('versionId', '==', versionId)
+    .get();
 
   const sections = sectionSnap.docs
-    .map((doc) => ({ id: doc.id, ...doc.data() }))
-    .filter((row) => row.isPublished === true)
-    .sort((a, b) => orderValue(a.order) - orderValue(b.order));
-
-  const sectionByCode = new Map();
-  for (const section of sections) {
-    const code = normalizeString(section.code);
-    if (!code) continue;
-    sectionByCode.set(code, {
-      code,
-      title: normalizeString(section.title),
-    });
-  }
-
-  const topics = topicSnap.docs
-    .map((doc) => ({ id: doc.id, ...doc.data() }))
-    .filter((row) => row.isPublished === true)
-    .sort((a, b) => {
-      const sectionCompare = normalizeString(a.sectionCode).localeCompare(
-        normalizeString(b.sectionCode),
-      );
-      if (sectionCompare !== 0) return sectionCompare;
-      return orderValue(a.order) - orderValue(b.order);
-    });
-
-  if (topics.length === 0) return [];
-
-  const topicIds = topics.map((topic) => topic.id);
-  const blocksByTopicId = new Map();
-
-  for (let i = 0; i < topicIds.length; i += MAX_IN_QUERY_VALUES) {
-    const chunk = topicIds.slice(i, i + MAX_IN_QUERY_VALUES);
-    const contentSnap = await db
-      .collection('handbook_contents')
-      .where('topicId', 'in', chunk)
-      .get();
-    for (const doc of contentSnap.docs) {
+    .map((doc) => {
       const data = doc.data() || {};
-      const topicId = normalizeString(data.topicId) || doc.id;
-      const blocks = Array.isArray(data.publishedBlocks)
-        ? data.publishedBlocks
-        : Array.isArray(data.blocks)
-          ? data.blocks
-          : [];
-      blocksByTopicId.set(topicId, blocks);
-    }
-  }
+      return {
+        id: doc.id,
+        parentId: normalizeString(data.parentId),
+        title: normalizeString(data.title) || '(Untitled entry)',
+        code: normalizeString(data.code),
+        sortOrder: orderValue(data.sortOrder),
+        isVisible: data.isVisible !== false,
+        status: normalizeLower(data.status),
+        useSectionNumbering: data.useSectionNumbering !== false,
+      };
+    })
+    .filter((section) => section.isVisible);
+
+  if (sections.length === 0) return [];
+
+  const rows = flattenSectionRows(sections);
+  const codeBySectionId = buildDisplayCodeBySectionId(rows);
+  const contentBySectionId = await loadContentMapBySection(versionId);
 
   const entries = [];
-  for (const topic of topics) {
-    const sectionCode = normalizeString(topic.sectionCode);
-    const section = sectionByCode.get(sectionCode);
-    if (!section) continue;
+  for (const row of rows) {
+    const section = row.section;
+    const content = normalizeString(contentBySectionId.get(section.id));
+    if (!content) continue;
 
-    const blocks = blocksByTopicId.get(topic.id) || [];
-    const textParts = [];
-    for (const rawBlock of blocks) {
-      const block = rawBlock || {};
-      const type = normalizeLower(block.type);
-      const text = normalizeString(block.text);
-      const caption = normalizeString(block.caption);
-      const number = normalizeString(block.number);
-      const title = normalizeString(block.title);
-      if (number) textParts.push(number);
-      if (title) textParts.push(title);
-      if (text) textParts.push(text);
-      if (type === 'image' && caption) textParts.push(caption);
-    }
+    const displayCode = normalizeString(
+      codeBySectionId.get(section.id) || section.code,
+    );
+    const source = displayCode
+      ? `${displayCode} ${section.title}`.trim()
+      : section.title;
 
-    const content = textParts.join('\n').trim();
     entries.push({
-      sectionCode: section.code,
+      sectionId: section.id,
+      versionId,
+      sectionCode: displayCode,
       sectionTitle: section.title,
-      topicCode: normalizeString(topic.code),
-      topicTitle: normalizeString(topic.title),
+      topicCode: '',
+      topicTitle: '',
       content,
-      searchable: `${section.code} ${section.title} ${topic.code || ''} ${topic.title || ''} ${content}`.toLowerCase(),
-      source: `${normalizeString(topic.code)} ${normalizeString(topic.title)}`.trim(),
+      searchable: `${displayCode} ${section.title} ${content}`.toLowerCase(),
+      source,
     });
   }
+
   return entries;
 }
 
@@ -178,22 +388,48 @@ function buildHandbookPrompt(question, entries) {
   const picked = ranked.slice(0, 8);
 
   let context = '';
-  const used = [];
+  const usedEntries = [];
   for (let i = 0; i < picked.length; i += 1) {
     const entry = picked[i];
     const body = entry.content.length > MAX_SOURCE_CHARS
       ? `${entry.content.slice(0, MAX_SOURCE_CHARS)}...`
       : entry.content;
+    const sectionLine = [entry.sectionCode, entry.sectionTitle]
+      .filter((value) => normalizeString(value))
+      .join(' ')
+      .trim();
+    const topicLine = [entry.topicCode, entry.topicTitle]
+      .filter((value) => normalizeString(value))
+      .join(' ')
+      .trim();
     const block = `[Source ${i + 1}]
-Section: ${entry.sectionCode}. ${entry.sectionTitle}
-Topic: ${entry.topicCode} ${entry.topicTitle}
-Content:
+Section: ${sectionLine || normalizeString(entry.sectionTitle)}
+${topicLine ? `Entry: ${topicLine}\n` : ''}Content:
 ${body}
 
-`;
+    `;
     if (context.length + block.length > MAX_CONTEXT_CHARS) break;
     context += block;
-    used.push(entry.source);
+    usedEntries.push(entry);
+  }
+
+  const seenSourceRef = new Set();
+  const sourceRefs = [];
+  const sourceLabels = [];
+  for (const entry of usedEntries) {
+    const sectionId = normalizeString(entry.sectionId);
+    const versionId = normalizeString(entry.versionId);
+    const label = normalizeString(entry.source);
+    const dedupeKey = `${sectionId}|${versionId}|${label}`;
+    if (!label || seenSourceRef.has(dedupeKey)) continue;
+    seenSourceRef.add(dedupeKey);
+    sourceLabels.push(label);
+    sourceRefs.push({
+      label,
+      sectionId,
+      versionId,
+      excerpt: buildHandbookSourceExcerpt(entry.content, question),
+    });
   }
 
   return {
@@ -227,8 +463,41 @@ ${question}
 
 Handbook context:
 ${context.trim()}`,
-    sources: [...new Set(used)],
+    sources: [...new Set(sourceLabels)],
+    sourceRefs,
   };
+}
+
+function buildHandbookSourceExcerpt(content, question) {
+  const cleanContent = normalizeString(content).replace(/\s+/g, ' ').trim();
+  if (!cleanContent) return '';
+
+  const cleanQuestion = normalizeLower(question);
+  const tokens = cleanQuestion
+    .split(/[^a-z0-9]+/)
+    .filter((token) => token.length >= 4);
+
+  const lowerContent = cleanContent.toLowerCase();
+  let hitIndex = -1;
+  for (const token of tokens) {
+    const idx = lowerContent.indexOf(token);
+    if (idx >= 0) {
+      hitIndex = idx;
+      break;
+    }
+  }
+  if (hitIndex < 0) {
+    hitIndex = 0;
+  }
+
+  const windowSize = 220;
+  const contextBefore = 80;
+  const start = hitIndex > contextBefore ? hitIndex - contextBefore : 0;
+  const end = Math.min(cleanContent.length, start + windowSize);
+  let excerpt = cleanContent.slice(start, end).trim();
+  if (start > 0) excerpt = `...${excerpt}`;
+  if (end < cleanContent.length) excerpt = `${excerpt}...`;
+  return excerpt;
 }
 
 function toPlainAiText(value) {
@@ -1322,19 +1591,20 @@ exports.sendCurrentUserVerifyEmailLink = onCall(
             text:
               `Baliuag University: Disciplink\n\n` +
               `Please verify your email using this link:\n${appVerifyLink}\n\n` +
+              `After verification, log in to BUDiscipLink and complete your student profile.\n\n` +
               `Login Email: ${email}\n\n` +
               `If you did not request this, you can ignore this message.`,
             html: buildBrandedEmailHtml({
               title: 'Verify Your Email',
               subtitle:
-                'Please verify your email before continuing to your account.',
+                'Please verify your email, then log in and complete your student profile.',
               buttonLabel: 'Verify Email',
               buttonUrl: appVerifyLink,
               details: [
                 { label: 'Login Email', value: email },
               ],
               note:
-                'If you did not request this email, you can ignore this message.',
+                'After verification, log in and complete your student profile. If you did not request this email, you can ignore this message.',
             }),
           },
           meta: {
@@ -1375,18 +1645,20 @@ exports.askHandbookAi = onCall(
       const entries = await loadHandbookEntries();
       if (entries.length === 0) {
         return {
-          answer: 'No published handbook content is available right now.',
+          answer: 'No active handbook content is available right now.',
           sources: [],
+          sourceRefs: [],
         };
       }
 
-      const { prompt, sources } = buildHandbookPrompt(question, entries);
+      const { prompt, sources, sourceRefs } = buildHandbookPrompt(question, entries);
       const answer = normalizeHandbookAiText(
         await generateText(HANDBOOK_MODEL, prompt),
       );
       return {
         answer: answer || 'I could not generate a handbook answer right now.',
         sources,
+        sourceRefs,
       };
     } catch (error) {
       if (error instanceof HttpsError) throw error;
@@ -1509,6 +1781,103 @@ async function queueViolationNotification({
       }),
   ]);
 }
+
+exports.pushUserNotification = onDocumentCreated(
+  {
+    region: 'asia-east1',
+    document: 'users/{uid}/notifications/{notificationId}',
+    timeoutSeconds: 60,
+    memory: '256MiB',
+  },
+  async (event) => {
+    const uid = normalizeString(event.params?.uid);
+    const notificationId = normalizeString(event.params?.notificationId);
+    const data = event.data?.data() || {};
+    if (!uid || !notificationId) return;
+
+    const title = normalizeString(data.title) || 'New notification';
+    const body = normalizeString(data.body);
+    const payload = data.payload && typeof data.payload === 'object'
+      ? data.payload
+      : {};
+    const payloadMap = toStringMap(payload);
+    const caseId =
+      normalizeString(data.caseId) || normalizeString(payloadMap.caseId);
+    const link = normalizeString(payloadMap.link) || '/';
+
+    const userSnap = await db.collection('users').doc(uid).get();
+    const role = normalizeLower(userSnap.data()?.role);
+    if (role && role !== 'student') return;
+
+    const tokenSnap = await db
+      .collection('users')
+      .doc(uid)
+      .collection('fcmTokens')
+      .limit(40)
+      .get();
+
+    const tokens = tokenSnap.docs
+      .filter((doc) => doc.data()?.enabled !== false)
+      .map((doc) => normalizeString(doc.id))
+      .filter((token) => token.length > 0);
+
+    if (tokens.length === 0) return;
+
+    const message = {
+      tokens,
+      notification: {
+        title,
+        body,
+      },
+      data: {
+        uid,
+        notificationId,
+        title,
+        body,
+        caseId,
+        ...payloadMap,
+      },
+      android: {
+        priority: 'high',
+        notification: {
+          sound: 'default',
+        },
+      },
+      webpush: {
+        fcmOptions: {
+          link,
+        },
+        notification: {
+          title,
+          body,
+          icon: '/icons/Icon-192-bud.png',
+          badge: '/icons/Icon-192-bud.png',
+        },
+      },
+    };
+
+    const response = await getMessaging().sendEachForMulticast(message);
+
+    const invalidTokens = [];
+    response.responses.forEach((result, index) => {
+      if (result.success) return;
+      const code = normalizeString(result.error?.code);
+      if (INVALID_FCM_TOKEN_ERRORS.has(code)) {
+        invalidTokens.push(tokens[index]);
+      }
+    });
+
+    if (invalidTokens.length > 0) {
+      const batch = db.batch();
+      for (const token of invalidTokens) {
+        batch.delete(
+          db.collection('users').doc(uid).collection('fcmTokens').doc(token),
+        );
+      }
+      await batch.commit();
+    }
+  },
+);
 
 async function appendCounselingActivity({
   caseId,

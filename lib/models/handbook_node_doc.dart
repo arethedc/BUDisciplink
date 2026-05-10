@@ -41,7 +41,7 @@ class HandbookNodeDoc {
 
   bool get isRoot => parentId.trim().isEmpty;
 
-  bool get isPublished => status.trim().toLowerCase() == 'published';
+  bool get isPublished => status.trim().toLowerCase() == 'active';
 
   HandbookNodeDoc copyWith({
     String? handbookId,
@@ -105,7 +105,7 @@ class HandbookNodeDoc {
       type: (data['type'] ?? 'info').toString().trim(),
       sortOrder: (data['sortOrder'] ?? 0) as int,
       useSectionNumbering: useSectionNumbering,
-      status: (data['status'] ?? 'draft').toString().trim(),
+      status: (data['status'] ?? 'inactive').toString().trim(),
       isVisible: (data['isVisible'] ?? true) as bool,
       handbookVersion: (data['handbookVersion'] ?? '').toString().trim(),
       linkedOffice: (data['linkedOffice'] ?? '').toString().trim(),

@@ -26,7 +26,6 @@ class UserService {
           'studentNo': null,
           'collegeId': null,
           'programId': null,
-          'yearLevel': null,
         },
         'employeeProfile': {'employeeNo': null, 'department': null},
         'createdAt': FieldValue.serverTimestamp(),

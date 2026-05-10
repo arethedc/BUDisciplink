@@ -1,9 +1,13 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
 
 import '../../services/counseling_case_workflow_service.dart';
+import '../../services/counseling_setup_service.dart';
+import '../../services/student_directory_policy.dart';
 import '../shared/widgets/unsaved_changes_guard.dart';
+import 'package:apps/pages/shared/widgets/app_inline_notice.dart';
 
 class ProfessorCounselingPage extends StatefulWidget {
   final UnsavedChangesController? unsavedChangesController;
@@ -16,13 +20,15 @@ class ProfessorCounselingPage extends StatefulWidget {
 }
 
 class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
-  static const bg = Color(0xFFF6FAF6);
+  static const bg = Colors.white;
   static const primaryColor = Color(0xFF1B5E20);
   static const textDark = Color(0xFF1F2A1F);
   static const hintColor = Color(0xFF6D7F62);
 
   final _formKey = GlobalKey<FormState>();
   final _studentSearchFieldKey = GlobalKey();
+  final _studentSearchOverlayAnchorKey = GlobalKey();
+  final _studentSearchLayerLink = LayerLink();
   final _notesFieldKey = GlobalKey();
 
   final _studentSearchCtrl = TextEditingController();
@@ -34,6 +40,8 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
   final _studentSearchFocus = FocusNode();
   final _notesFocus = FocusNode();
   final _workflowService = CounselingCaseWorkflowService();
+  final _counselingSetupService = CounselingSetupService();
+  OverlayEntry? _studentSearchOverlay;
 
   String _teacherName = '';
   String _teacherUid = '';
@@ -44,6 +52,7 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
   String? _studentName;
   String? _studentNo;
   String? _studentProgram;
+  String? _studentPhotoUrl;
 
   bool _loading = false;
   bool _loadingStudents = true;
@@ -55,51 +64,26 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
   final Set<String> _schoolSelected = <String>{};
   final Set<String> _relationshipSelected = <String>{};
   final Set<String> _homeSelected = <String>{};
-
-  static const List<String> _moodOptions = <String>[
-    'Anxious or worried',
-    'Depressed or unhappy',
-    'Eating disorder concerns',
-    'Body image concerns',
-    'Hyperactive or inattentive',
-    'Shy or withdrawn',
-    'Low self-esteem',
-    'Aggressive behavior',
-    'Stealing',
-  ];
-
-  static const List<String> _schoolOptions = <String>[
-    'Homework not submitted',
-    'Incomplete classwork',
-    'Low test or assignment grades',
-    'Poor classroom performance',
-    'Sleeping in class or always tired',
-    'Sudden change in grades',
-    'Frequently tardy or absent',
-    'New student',
-  ];
-
-  static const List<String> _relationshipOptions = <String>[
-    'Bullying',
-    'Difficulty making friends',
-    'Poor social skills',
-    'Problems with friends',
-    'Boyfriend or girlfriend issues',
-  ];
-
-  static const List<String> _homeOptions = <String>[
-    'Fighting with family members',
-    'Illness or death in the family',
-    'Parents divorced or separated',
-    'Suspected abuse',
-    'Suspected substance abuse',
-    'Parent request',
-  ];
+  final Map<String, Future<String>> _resolvedPhotoUrlCache = {};
+  List<String> _moodOptions = List<String>.from(
+    CounselingSetupConfig.defaults.moodsBehaviors,
+  );
+  List<String> _schoolOptions = List<String>.from(
+    CounselingSetupConfig.defaults.schoolConcerns,
+  );
+  List<String> _relationshipOptions = List<String>.from(
+    CounselingSetupConfig.defaults.relationships,
+  );
+  List<String> _homeOptions = List<String>.from(
+    CounselingSetupConfig.defaults.homeConcerns,
+  );
 
   @override
   void initState() {
     super.initState();
     _studentSearchCtrl.addListener(_syncUnsavedState);
+    _studentSearchCtrl.addListener(_handleStudentSearchChanged);
+    _studentSearchFocus.addListener(_handleStudentSearchFocusChanged);
     _otherMoodCtrl.addListener(_syncUnsavedState);
     _otherSchoolCtrl.addListener(_syncUnsavedState);
     _otherRelationshipCtrl.addListener(_syncUnsavedState);
@@ -119,7 +103,32 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
   }
 
   Future<void> _bootstrap() async {
-    await Future.wait(<Future<void>>[_loadTeacher(), _loadStudents()]);
+    await Future.wait(<Future<void>>[
+      _loadTeacher(),
+      _loadStudents(),
+      _loadCounselingSetup(),
+    ]);
+  }
+
+  Future<void> _loadCounselingSetup() async {
+    try {
+      final config = await _counselingSetupService.getConfig();
+      if (!mounted) return;
+      setState(() {
+        _moodOptions = List<String>.from(config.moodsBehaviors);
+        _schoolOptions = List<String>.from(config.schoolConcerns);
+        _relationshipOptions = List<String>.from(config.relationships);
+        _homeOptions = List<String>.from(config.homeConcerns);
+        _moodsSelected.removeWhere((item) => !_moodOptions.contains(item));
+        _schoolSelected.removeWhere((item) => !_schoolOptions.contains(item));
+        _relationshipSelected.removeWhere(
+          (item) => !_relationshipOptions.contains(item),
+        );
+        _homeSelected.removeWhere((item) => !_homeOptions.contains(item));
+      });
+    } catch (_) {
+      // Keep defaults if setup cannot be loaded.
+    }
   }
 
   Future<void> _loadTeacher() async {
@@ -167,6 +176,7 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
       final items = <Map<String, String>>[];
       for (final doc in snap.docs) {
         final data = doc.data();
+        if (!StudentDirectoryPolicy.isSearchableStudent(data)) continue;
         final studentProfile =
             (data['studentProfile'] as Map<String, dynamic>?) ??
             <String, dynamic>{};
@@ -181,12 +191,16 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
             : 'Unnamed Student';
         final studentNo = (studentProfile['studentNo'] ?? '').toString().trim();
         final program = (studentProfile['programId'] ?? '').toString().trim();
+        final photoUrl = (data['photoUrl'] ?? studentProfile['photoUrl'] ?? '')
+            .toString()
+            .trim();
 
         items.add(<String, String>{
           'uid': doc.id,
           'name': name,
           'studentNo': studentNo,
           'programId': program,
+          'photoUrl': photoUrl,
         });
       }
 
@@ -204,7 +218,7 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
       });
     } catch (_) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Could not load students. Please try again.'),
           backgroundColor: Colors.red,
@@ -229,6 +243,387 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
         })
         .take(7)
         .toList();
+  }
+
+  List<Map<String, String>> _activeStudentSuggestions() {
+    if (_loadingStudents) {
+      return const <Map<String, String>>[];
+    }
+    final query = _studentSearchCtrl.text.trim();
+    if (query.isEmpty) return const <Map<String, String>>[];
+    return _filterStudents(query);
+  }
+
+  void _handleStudentSearchChanged() {
+    _updateStudentSearchOverlay();
+  }
+
+  void _handleStudentSearchFocusChanged() {
+    _updateStudentSearchOverlay();
+  }
+
+  void _removeStudentSearchOverlay() {
+    _studentSearchOverlay?.remove();
+    _studentSearchOverlay = null;
+  }
+
+  void _updateStudentSearchOverlay() {
+    if (!mounted) return;
+    final suggestions = _activeStudentSuggestions();
+    if (suggestions.isEmpty) {
+      _removeStudentSearchOverlay();
+      return;
+    }
+    final overlay = Overlay.maybeOf(context, rootOverlay: true);
+    if (overlay == null) return;
+    if (_studentSearchOverlay == null) {
+      _studentSearchOverlay = _buildStudentSearchOverlay();
+      overlay.insert(_studentSearchOverlay!);
+    } else {
+      _studentSearchOverlay!.markNeedsBuild();
+    }
+  }
+
+  OverlayEntry _buildStudentSearchOverlay() {
+    return OverlayEntry(
+      builder: (overlayContext) {
+        final renderBox =
+            _studentSearchOverlayAnchorKey.currentContext?.findRenderObject()
+                as RenderBox?;
+        if (renderBox == null || !renderBox.attached) {
+          return const SizedBox.shrink();
+        }
+        final suggestions = _activeStudentSuggestions();
+        if (suggestions.isEmpty) return const SizedBox.shrink();
+        final fieldSize = renderBox.size;
+
+        return Positioned.fill(
+          child: Stack(
+            children: [
+              Positioned.fill(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  onTap: () {
+                    _studentSearchFocus.unfocus();
+                    _removeStudentSearchOverlay();
+                  },
+                  child: const SizedBox.expand(),
+                ),
+              ),
+              CompositedTransformFollower(
+                link: _studentSearchLayerLink,
+                showWhenUnlinked: false,
+                offset: Offset(0, fieldSize.height + 6),
+                child: Material(
+                  color: Colors.transparent,
+                  child: SizedBox(
+                    width: fieldSize.width,
+                    child: Container(
+                      constraints: const BoxConstraints(maxHeight: 290),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: Colors.black.withValues(alpha: 0.12),
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.10),
+                            blurRadius: 12,
+                            offset: const Offset(0, 6),
+                          ),
+                        ],
+                      ),
+                      child: ListView.separated(
+                        padding: EdgeInsets.zero,
+                        shrinkWrap: true,
+                        itemCount: suggestions.length,
+                        separatorBuilder: (context, index) => Divider(
+                          height: 1,
+                          color: Colors.black.withValues(alpha: 0.06),
+                        ),
+                        itemBuilder: (context, index) {
+                          final student = suggestions[index];
+                          final name = student['name'] ?? '';
+                          final studentNo = student['studentNo'] ?? 'No ID';
+                          final programId = student['programId'] ?? '';
+                          final photoUrl = student['photoUrl'];
+                          return ListTile(
+                            dense: true,
+                            onTap: () {
+                              _selectStudent(student);
+                              _removeStudentSearchOverlay();
+                            },
+                            leading: _studentAvatar(
+                              name: name,
+                              photoUrl: photoUrl,
+                              size: 34,
+                            ),
+                            title: Text(
+                              name,
+                              style: const TextStyle(
+                                color: textDark,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                            subtitle: Text(
+                              '$studentNo${programId.isNotEmpty ? ' | $programId' : ''}',
+                              style: const TextStyle(
+                                color: hintColor,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  String _initials(String name) {
+    final parts = name
+        .trim()
+        .split(RegExp(r'\s+'))
+        .where((part) => part.isNotEmpty)
+        .toList();
+    if (parts.isEmpty) return 'S';
+    if (parts.length == 1) return parts.first.substring(0, 1).toUpperCase();
+    return (parts[0].substring(0, 1) + parts[1].substring(0, 1)).toUpperCase();
+  }
+
+  Widget _studentAvatar({
+    required String name,
+    required String? photoUrl,
+    required double size,
+  }) {
+    final safeName = name.trim().isEmpty ? 'Student' : name.trim();
+    final safeUrl = (photoUrl ?? '').trim();
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: primaryColor.withValues(alpha: 0.12),
+        shape: BoxShape.circle,
+        border: Border.all(color: primaryColor.withValues(alpha: 0.24)),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: safeUrl.isEmpty
+          ? Center(
+              child: Text(
+                _initials(safeName),
+                style: TextStyle(
+                  color: primaryColor,
+                  fontWeight: FontWeight.w900,
+                  fontSize: size * 0.36,
+                ),
+              ),
+            )
+          : Image.network(
+              safeUrl,
+              fit: BoxFit.cover,
+              errorBuilder: (context, error, stackTrace) => Center(
+                child: Text(
+                  _initials(safeName),
+                  style: TextStyle(
+                    color: primaryColor,
+                    fontWeight: FontWeight.w900,
+                    fontSize: size * 0.36,
+                  ),
+                ),
+              ),
+            ),
+    );
+  }
+
+  bool _isHttpPhotoUrl(String value) {
+    return value.startsWith('http://') || value.startsWith('https://');
+  }
+
+  Future<String> _resolvePhotoUrl(String source) async {
+    final value = source.trim();
+    if (value.isEmpty) return '';
+    if (_isHttpPhotoUrl(value)) return value;
+    try {
+      if (value.startsWith('gs://')) {
+        return await FirebaseStorage.instance
+            .refFromURL(value)
+            .getDownloadURL();
+      }
+      return await FirebaseStorage.instance.ref(value).getDownloadURL();
+    } catch (_) {
+      return '';
+    }
+  }
+
+  Future<void> _openStudentProfilePhotoViewer({
+    required String name,
+    required String? photoUrl,
+  }) async {
+    final source = (photoUrl ?? '').trim();
+    if (source.isEmpty) {
+      if (!mounted) return;
+      AppScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No profile photo available.')),
+      );
+      return;
+    }
+
+    final resolved = _isHttpPhotoUrl(source)
+        ? source
+        : await _resolvedPhotoUrlCache.putIfAbsent(
+            source,
+            () => _resolvePhotoUrl(source),
+          );
+    if (resolved.trim().isEmpty) {
+      if (!mounted) return;
+      AppScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No profile photo available.')),
+      );
+      return;
+    }
+
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      barrierColor: Colors.black.withValues(alpha: 0.72),
+      builder: (dialogContext) {
+        return Dialog(
+          backgroundColor: Colors.black,
+          insetPadding: const EdgeInsets.all(16),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: SizedBox(
+            width: 640,
+            height: 560,
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 10, 10, 8),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          name.trim().isEmpty ? 'Student Profile' : name.trim(),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: () => Navigator.of(dialogContext).pop(),
+                        icon: const Icon(
+                          Icons.close_rounded,
+                          color: Colors.white,
+                        ),
+                        style: IconButton.styleFrom(
+                          backgroundColor: Colors.white.withValues(alpha: 0.14),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(10, 4, 10, 10),
+                    child: InteractiveViewer(
+                      minScale: 0.8,
+                      maxScale: 4.0,
+                      child: Center(
+                        child: Image.network(
+                          resolved,
+                          fit: BoxFit.contain,
+                          loadingBuilder: (context, child, progress) {
+                            if (progress == null) return child;
+                            return const Center(
+                              child: CircularProgressIndicator(
+                                color: Colors.white,
+                              ),
+                            );
+                          },
+                          errorBuilder: (context, error, stackTrace) =>
+                              const Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(
+                                    Icons.broken_image_outlined,
+                                    color: Colors.white70,
+                                    size: 42,
+                                  ),
+                                  SizedBox(height: 8),
+                                  Text(
+                                    'Failed to load profile photo',
+                                    style: TextStyle(
+                                      color: Colors.white70,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _studentAvatarWithPreview({
+    required String name,
+    required String? photoUrl,
+    required double size,
+  }) {
+    final source = (photoUrl ?? '').trim();
+    final hasPhoto = source.isNotEmpty;
+    final avatar = _studentAvatar(name: name, photoUrl: photoUrl, size: size);
+    if (!hasPhoto) return avatar;
+
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        onTap: () =>
+            _openStudentProfilePhotoViewer(name: name, photoUrl: source),
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            avatar,
+            Positioned(
+              right: -2,
+              bottom: -2,
+              child: Container(
+                width: (size * 0.30).clamp(14.0, 18.0),
+                height: (size * 0.30).clamp(14.0, 18.0),
+                decoration: BoxDecoration(
+                  color: primaryColor,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white, width: 1.2),
+                ),
+                child: Icon(
+                  Icons.open_in_full_rounded,
+                  color: Colors.white,
+                  size: (size * 0.15).clamp(8.0, 11.0),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   InputDecoration _decor({
@@ -288,7 +683,7 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
     if (_loading) return;
     if (_studentUid == null) {
       setState(() => _studentSelectionError = true);
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Please select a student first.'),
           backgroundColor: Colors.red,
@@ -300,7 +695,7 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
     }
     if (_commentsCtrl.text.trim().isEmpty) {
       setState(() => _notesError = true);
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Please add notes about the student situation.'),
           backgroundColor: Colors.red,
@@ -318,7 +713,7 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
       final referredByName = _teacherName.isNotEmpty
           ? _teacherName
           : (_teacherEmail.isNotEmpty ? _teacherEmail : 'Professor');
-      await _workflowService.submitProfessorReferral(
+      final caseId = await _workflowService.submitProfessorReferral(
         studentUid: _studentUid ?? '',
         studentName: _studentName ?? '',
         studentNo: _studentNo ?? '',
@@ -339,17 +734,36 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
         comments: _commentsCtrl.text.trim(),
       );
 
+      final caseDoc = await FirebaseFirestore.instance
+          .collection('counseling_cases')
+          .doc(caseId)
+          .get();
+      final caseData = caseDoc.data() ?? <String, dynamic>{};
+      final isScheduled = CounselingCaseState.isScheduled(caseData);
+      final isAwaitingCallSlip = CounselingCaseState.isAwaitingCallSlip(
+        caseData,
+      );
+      final isBookingRequired = CounselingCaseState.isBookingRequired(caseData);
+
+      final message = isScheduled
+          ? "Referral added to the student's active counseling case. The student already has a scheduled appointment."
+          : isBookingRequired
+          ? "Referral linked to the student's active counseling case. Booking is already open for the student."
+          : isAwaitingCallSlip
+          ? 'Counseling referral submitted. Counseling admin will send a call slip to open booking.'
+          : 'Counseling referral submitted successfully.';
+
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Counseling referral submitted successfully.'),
+      AppScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(message),
           backgroundColor: primaryColor,
         ),
       );
       _resetFormAfterSubmit();
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Submission failed: $error'),
           backgroundColor: Colors.red,
@@ -627,6 +1041,7 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
       _studentName = null;
       _studentNo = null;
       _studentProgram = null;
+      _studentPhotoUrl = null;
       _moodsSelected.clear();
       _schoolSelected.clear();
       _relationshipSelected.clear();
@@ -640,6 +1055,7 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
       _otherHomeCtrl.clear();
       _commentsCtrl.clear();
     });
+    _removeStudentSearchOverlay();
     _syncUnsavedState();
   }
 
@@ -649,9 +1065,12 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
       _studentName = student['name'];
       _studentNo = student['studentNo'];
       _studentProgram = student['programId'];
+      _studentPhotoUrl = student['photoUrl'];
       _studentSearchCtrl.clear();
       _studentSelectionError = false;
     });
+    _removeStudentSearchOverlay();
+    FocusScope.of(context).unfocus();
     _syncUnsavedState();
   }
 
@@ -661,9 +1080,11 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
       _studentName = null;
       _studentNo = null;
       _studentProgram = null;
+      _studentPhotoUrl = null;
       _studentSearchCtrl.clear();
       _studentSelectionError = false;
     });
+    _removeStudentSearchOverlay();
     _syncUnsavedState();
   }
 
@@ -720,6 +1141,8 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
   void dispose() {
     _detachUnsavedController(widget.unsavedChangesController);
     _studentSearchCtrl.removeListener(_syncUnsavedState);
+    _studentSearchCtrl.removeListener(_handleStudentSearchChanged);
+    _studentSearchFocus.removeListener(_handleStudentSearchFocusChanged);
     _otherMoodCtrl.removeListener(_syncUnsavedState);
     _otherSchoolCtrl.removeListener(_syncUnsavedState);
     _otherRelationshipCtrl.removeListener(_syncUnsavedState);
@@ -731,6 +1154,7 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
     _otherRelationshipCtrl.dispose();
     _otherHomeCtrl.dispose();
     _commentsCtrl.dispose();
+    _removeStudentSearchOverlay();
     _studentSearchFocus.dispose();
     _notesFocus.dispose();
     super.dispose();
@@ -741,15 +1165,14 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
     return LayoutBuilder(
       builder: (context, c) {
         final width = c.maxWidth;
-        final scale = (width / 430).clamp(1.0, 1.16);
-        final pad = (16.0 * scale).clamp(16.0, 24.0);
+        final compactModal = width < 760;
+        final scale = (width / 430).clamp(0.90, 1.16);
+        final pad = compactModal
+            ? (10.0 * scale).clamp(8.0, 14.0)
+            : (16.0 * scale).clamp(16.0, 24.0);
         final bool desktop = width >= 1100;
         final bool tablet = width >= 760;
         final bool stackActions = width < 640;
-        final bool showSuggestions = _studentSearchCtrl.text.trim().isNotEmpty;
-        final suggestions = showSuggestions
-            ? _filterStudents(_studentSearchCtrl.text)
-            : <Map<String, String>>[];
 
         return PopScope(
           canPop: !_hasDraftChanges,
@@ -761,100 +1184,66 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
             }
           },
           child: Scaffold(
-            backgroundColor: bg,
+            backgroundColor: Colors.white,
             body: SafeArea(
               child: SingleChildScrollView(
-                padding: EdgeInsets.fromLTRB(pad, 14 * scale, pad, 20 * scale),
+                padding: EdgeInsets.fromLTRB(
+                  pad,
+                  compactModal ? 8 * scale : 14 * scale,
+                  pad,
+                  compactModal ? 12 * scale : 20 * scale,
+                ),
                 child: Center(
                   child: ConstrainedBox(
                     constraints: BoxConstraints(maxWidth: desktop ? 1160 : 920),
-                    child: Container(
+                    child: SizedBox(
                       width: double.infinity,
-                      padding: EdgeInsets.all(14 * scale),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.55),
-                        borderRadius: BorderRadius.circular(26 * scale),
-                        border: Border.all(
-                          color: Colors.black.withValues(alpha: 0.05),
-                        ),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withValues(alpha: 0.06),
-                            blurRadius: 18,
-                            offset: const Offset(0, 10),
-                          ),
-                        ],
-                      ),
-                      child: Container(
-                        width: double.infinity,
-                        padding: EdgeInsets.all(14 * scale),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(22 * scale),
-                        ),
-                        child: Form(
-                          key: _formKey,
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Center(
-                                child: Text(
-                                  'Counseling Referral Form',
-                                  style: TextStyle(
-                                    color: textDark,
-                                    fontWeight: FontWeight.w900,
-                                    fontSize: (18 * scale).clamp(18.0, 22.0),
-                                  ),
-                                ),
+                      child: Form(
+                        key: _formKey,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            _buildSectionCard(
+                              title: 'Student Selection',
+                              subtitle:
+                                  'Please select the student who needs support.',
+                              scale: scale,
+                              child: _buildStudentSelector(scale),
+                            ),
+                            SizedBox(height: 12 * scale),
+                            _buildSectionCard(
+                              title: 'Student Information & Referral Type',
+                              subtitle:
+                                  'Review selected student details and confirm the referral type.',
+                              scale: scale,
+                              child: _buildStudentInfoTypeSplit(
+                                scale,
+                                split: desktop,
                               ),
-                              SizedBox(height: 6 * scale),
-                              Center(
-                                child: Text(
-                                  'Do you have concerns about a student? We are here to help.',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    color: hintColor,
-                                    fontWeight: FontWeight.w700,
-                                    fontSize: (12.5 * scale).clamp(12.5, 14.0),
-                                  ),
-                                ),
+                            ),
+                            SizedBox(height: 12 * scale),
+                            _buildSectionCard(
+                              title: 'Notes',
+                              subtitle:
+                                  'Tell us the student\'s current situation so we can respond well.',
+                              scale: scale,
+                              child: _buildCommentsSection(scale),
+                            ),
+                            SizedBox(height: 12 * scale),
+                            _buildSectionCard(
+                              title: 'Concern Checklist',
+                              subtitle:
+                                  'Optional: select any areas of concern to help counseling prepare support.',
+                              scale: scale,
+                              child: _buildReasonsGrid(
+                                scale,
+                                tablet,
+                                collapsible: !tablet,
                               ),
-                              SizedBox(height: 14 * scale),
-                              _buildSectionCard(
-                                title: 'Student Selection & Referral Type',
-                                subtitle:
-                                    'Please select the student who needs support and choose the referral type.',
-                                scale: scale,
-                                child: _buildStudentTypeSplit(
-                                  scale,
-                                  suggestions,
-                                  split: desktop,
-                                ),
-                              ),
-                              SizedBox(height: 12 * scale),
-                              _buildSectionCard(
-                                title: 'Notes',
-                                subtitle:
-                                    'Tell us the student\'s current situation so we can respond well.',
-                                scale: scale,
-                                child: _buildCommentsSection(scale),
-                              ),
-                              SizedBox(height: 12 * scale),
-                              _buildSectionCard(
-                                title: 'Concern Checklist',
-                                subtitle:
-                                    'Optional: select any areas of concern to help counseling prepare support.',
-                                scale: scale,
-                                child: _buildReasonsGrid(
-                                  scale,
-                                  tablet,
-                                  collapsible: !tablet,
-                                ),
-                              ),
-                              SizedBox(height: 14 * scale),
-                              _buildActions(scale, stacked: stackActions),
-                            ],
-                          ),
+                            ),
+                            SizedBox(height: 14 * scale),
+                            _buildActions(scale, stacked: stackActions),
+                          ],
                         ),
                       ),
                     ),
@@ -878,9 +1267,9 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
       width: double.infinity,
       padding: EdgeInsets.all(12 * scale),
       decoration: BoxDecoration(
-        color: const Color(0xFFF7FBF7),
+        color: Colors.white,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: primaryColor.withValues(alpha: 0.12)),
+        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -909,16 +1298,12 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
     );
   }
 
-  Widget _buildStudentTypeSplit(
-    double scale,
-    List<Map<String, String>> suggestions, {
-    required bool split,
-  }) {
+  Widget _buildStudentInfoTypeSplit(double scale, {required bool split}) {
     if (split) {
       return Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Expanded(flex: 7, child: _buildStudentSelector(scale, suggestions)),
+          Expanded(flex: 7, child: _buildStudentInfoCard(scale)),
           SizedBox(width: 10 * scale),
           Expanded(flex: 3, child: _buildTopInfoSection(scale)),
         ],
@@ -927,7 +1312,7 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
 
     return Column(
       children: [
-        _buildStudentSelector(scale, suggestions),
+        _buildStudentInfoCard(scale),
         SizedBox(height: 10 * scale),
         _buildTopInfoSection(scale),
       ],
@@ -935,145 +1320,156 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
   }
 
   Widget _buildTopInfoSection(double scale) {
-    return Container(
-      padding: EdgeInsets.all(10 * scale),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+    return DropdownButtonFormField<String>(
+      initialValue: _counselingType,
+      decoration: _decor(
+        label: 'Referral Type',
+        icon: Icons.rule_folder_outlined,
       ),
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              DropdownButtonFormField<String>(
-                initialValue: _counselingType,
-                decoration: _decor(
-                  label: 'Referral Type',
-                  icon: Icons.rule_folder_outlined,
-                ),
-                items: const [
-                  DropdownMenuItem(value: 'academic', child: Text('Academic')),
-                  DropdownMenuItem(value: 'personal', child: Text('Personal')),
-                ],
-                onChanged: (value) {
-                  if (value == null) return;
-                  setState(() => _counselingType = value);
-                  _syncUnsavedState();
-                },
-              ),
-            ],
-          );
-        },
-      ),
+      items: const [
+        DropdownMenuItem(value: 'academic', child: Text('Academic')),
+        DropdownMenuItem(value: 'personal', child: Text('Personal')),
+      ],
+      onChanged: (value) {
+        if (value == null) return;
+        setState(() => _counselingType = value);
+        _syncUnsavedState();
+      },
     );
   }
 
-  Widget _buildStudentSelector(
-    double scale,
-    List<Map<String, String>> suggestions,
-  ) {
-    return Container(
-      padding: EdgeInsets.all(10 * scale),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          TextFormField(
-            key: _studentSearchFieldKey,
-            controller: _studentSearchCtrl,
-            focusNode: _studentSearchFocus,
-            enabled: !_loadingStudents,
-            onChanged: (_) {
-              setState(() => _studentSelectionError = false);
-              _syncUnsavedState();
-            },
-            decoration: _decor(
-              label: _loadingStudents
-                  ? 'Loading students...'
-                  : 'Search student by name, number, or program',
-              icon: Icons.search_rounded,
-              errorText: _studentSelectionError
-                  ? 'Please select a student.'
-                  : null,
+  Widget _buildStudentSelector(double scale) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        CompositedTransformTarget(
+          link: _studentSearchLayerLink,
+          child: Container(
+            key: _studentSearchOverlayAnchorKey,
+            child: TextFormField(
+              key: _studentSearchFieldKey,
+              controller: _studentSearchCtrl,
+              focusNode: _studentSearchFocus,
+              enabled: !_loadingStudents,
+              onChanged: (_) {
+                setState(() => _studentSelectionError = false);
+                _syncUnsavedState();
+                _updateStudentSearchOverlay();
+              },
+              decoration: _decor(
+                label: _loadingStudents
+                    ? 'Loading students...'
+                    : 'Search student by name, number, or program',
+                icon: Icons.search_rounded,
+                errorText: _studentSelectionError
+                    ? 'Please select a student.'
+                    : null,
+              ),
             ),
           ),
-          if (_studentUid != null) ...[
-            SizedBox(height: 10 * scale),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildStudentInfoCard(double scale) {
+    final hasStudent = _studentUid != null;
+    if (!hasStudent) {
+      return Container(
+        width: double.infinity,
+        padding: EdgeInsets.all(12 * scale),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.black.withValues(alpha: 0.10)),
+        ),
+        child: Row(
+          children: [
             Container(
-              width: double.infinity,
-              padding: EdgeInsets.all(10 * scale),
+              width: 32,
+              height: 32,
               decoration: BoxDecoration(
-                color: primaryColor.withValues(alpha: 0.08),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: primaryColor.withValues(alpha: 0.24)),
+                color: primaryColor.withValues(alpha: 0.10),
+                borderRadius: BorderRadius.circular(10),
               ),
-              child: Row(
-                children: [
-                  const Icon(Icons.check_circle, color: primaryColor, size: 18),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      '${_studentName ?? ''} | ${_studentNo ?? 'No ID'}'
-                      '${(_studentProgram ?? '').isNotEmpty ? ' | ${_studentProgram!}' : ''}',
-                      style: const TextStyle(
-                        color: textDark,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                  ),
-                  TextButton(
-                    onPressed: _clearSelectedStudent,
-                    child: const Text('Clear'),
-                  ),
-                ],
+              child: const Icon(
+                Icons.info_outline_rounded,
+                color: primaryColor,
+              ),
+            ),
+            const SizedBox(width: 10),
+            const Expanded(
+              child: Text(
+                'Select a student to view their profile details.',
+                style: TextStyle(color: hintColor, fontWeight: FontWeight.w700),
               ),
             ),
           ],
-          if (suggestions.isNotEmpty) ...[
-            SizedBox(height: 10 * scale),
-            Container(
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.black.withValues(alpha: 0.12)),
-              ),
-              child: Column(
-                children: suggestions.map((student) {
-                  final name = student['name'] ?? '';
-                  final studentNo = student['studentNo'] ?? 'No ID';
-                  final programId = student['programId'] ?? '';
-                  return ListTile(
-                    dense: true,
-                    onTap: () => _selectStudent(student),
-                    leading: const Icon(
-                      Icons.person_rounded,
-                      color: primaryColor,
-                    ),
-                    title: Text(
-                      name,
-                      style: const TextStyle(
-                        color: textDark,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    subtitle: Text(
-                      '$studentNo${programId.isNotEmpty ? ' | $programId' : ''}',
-                      style: const TextStyle(
-                        color: hintColor,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  );
-                }).toList(),
-              ),
+        ),
+      );
+    }
+
+    return Container(
+      width: double.infinity,
+      padding: EdgeInsets.all(10 * scale),
+      decoration: BoxDecoration(
+        color: primaryColor.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(14 * scale),
+        border: Border.all(color: primaryColor.withValues(alpha: 0.22)),
+      ),
+      child: Row(
+        children: [
+          _studentAvatarWithPreview(
+            name: _studentName ?? 'Student',
+            photoUrl: _studentPhotoUrl,
+            size: (52 * scale).clamp(46.0, 58.0),
+          ),
+          SizedBox(width: 10 * scale),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  (_studentName ?? '').trim().isEmpty
+                      ? 'Selected Student'
+                      : (_studentName ?? '').trim(),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: textDark,
+                    fontWeight: FontWeight.w900,
+                    fontSize: (14.2 * scale).clamp(14.2, 16.0),
+                  ),
+                ),
+                SizedBox(height: 2 * scale),
+                Text(
+                  [
+                    if ((_studentNo ?? '').trim().isNotEmpty)
+                      (_studentNo ?? '').trim(),
+                    if ((_studentProgram ?? '').trim().isNotEmpty)
+                      (_studentProgram ?? '').trim(),
+                  ].join(' | '),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: hintColor,
+                    fontWeight: FontWeight.w700,
+                    fontSize: (12.4 * scale).clamp(12.4, 13.8),
+                  ),
+                ),
+              ],
             ),
-          ],
+          ),
+          SizedBox(width: 8 * scale),
+          TextButton(
+            onPressed: _clearSelectedStudent,
+            style: TextButton.styleFrom(
+              minimumSize: const Size(0, 0),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            ),
+            child: const Text('Clear'),
+          ),
         ],
       ),
     );
@@ -1256,40 +1652,26 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
   }
 
   Widget _buildCommentsSection(double scale) {
-    return Container(
-      width: double.infinity,
-      padding: EdgeInsets.all(10 * scale),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          TextFormField(
-            key: _notesFieldKey,
-            controller: _commentsCtrl,
-            focusNode: _notesFocus,
-            minLines: 4,
-            maxLines: 6,
-            onChanged: (value) {
-              if (_notesError && value.trim().isNotEmpty) {
-                setState(() => _notesError = false);
-              }
-              _syncUnsavedState();
-            },
-            decoration: _decor(
-              label: 'What is the student\'s current situation?',
-              icon: Icons.notes_rounded,
-              hint:
-                  'Share key details. You may include moods/behavior, school, relationship, and home concerns.',
-              errorText: _notesError
-                  ? 'Please add notes so counseling can assist the student.'
-                  : null,
-            ),
-          ),
-        ],
+    return TextFormField(
+      key: _notesFieldKey,
+      controller: _commentsCtrl,
+      focusNode: _notesFocus,
+      minLines: 4,
+      maxLines: 6,
+      onChanged: (value) {
+        if (_notesError && value.trim().isNotEmpty) {
+          setState(() => _notesError = false);
+        }
+        _syncUnsavedState();
+      },
+      decoration: _decor(
+        label: 'What is the student\'s current situation?',
+        icon: Icons.notes_rounded,
+        hint:
+            'Share key details. You may include moods/behavior, school, relationship, and home concerns.',
+        errorText: _notesError
+            ? 'Please add notes so counseling can assist the student.'
+            : null,
       ),
     );
   }

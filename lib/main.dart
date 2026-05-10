@@ -14,6 +14,7 @@ import 'pages/shared/landing_page.dart';
 import 'pages/shared/splash_screen_page.dart';
 import 'pages/shared/temp_login_page.dart';
 import 'pages/shared/welcome_screen_page.dart';
+import 'services/push_notifications_service.dart';
 
 class _RootGate extends StatelessWidget {
   const _RootGate();
@@ -56,6 +57,7 @@ class _RootGate extends StatelessWidget {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  await PushNotificationsService.instance.initialize();
   runApp(const MyApp());
 }
 
@@ -65,6 +67,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     const brandGreen = Color(0xFF1B5E20);
+    final baseScheme = ColorScheme.fromSeed(seedColor: brandGreen);
     final roundedButtonShape = RoundedRectangleBorder(
       borderRadius: BorderRadius.circular(16),
     );
@@ -76,7 +79,38 @@ class MyApp extends StatelessWidget {
       supportedLocales: FlutterQuillLocalizations.supportedLocales,
       theme: ThemeData(
         useMaterial3: true,
-        colorSchemeSeed: brandGreen,
+        colorScheme: baseScheme.copyWith(
+          surface: Colors.white,
+          surfaceContainer: Colors.white,
+          surfaceContainerHigh: Colors.white,
+          surfaceContainerHighest: Colors.white,
+        ),
+        scaffoldBackgroundColor: Colors.white,
+        cardColor: Colors.white,
+        dialogTheme: const DialogThemeData(
+          backgroundColor: Colors.white,
+          surfaceTintColor: Colors.transparent,
+        ),
+        cardTheme: const CardThemeData(
+          color: Colors.white,
+          surfaceTintColor: Colors.transparent,
+        ),
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: Colors.white,
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(color: Colors.grey.shade300),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(color: Colors.grey.shade300),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: const BorderSide(color: brandGreen, width: 1.6),
+          ),
+        ),
         elevatedButtonTheme: ElevatedButtonThemeData(
           style: ElevatedButton.styleFrom(
             minimumSize: const Size(0, 50),

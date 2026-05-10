@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:math';
 import 'dart:async';
 import 'dart:io';
@@ -7,12 +8,15 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_storage/firebase_storage.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import '../shared/widgets/modern_table_layout.dart';
 import '../shared/widgets/app_layout_tokens.dart';
+import '../shared/widgets/responsive_layout_tokens.dart';
+import 'package:apps/pages/shared/widgets/app_inline_notice.dart';
 
 class UserManagementPage extends StatefulWidget {
   final bool studentsOnlyScope;
@@ -33,18 +37,20 @@ class UserManagementPage extends StatefulWidget {
     this.headerTitle,
     this.headerSubtitle,
     this.initialSelectedUserId,
-    this.pageBackgroundColor = const Color(0xFFF6FAF6),
+    this.pageBackgroundColor = Colors.white,
   });
 
   @override
   State<UserManagementPage> createState() => _UserManagementPageState();
 }
 
+enum _HeaderQuickAction { importStudents, createUser }
+
 class _UserManagementPageState extends State<UserManagementPage>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
   late int _lastTabIndex;
-  late final Stream<QuerySnapshot<Map<String, dynamic>>> _allUsersStream;
+  late Stream<QuerySnapshot<Map<String, dynamic>>> _allUsersStream;
   final _searchCtrl = TextEditingController();
   Timer? _searchDebounce;
   String _searchQuery = '';
@@ -72,7 +78,6 @@ class _UserManagementPageState extends State<UserManagementPage>
   final _detailStudentNoCtrl = TextEditingController();
   final _detailCollegeCtrl = TextEditingController();
   final _detailProgramCtrl = TextEditingController();
-  final _detailYearLevelCtrl = TextEditingController();
   final _detailEmployeeNoCtrl = TextEditingController();
   final _detailDepartmentCtrl = TextEditingController();
   String _detailRole = '';
@@ -95,13 +100,14 @@ class _UserManagementPageState extends State<UserManagementPage>
       const [];
   bool _detailProgramLoading = false;
   String? _detailSelectedProgramId;
-  int? _detailSelectedYearLevel;
   int _detailProgramLoadSeq = 0;
   int _detailCollegeLoadSeq = 0;
   String _detailCollegeName = '';
   final Map<String, String> _detailCollegeNameCache = {};
   List<QueryDocumentSnapshot<Map<String, dynamic>>> _lastUserDocs = const [];
   bool _detailPhotoUploading = false;
+  bool _isRefreshingTable = false;
+  final Map<String, Future<String>> _resolvedPhotoUrlCache = {};
   Object? _filterCacheSourceToken;
   String _filterCacheType = '';
   String _filterCacheQuery = '';
@@ -113,7 +119,7 @@ class _UserManagementPageState extends State<UserManagementPage>
 
   // Design Theme
   static const primaryColor = Color(0xFF1B5E20);
-  static const backgroundColor = Color(0xFFF6FAF6);
+  static const backgroundColor = Colors.white;
   static const textDark = Color(0xFF1F2A1F);
   static const hintColor = Color(0xFF6D7F62);
 
@@ -234,7 +240,6 @@ class _UserManagementPageState extends State<UserManagementPage>
     _detailStudentNoCtrl.dispose();
     _detailCollegeCtrl.dispose();
     _detailProgramCtrl.dispose();
-    _detailYearLevelCtrl.dispose();
     _detailEmployeeNoCtrl.dispose();
     _detailDepartmentCtrl.dispose();
     _visibleUserDocs.dispose();
@@ -301,6 +306,35 @@ class _UserManagementPageState extends State<UserManagementPage>
         final adminDept =
             (_currentUserData?['employeeProfile']?['department'] ?? '')
                 .toString();
+        final pendingTotalCount =
+            _countPendingByVerification(
+              docs: sourceDocs,
+              verification: 'pending_email_verification',
+              query: q,
+              adminRole: adminRole,
+              adminDept: adminDept,
+            ) +
+            _countPendingByVerification(
+              docs: sourceDocs,
+              verification: 'pending_profile',
+              query: q,
+              adminRole: adminRole,
+              adminDept: adminDept,
+            ) +
+            _countPendingByVerification(
+              docs: sourceDocs,
+              verification: 'pending_approval',
+              query: q,
+              adminRole: adminRole,
+              adminDept: adminDept,
+            ) +
+            _countPendingByVerification(
+              docs: sourceDocs,
+              verification: 'rejected',
+              query: q,
+              adminRole: adminRole,
+              adminDept: adminDept,
+            );
 
         final common = TabBar(
           controller: _tabController,
@@ -321,10 +355,7 @@ class _UserManagementPageState extends State<UserManagementPage>
           ),
           tabs: showStudentsOnly
               ? [
-                  Tab(
-                    text:
-                        'Pending (${_countForType(docs: sourceDocs, type: 'pending', query: q, adminRole: adminRole, adminDept: adminDept)})',
-                  ),
+                  Tab(text: 'Pending ($pendingTotalCount)'),
                   Tab(
                     text:
                         'Active (${_countForType(docs: sourceDocs, type: 'active_students', query: q, adminRole: adminRole, adminDept: adminDept)})',
@@ -375,91 +406,228 @@ class _UserManagementPageState extends State<UserManagementPage>
     return _studentsOnlyListType() == 'pending';
   }
 
+  int _countPendingByVerification({
+    required List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+    required String verification,
+    required String query,
+    required String adminRole,
+    required String adminDept,
+  }) {
+    return docs.where((doc) {
+      final data = doc.data();
+      final role = (data['role'] ?? '').toString().trim().toLowerCase();
+      if (role != 'student') return false;
+
+      final userDept = (data['employeeProfile']?['department'] ?? '')
+          .toString();
+      final studentCollege = (data['studentProfile']?['collegeId'] ?? '')
+          .toString();
+      if (adminRole == 'department_admin' || adminRole == 'dean') {
+        if (studentCollege != adminDept && userDept != adminDept) {
+          return false;
+        }
+      }
+
+      final accountStatus = _readAccountStatus(data, role: role);
+      final allowInactiveForRejected = verification == 'rejected';
+      if (!allowInactiveForRejected && accountStatus != 'active') return false;
+
+      final studentVerification = _readStudentVerification(data, role: role);
+      final matchesVerification = verification == 'pending_email_verification'
+          ? (_hasPendingEmailVerification(data, role: role) ||
+                studentVerification == verification)
+          : studentVerification == verification;
+      if (!matchesVerification) return false;
+
+      return _matchesSearch(data, query);
+    }).length;
+  }
+
   Widget _buildPendingStudentFilterBar() {
-    const filterRadius = AppRadii.md;
+    return ValueListenableBuilder<
+      List<QueryDocumentSnapshot<Map<String, dynamic>>>
+    >(
+      valueListenable: _allUserDocs,
+      builder: (context, docs, _) {
+        final sourceDocs = docs.isNotEmpty ? docs : _lastUserDocs;
+        final q = _searchQuery;
+        final adminRole = (_currentUserData?['role'] ?? '')
+            .toString()
+            .trim()
+            .toLowerCase();
+        final adminDept =
+            (_currentUserData?['employeeProfile']?['department'] ?? '')
+                .toString();
 
-    Widget statusTab({required String value, required String label}) {
-      final selected = _pendingStudentFilter == value;
-      return InkWell(
-        borderRadius: BorderRadius.circular(filterRadius),
-        onTap: () {
-          if (_pendingStudentFilter == value) return;
-          setState(() {
-            _pendingStudentFilter = value;
-            _invalidateFilterCache();
-          });
-        },
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 160),
-          curve: Curves.easeOut,
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-          decoration: BoxDecoration(
-            color: selected
-                ? primaryColor.withValues(alpha: 0.12)
-                : Colors.white,
+        final pendingEmailCount = _countPendingByVerification(
+          docs: sourceDocs,
+          verification: 'pending_email_verification',
+          query: q,
+          adminRole: adminRole,
+          adminDept: adminDept,
+        );
+        final pendingProfileCount = _countPendingByVerification(
+          docs: sourceDocs,
+          verification: 'pending_profile',
+          query: q,
+          adminRole: adminRole,
+          adminDept: adminDept,
+        );
+        final pendingApprovalCount = _countPendingByVerification(
+          docs: sourceDocs,
+          verification: 'pending_approval',
+          query: q,
+          adminRole: adminRole,
+          adminDept: adminDept,
+        );
+        final rejectedCount = _countPendingByVerification(
+          docs: sourceDocs,
+          verification: 'rejected',
+          query: q,
+          adminRole: adminRole,
+          adminDept: adminDept,
+        );
+
+        const filterRadius = AppRadii.md;
+
+        Widget statusTab({required String value, required String label}) {
+          final selected = _pendingStudentFilter == value;
+          return InkWell(
             borderRadius: BorderRadius.circular(filterRadius),
-            border: Border.all(
-              color: selected
-                  ? primaryColor.withValues(alpha: 0.36)
-                  : Colors.black.withValues(alpha: 0.10),
-            ),
-          ),
-          child: Text(
-            label,
-            style: TextStyle(
-              color: selected ? primaryColor : textDark,
-              fontWeight: selected ? FontWeight.w900 : FontWeight.w700,
-              fontSize: 13,
-            ),
-          ),
-        ),
-      );
-    }
-
-    return Container(
-      color: widget.pageBackgroundColor,
-      padding: const EdgeInsets.fromLTRB(
-        AppSpacing.lg,
-        AppSpacing.xs,
-        AppSpacing.xl,
-        AppSpacing.sm,
-      ),
-      child: Align(
-        alignment: Alignment.centerLeft,
-        child: SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              statusTab(
-                value: 'pending_email_verification',
-                label: 'Pending Email',
+            onTap: () {
+              if (_pendingStudentFilter == value) return;
+              setState(() {
+                _pendingStudentFilter = value;
+                _invalidateFilterCache();
+              });
+            },
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 160),
+              curve: Curves.easeOut,
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+              decoration: BoxDecoration(
+                color: selected
+                    ? primaryColor.withValues(alpha: 0.12)
+                    : Colors.white,
+                borderRadius: BorderRadius.circular(filterRadius),
+                border: Border.all(
+                  color: selected
+                      ? primaryColor.withValues(alpha: 0.36)
+                      : Colors.black.withValues(alpha: 0.10),
+                ),
               ),
-              const SizedBox(width: 8),
-              statusTab(value: 'pending_profile', label: 'Pending Profile'),
-              const SizedBox(width: 8),
-              statusTab(value: 'pending_approval', label: 'Pending Approval'),
-            ],
+              child: Text(
+                label,
+                style: TextStyle(
+                  color: selected ? primaryColor : textDark,
+                  fontWeight: selected ? FontWeight.w900 : FontWeight.w700,
+                  fontSize: 13,
+                ),
+              ),
+            ),
+          );
+        }
+
+        return Container(
+          color: widget.pageBackgroundColor,
+          padding: const EdgeInsets.fromLTRB(
+            AppSpacing.lg,
+            AppSpacing.xs,
+            AppSpacing.xl,
+            AppSpacing.sm,
           ),
-        ),
-      ),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  statusTab(
+                    value: 'pending_email_verification',
+                    label: 'Pending Email ($pendingEmailCount)',
+                  ),
+                  const SizedBox(width: 8),
+                  statusTab(
+                    value: 'pending_profile',
+                    label: 'Pending Profile ($pendingProfileCount)',
+                  ),
+                  const SizedBox(width: 8),
+                  statusTab(
+                    value: 'pending_approval',
+                    label: 'Pending Approval ($pendingApprovalCount)',
+                  ),
+                  const SizedBox(width: 8),
+                  statusTab(
+                    value: 'rejected',
+                    label: 'Rejected ($rejectedCount)',
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 
   String _displayName(Map<String, dynamic> data) {
+    final first = (data['firstName'] ?? '').toString().trim();
+    final middle = (data['middleName'] ?? '').toString().trim();
+    final last = (data['lastName'] ?? '').toString().trim();
+    final full = [
+      first,
+      middle,
+      last,
+    ].where((part) => part.isNotEmpty).join(' ').trim();
+    if (full.isNotEmpty) return full;
     final dn = (data['displayName'] ?? '').toString().trim();
     if (dn.isNotEmpty) return dn;
-    final first = (data['firstName'] ?? '').toString().trim();
-    final last = (data['lastName'] ?? '').toString().trim();
-    final full = ('$first $last').trim();
-    if (full.isNotEmpty) return full;
     final email = (data['email'] ?? '').toString().trim();
     if (email.contains('@')) return email.split('@').first;
     return '--';
   }
 
   String _photoUrl(Map<String, dynamic> data) {
-    return (data['photoUrl'] ?? '').toString().trim();
+    final direct = (data['photoUrl'] ?? '').toString().trim();
+    if (direct.isNotEmpty) return direct;
+
+    final profilePhoto = (data['profilePhotoUrl'] ?? '').toString().trim();
+    if (profilePhoto.isNotEmpty) return profilePhoto;
+
+    final studentProfile = data['studentProfile'] as Map<String, dynamic>?;
+    final nestedStudentPhoto = (studentProfile?['photoUrl'] ?? '')
+        .toString()
+        .trim();
+    if (nestedStudentPhoto.isNotEmpty) return nestedStudentPhoto;
+
+    final employeeProfile = data['employeeProfile'] as Map<String, dynamic>?;
+    final nestedEmployeePhoto = (employeeProfile?['photoUrl'] ?? '')
+        .toString()
+        .trim();
+    if (nestedEmployeePhoto.isNotEmpty) return nestedEmployeePhoto;
+
+    return '';
+  }
+
+  bool _isHttpPhotoUrl(String value) {
+    return value.startsWith('http://') || value.startsWith('https://');
+  }
+
+  Future<String> _resolvePhotoUrl(String source) async {
+    final value = source.trim();
+    if (value.isEmpty) return '';
+    if (_isHttpPhotoUrl(value)) return value;
+    try {
+      if (value.startsWith('gs://')) {
+        return await FirebaseStorage.instance
+            .refFromURL(value)
+            .getDownloadURL();
+      }
+      return await FirebaseStorage.instance.ref(value).getDownloadURL();
+    } catch (_) {
+      return '';
+    }
   }
 
   Widget _buildUserAvatar(
@@ -470,20 +638,52 @@ class _UserManagementPageState extends State<UserManagementPage>
   }) {
     final photoUrl = _photoUrl(data);
     final initial = name.trim().isNotEmpty ? name.trim()[0].toUpperCase() : '?';
+    Widget fallbackInitial() {
+      return Text(
+        initial,
+        style: TextStyle(
+          fontSize: fontSize,
+          fontWeight: FontWeight.bold,
+          color: primaryColor,
+        ),
+      );
+    }
+
+    if (photoUrl.isEmpty) {
+      return CircleAvatar(
+        radius: radius,
+        backgroundColor: primaryColor.withValues(alpha: 0.12),
+        child: fallbackInitial(),
+      );
+    }
+
+    if (_isHttpPhotoUrl(photoUrl)) {
+      return CircleAvatar(
+        radius: radius,
+        backgroundColor: primaryColor.withValues(alpha: 0.12),
+        foregroundImage: NetworkImage(photoUrl),
+        child: null,
+      );
+    }
+
     return CircleAvatar(
       radius: radius,
       backgroundColor: primaryColor.withValues(alpha: 0.12),
-      foregroundImage: photoUrl.isEmpty ? null : NetworkImage(photoUrl),
-      child: photoUrl.isEmpty
-          ? Text(
-              initial,
-              style: TextStyle(
-                fontSize: fontSize,
-                fontWeight: FontWeight.bold,
-                color: primaryColor,
-              ),
-            )
-          : null,
+      child: FutureBuilder<String>(
+        future: _resolvedPhotoUrlCache.putIfAbsent(
+          photoUrl,
+          () => _resolvePhotoUrl(photoUrl),
+        ),
+        builder: (context, snapshot) {
+          final resolvedUrl = (snapshot.data ?? '').trim();
+          if (resolvedUrl.isEmpty) return fallbackInitial();
+          return CircleAvatar(
+            radius: radius,
+            backgroundColor: Colors.transparent,
+            foregroundImage: NetworkImage(resolvedUrl),
+          );
+        },
+      ),
     );
   }
 
@@ -567,7 +767,7 @@ class _UserManagementPageState extends State<UserManagementPage>
     if (!_isStudentRole(targetRole)) return;
     if (targetVerificationStatus != 'pending_approval') {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text(
             'Profile photo can only be changed while student is pending approval.',
@@ -676,12 +876,12 @@ class _UserManagementPageState extends State<UserManagementPage>
       );
 
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Profile photo updated successfully.')),
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Failed to update profile photo: $e'),
           backgroundColor: Colors.red,
@@ -698,16 +898,6 @@ class _UserManagementPageState extends State<UserManagementPage>
     final value = raw.trim().toLowerCase();
     if (value == 'inactive') return 'inactive';
     return 'active';
-  }
-
-  int? _parseYearLevel(dynamic value) {
-    final raw = (value ?? '').toString().trim();
-    if (raw.isEmpty) return null;
-    final direct = int.tryParse(raw);
-    if (direct != null) return direct;
-    final match = RegExp(r'\d+').firstMatch(raw);
-    if (match == null) return null;
-    return int.tryParse(match.group(0)!);
   }
 
   String _normalizeStudentVerification(String raw) {
@@ -813,7 +1003,6 @@ class _UserManagementPageState extends State<UserManagementPage>
       _detailProgramOptions = const [];
       _detailProgramLoading = false;
       _detailSelectedProgramId = null;
-      _detailSelectedYearLevel = null;
       _detailFirstNameCtrl.clear();
       _detailMiddleNameCtrl.clear();
       _detailLastNameCtrl.clear();
@@ -821,7 +1010,6 @@ class _UserManagementPageState extends State<UserManagementPage>
       _detailStudentNoCtrl.clear();
       _detailCollegeCtrl.clear();
       _detailProgramCtrl.clear();
-      _detailYearLevelCtrl.clear();
       _detailEmployeeNoCtrl.clear();
       _detailDepartmentCtrl.clear();
     });
@@ -840,21 +1028,7 @@ class _UserManagementPageState extends State<UserManagementPage>
     final accountStatus = _readAccountStatus(data, role: role);
     final studentVerification = _readStudentVerification(data, role: role);
     final rawCollegeId = (studentProfile['collegeId'] ?? '').toString().trim();
-    var rawProgramId = (studentProfile['programId'] ?? '').toString().trim();
-    var rawYearLevel = (studentProfile['yearLevel'] ?? '').toString().trim();
-
-    // Backward-safe normalization for old records where program/year fields
-    // may have been saved in the wrong slots.
-    if (rawCollegeId.isNotEmpty &&
-        rawProgramId.isNotEmpty &&
-        rawProgramId.toLowerCase() == rawCollegeId.toLowerCase() &&
-        rawYearLevel.isNotEmpty &&
-        _parseYearLevel(rawYearLevel) == null) {
-      rawProgramId = rawYearLevel;
-      rawYearLevel = '';
-    }
-
-    final parsedYearLevel = _parseYearLevel(rawYearLevel);
+    final rawProgramId = (studentProfile['programId'] ?? '').toString().trim();
 
     setState(() {
       _selectedUserId = uid;
@@ -885,8 +1059,6 @@ class _UserManagementPageState extends State<UserManagementPage>
       _detailSelectedProgramId = _detailProgramCtrl.text.trim().isEmpty
           ? null
           : _detailProgramCtrl.text.trim();
-      _detailYearLevelCtrl.text = parsedYearLevel?.toString() ?? '';
-      _detailSelectedYearLevel = parsedYearLevel;
       _detailEmployeeNoCtrl.text =
           (employeeProfile['employeeNo'] ?? data['employeeNo'] ?? '')
               .toString()
@@ -911,7 +1083,6 @@ class _UserManagementPageState extends State<UserManagementPage>
         _detailProgramOptions = const [];
         _detailProgramLoading = false;
         _detailSelectedProgramId = null;
-        _detailSelectedYearLevel = null;
         _detailCollegeName = '';
       });
     }
@@ -1364,8 +1535,6 @@ class _UserManagementPageState extends State<UserManagementPage>
       if (_detailCollegeCtrl.text.trim().isEmpty) return true;
       final selectedProgramId = (_detailSelectedProgramId ?? '').trim();
       if (selectedProgramId.isEmpty) return true;
-      final selectedYear = _detailSelectedYearLevel;
-      if (selectedYear == null) return true;
       if (studentNo.isNotEmpty &&
           !RegExp(r'^\d{3}-\d{4}$').hasMatch(studentNo)) {
         return true;
@@ -1400,7 +1569,7 @@ class _UserManagementPageState extends State<UserManagementPage>
         normalizedVerification == 'pending_approval';
     if (!canEditProfileNow) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text(
             'Profile editing is allowed only while student status is Pending Approval.',
@@ -1425,7 +1594,7 @@ class _UserManagementPageState extends State<UserManagementPage>
     if (!mounted) return;
 
     if (firstName.isEmpty || lastName.isEmpty || email.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('First name, last name, and email are required.'),
         ),
@@ -1434,7 +1603,7 @@ class _UserManagementPageState extends State<UserManagementPage>
     }
 
     if (!_isValidEmailFormat(email)) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Email address format is incorrect.')),
       );
       return;
@@ -1446,7 +1615,7 @@ class _UserManagementPageState extends State<UserManagementPage>
         setState(() {
           _detailEmailAvailabilityError = 'Email already exists';
         });
-        ScaffoldMessenger.of(
+        AppScaffoldMessenger.of(
           context,
         ).showSnackBar(const SnackBar(content: Text('Email already exists.')));
         return;
@@ -1455,11 +1624,10 @@ class _UserManagementPageState extends State<UserManagementPage>
 
     if (_isStudentRole(role)) {
       _detailProgramCtrl.text = (_detailSelectedProgramId ?? '').trim();
-      _detailYearLevelCtrl.text = _detailSelectedYearLevel?.toString() ?? '';
       final studentNo = _detailStudentNoCtrl.text.trim();
       if (studentNo.isNotEmpty &&
           !RegExp(r'^\d{3}-\d{4}$').hasMatch(studentNo)) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        AppScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Student Number must be ###-####.')),
         );
         return;
@@ -1471,7 +1639,7 @@ class _UserManagementPageState extends State<UserManagementPage>
           setState(() {
             _detailStudentNoAvailabilityError = 'Student Number already exists';
           });
-          ScaffoldMessenger.of(context).showSnackBar(
+          AppScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Student Number already exists.')),
           );
           return;
@@ -1481,7 +1649,7 @@ class _UserManagementPageState extends State<UserManagementPage>
       final employeeNo = _detailEmployeeNoCtrl.text.trim();
       if (employeeNo.isNotEmpty &&
           !RegExp(r'^\d{4}-\d{3}$').hasMatch(employeeNo)) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        AppScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Employee ID must be ####-###.')),
         );
         return;
@@ -1493,7 +1661,7 @@ class _UserManagementPageState extends State<UserManagementPage>
           setState(() {
             _detailEmployeeNoAvailabilityError = 'Employee ID already exists';
           });
-          ScaffoldMessenger.of(context).showSnackBar(
+          AppScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Employee ID already exists.')),
           );
           return;
@@ -1515,7 +1683,11 @@ class _UserManagementPageState extends State<UserManagementPage>
       'firstName': firstName,
       'middleName': middleName.isEmpty ? null : middleName,
       'lastName': lastName,
-      'displayName': '$firstName $lastName'.trim(),
+      'displayName': [
+        firstName,
+        middleName,
+        lastName,
+      ].where((part) => part.trim().isNotEmpty).join(' ').trim(),
       'accountStatus': accountStatus,
       'status': legacyStatus,
       'updatedAt': FieldValue.serverTimestamp(),
@@ -1533,7 +1705,6 @@ class _UserManagementPageState extends State<UserManagementPage>
         'programId': _detailProgramCtrl.text.trim().isEmpty
             ? null
             : _detailProgramCtrl.text.trim(),
-        'yearLevel': int.tryParse(_detailYearLevelCtrl.text.trim()),
       };
     } else {
       update['studentVerificationStatus'] = FieldValue.delete();
@@ -1578,11 +1749,6 @@ class _UserManagementPageState extends State<UserManagementPage>
         'Program',
         oldStudent['programId'],
         _detailProgramCtrl.text.trim(),
-      );
-      markChanged(
-        'Year Level',
-        oldStudent['yearLevel'],
-        int.tryParse(_detailYearLevelCtrl.text.trim()),
       );
     } else {
       final oldEmployee =
@@ -1633,12 +1799,12 @@ class _UserManagementPageState extends State<UserManagementPage>
       }
       if (!mounted) return;
       setState(() => _detailEditing = false);
-      ScaffoldMessenger.of(
+      AppScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('User profile updated.')));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
+      AppScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Save failed: $e')));
     }
@@ -2083,6 +2249,310 @@ class _UserManagementPageState extends State<UserManagementPage>
     });
   }
 
+  void _clearSearchQuery() {
+    _searchDebounce?.cancel();
+    _searchCtrl.clear();
+    if (!mounted) return;
+    if (_searchQuery.isNotEmpty) {
+      setState(() => _searchQuery = '');
+    }
+  }
+
+  Future<void> _refreshCurrentTable() async {
+    if (_isRefreshingTable || !mounted) return;
+    setState(() => _isRefreshingTable = true);
+    _invalidateFilterCache();
+    setState(() {
+      _allUsersStream = FirebaseFirestore.instance
+          .collection('users')
+          .snapshots();
+    });
+    await Future<void>.delayed(const Duration(milliseconds: 350));
+    if (!mounted) return;
+    setState(() => _isRefreshingTable = false);
+  }
+
+  Widget _buildHandbookStyleSearchBar({Widget? compactTrailingAction}) {
+    final width = MediaQuery.sizeOf(context).width;
+    final isDesktop = width >= 1000;
+    final shouldConstrainWidth = width >= 900;
+    final constrainedWidth = width >= 1600
+        ? 640.0
+        : width >= 1300
+        ? 580.0
+        : 520.0;
+    final height = isDesktop ? 56.0 : 48.0;
+    final borderRadius = isDesktop ? 16.0 : 18.0;
+    final iconSize = isDesktop ? 24.0 : 22.0;
+    final fontSize = isDesktop ? 15.0 : 13.5;
+
+    final searchField = ValueListenableBuilder<TextEditingValue>(
+      valueListenable: _searchCtrl,
+      builder: (context, value, _) {
+        final hasText = value.text.trim().isNotEmpty;
+
+        return Container(
+          height: height,
+          padding: EdgeInsets.symmetric(horizontal: isDesktop ? 20 : 12),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.75),
+            borderRadius: BorderRadius.circular(borderRadius),
+            border: Border.all(color: Colors.black12),
+            boxShadow: isDesktop
+                ? [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.05),
+                      blurRadius: 10,
+                      offset: const Offset(0, 2),
+                    ),
+                  ]
+                : null,
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.search_rounded, color: hintColor, size: iconSize),
+              SizedBox(width: isDesktop ? 12 : 8),
+              Expanded(
+                child: TextField(
+                  controller: _searchCtrl,
+                  onChanged: _onSearchInputChanged,
+                  style: TextStyle(
+                    fontSize: fontSize,
+                    fontWeight: FontWeight.w600,
+                    color: textDark,
+                  ),
+                  decoration: InputDecoration(
+                    hintText: 'Search by name, ID, or email...',
+                    border: InputBorder.none,
+                    enabledBorder: InputBorder.none,
+                    focusedBorder: InputBorder.none,
+                    disabledBorder: InputBorder.none,
+                    filled: false,
+                    isDense: true,
+                    contentPadding: EdgeInsets.zero,
+                    hintStyle: TextStyle(
+                      color: hintColor,
+                      fontWeight: FontWeight.w600,
+                      fontSize: fontSize,
+                    ),
+                  ),
+                ),
+              ),
+              if (hasText)
+                IconButton(
+                  tooltip: 'Clear search',
+                  onPressed: _clearSearchQuery,
+                  icon: Icon(
+                    Icons.close_rounded,
+                    color: hintColor.withValues(alpha: 0.85),
+                    size: isDesktop ? 20 : 18,
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+
+    final refreshButton = Tooltip(
+      message: 'Refresh table',
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: _isRefreshingTable ? null : _refreshCurrentTable,
+        child: Container(
+          width: height,
+          height: height,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: Colors.white.withValues(alpha: 0.75),
+            border: Border.all(color: Colors.black12),
+            boxShadow: isDesktop
+                ? [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.05),
+                      blurRadius: 10,
+                      offset: const Offset(0, 2),
+                    ),
+                  ]
+                : null,
+          ),
+          child: _isRefreshingTable
+              ? SizedBox(
+                  width: isDesktop ? 18 : 16,
+                  height: isDesktop ? 18 : 16,
+                  child: const CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: hintColor,
+                  ),
+                )
+              : Icon(
+                  Icons.refresh_rounded,
+                  color: hintColor.withValues(alpha: 0.9),
+                  size: isDesktop ? 20 : 18,
+                ),
+        ),
+      ),
+    );
+
+    Widget searchWithRefresh() {
+      return Row(
+        children: [
+          Expanded(child: searchField),
+          const SizedBox(width: 8),
+          refreshButton,
+          if (!isDesktop && compactTrailingAction != null) ...[
+            const SizedBox(width: 8),
+            compactTrailingAction,
+          ],
+        ],
+      );
+    }
+
+    if (!shouldConstrainWidth) return searchWithRefresh();
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: SizedBox(width: constrainedWidth, child: searchWithRefresh()),
+    );
+  }
+
+  Widget? _buildFullHeaderActions({
+    required bool showImportStudentButton,
+    required bool showStudentsOnly,
+    required bool showProfessorsOnly,
+    required bool useCompactHeaderActions,
+  }) {
+    if (widget.hideCreateAction || useCompactHeaderActions) return null;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (showImportStudentButton) ...[
+          OutlinedButton.icon(
+            onPressed: _submitting ? null : _openImportStudents,
+            style: OutlinedButton.styleFrom(
+              foregroundColor: primaryColor,
+              side: BorderSide(color: primaryColor.withValues(alpha: 0.35)),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(AppRadii.md),
+              ),
+            ),
+            icon: const Icon(Icons.upload_file_rounded, size: 20),
+            label: const Text(
+              'Import Student',
+              style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14),
+            ),
+          ),
+          const SizedBox(width: 10),
+        ],
+        if (_submitting)
+          const Padding(
+            padding: EdgeInsets.only(right: 16),
+            child: SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: primaryColor,
+              ),
+            ),
+          ),
+        FilledButton.icon(
+          onPressed: _submitting ? null : _openCreateUser,
+          style: FilledButton.styleFrom(
+            backgroundColor: primaryColor,
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(AppRadii.md),
+            ),
+            elevation: 2,
+          ),
+          icon: const Icon(Icons.person_add_alt_1_rounded, size: 20),
+          label: Text(
+            showStudentsOnly
+                ? 'Create Student'
+                : (showProfessorsOnly ? 'Create Professor' : 'Create New User'),
+            style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 15),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget? _buildCompactHeaderOptionsButton({
+    required bool showImportStudentButton,
+    required bool showStudentsOnly,
+    required bool showProfessorsOnly,
+    required bool useCompactHeaderActions,
+  }) {
+    if (widget.hideCreateAction || !useCompactHeaderActions) return null;
+    return Tooltip(
+      message: 'More options',
+      child: Container(
+        width: 48,
+        height: 48,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: Colors.white.withValues(alpha: 0.75),
+          border: Border.all(color: Colors.black12),
+        ),
+        child: PopupMenuButton<_HeaderQuickAction>(
+          tooltip: 'More options',
+          enabled: !_submitting,
+          padding: EdgeInsets.zero,
+          icon: const Icon(
+            Icons.more_horiz_rounded,
+            color: hintColor,
+            size: 20,
+          ),
+          onSelected: (action) {
+            if (action == _HeaderQuickAction.importStudents) {
+              _openImportStudents();
+              return;
+            }
+            _openCreateUser();
+          },
+          itemBuilder: (context) {
+            final items = <PopupMenuEntry<_HeaderQuickAction>>[];
+            if (showImportStudentButton) {
+              items.add(
+                const PopupMenuItem<_HeaderQuickAction>(
+                  value: _HeaderQuickAction.importStudents,
+                  child: Row(
+                    children: [
+                      Icon(Icons.upload_file_rounded, size: 18),
+                      SizedBox(width: 10),
+                      Text('Import Student'),
+                    ],
+                  ),
+                ),
+              );
+            }
+            items.add(
+              PopupMenuItem<_HeaderQuickAction>(
+                value: _HeaderQuickAction.createUser,
+                child: Row(
+                  children: [
+                    const Icon(Icons.person_add_alt_1_rounded, size: 18),
+                    const SizedBox(width: 10),
+                    Text(
+                      showStudentsOnly
+                          ? 'Create Student'
+                          : (showProfessorsOnly
+                                ? 'Create Professor'
+                                : 'Create User'),
+                    ),
+                  ],
+                ),
+              ),
+            );
+            return items;
+          },
+        ),
+      ),
+    );
+  }
+
   List<QueryDocumentSnapshot<Map<String, dynamic>>> _filteredUsersMemoized({
     required List<QueryDocumentSnapshot<Map<String, dynamic>>> rawDocs,
     required Object snapshotToken,
@@ -2155,14 +2625,20 @@ class _UserManagementPageState extends State<UserManagementPage>
               _hasPendingEmailVerification(data, role: role)) {
             return false;
           }
-          if (type == 'pending' &&
-              !(role == 'student' &&
-                  accountStatus == 'active' &&
-                  (_pendingStudentFilter == 'pending_email_verification'
-                      ? (_hasPendingEmailVerification(data, role: role) ||
-                            studentVerification == _pendingStudentFilter)
-                      : studentVerification == _pendingStudentFilter))) {
-            return false;
+          if (type == 'pending') {
+            final matchesVerification =
+                _pendingStudentFilter == 'pending_email_verification'
+                ? (_hasPendingEmailVerification(data, role: role) ||
+                      studentVerification == _pendingStudentFilter)
+                : studentVerification == _pendingStudentFilter;
+            final canShowByAccountStatus = _pendingStudentFilter == 'rejected'
+                ? true
+                : accountStatus == 'active';
+            if (!(role == 'student' &&
+                canShowByAccountStatus &&
+                matchesVerification)) {
+              return false;
+            }
           }
 
           return _matchesSearch(data, query);
@@ -2248,7 +2724,7 @@ class _UserManagementPageState extends State<UserManagementPage>
       final entityLabel = studentsOnly
           ? 'student'
           : (professorsOnly ? 'professor' : 'user');
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Created $entityLabel: ${res.email}')),
       );
     } catch (e) {
@@ -2273,7 +2749,7 @@ class _UserManagementPageState extends State<UserManagementPage>
             'Cannot reach Firebase Auth from "$host". Check internet, disable VPN/ad-block, and add "$host" in Firebase Auth Authorized domains.';
       }
 
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Create $entityLabel failed: $msg'),
           backgroundColor: Colors.red,
@@ -2282,6 +2758,513 @@ class _UserManagementPageState extends State<UserManagementPage>
     } finally {
       if (mounted) setState(() => _submitting = false);
     }
+  }
+
+  Future<void> _openImportStudents() async {
+    if (!mounted) return;
+
+    final dialogResult = await showDialog<_StudentImportDialogResult>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) =>
+          _StudentBulkImportDialog(onValidateCsv: _validateStudentImportCsv),
+    );
+    if (dialogResult == null || dialogResult.rows.isEmpty || !mounted) return;
+
+    try {
+      setState(() => _submitting = true);
+      final commit = await _commitStudentImportRows(dialogResult.rows);
+      if (!mounted) return;
+      AppScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Import complete: ${commit.created} created, ${commit.updated} updated, ${dialogResult.invalidCount} invalid skipped.',
+          ),
+          backgroundColor: primaryColor,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      AppScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Import failed: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
+  }
+
+  String _importKey(String raw) {
+    return raw.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
+  }
+
+  List<List<String>> _parseCsvRows(String csvText) {
+    final rows = <List<String>>[];
+    final row = <String>[];
+    final cell = StringBuffer();
+    var inQuotes = false;
+
+    for (var i = 0; i < csvText.length; i++) {
+      final ch = csvText[i];
+      if (ch == '"') {
+        if (inQuotes && i + 1 < csvText.length && csvText[i + 1] == '"') {
+          cell.write('"');
+          i++;
+        } else {
+          inQuotes = !inQuotes;
+        }
+        continue;
+      }
+
+      if (!inQuotes && ch == ',') {
+        row.add(cell.toString().trim());
+        cell.clear();
+        continue;
+      }
+
+      if (!inQuotes && (ch == '\n' || ch == '\r')) {
+        if (ch == '\r' && i + 1 < csvText.length && csvText[i + 1] == '\n') {
+          i++;
+        }
+        row.add(cell.toString().trim());
+        cell.clear();
+        if (row.any((v) => v.trim().isNotEmpty)) {
+          rows.add(List<String>.from(row));
+        }
+        row.clear();
+        continue;
+      }
+
+      cell.write(ch);
+    }
+
+    if (cell.isNotEmpty || row.isNotEmpty) {
+      row.add(cell.toString().trim());
+      if (row.any((v) => v.trim().isNotEmpty)) {
+        rows.add(List<String>.from(row));
+      }
+    }
+
+    return rows;
+  }
+
+  String _csvCell(List<String> row, int? index) {
+    if (index == null || index < 0 || index >= row.length) return '';
+    return row[index].trim();
+  }
+
+  String _titleCaseWords(String input) {
+    final value = input.trim();
+    if (value.isEmpty) return '';
+    return value
+        .split(RegExp(r'\s+'))
+        .map((part) {
+          if (part.isEmpty) return part;
+          return part[0].toUpperCase() + part.substring(1).toLowerCase();
+        })
+        .join(' ');
+  }
+
+  String _displayNameFromParts({
+    required String firstName,
+    required String middleName,
+    required String lastName,
+  }) {
+    return [
+      firstName.trim(),
+      middleName.trim(),
+      lastName.trim(),
+    ].where((p) => p.isNotEmpty).join(' ').trim();
+  }
+
+  bool _isValidImportEmail(String email) {
+    final value = email.trim().toLowerCase();
+    if (value.isEmpty) return true;
+    return RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(value);
+  }
+
+  int? _headerIndex(Map<String, int> headerIndexByKey, List<String> aliases) {
+    for (final alias in aliases) {
+      final index = headerIndexByKey[_importKey(alias)];
+      if (index != null) return index;
+    }
+    return null;
+  }
+
+  Future<_StudentImportValidationResult> _validateStudentImportCsv(
+    String csvText,
+  ) async {
+    final cleaned = csvText.replaceFirst('\uFEFF', '').trim();
+    if (cleaned.isEmpty) {
+      return const _StudentImportValidationResult(
+        totalRows: 0,
+        validRows: [],
+        issues: [
+          _StudentImportIssue(
+            rowNumber: 0,
+            message: 'The file is empty. Please upload a CSV with data rows.',
+          ),
+        ],
+      );
+    }
+
+    final rows = _parseCsvRows(cleaned);
+    if (rows.isEmpty) {
+      return const _StudentImportValidationResult(
+        totalRows: 0,
+        validRows: [],
+        issues: [
+          _StudentImportIssue(
+            rowNumber: 0,
+            message: 'Unable to read rows from CSV. Check the file format.',
+          ),
+        ],
+      );
+    }
+
+    final header = rows.first;
+    final headerIndexByKey = <String, int>{};
+    for (var i = 0; i < header.length; i++) {
+      final key = _importKey(header[i]);
+      if (key.isEmpty) continue;
+      headerIndexByKey.putIfAbsent(key, () => i);
+    }
+
+    final idxStudentNo = _headerIndex(headerIndexByKey, [
+      'studentNo',
+      'student_number',
+      'student number',
+      'student id',
+    ]);
+    final idxFirstName = _headerIndex(headerIndexByKey, [
+      'firstName',
+      'first_name',
+      'first name',
+      'given name',
+    ]);
+    final idxMiddleName = _headerIndex(headerIndexByKey, [
+      'middleName',
+      'middle_name',
+      'middle name',
+    ]);
+    final idxLastName = _headerIndex(headerIndexByKey, [
+      'lastName',
+      'last_name',
+      'last name',
+      'surname',
+      'family name',
+    ]);
+    final idxCollege = _headerIndex(headerIndexByKey, [
+      'college',
+      'collegeId',
+      'college id',
+      'college code',
+    ]);
+    final idxProgram = _headerIndex(headerIndexByKey, [
+      'program',
+      'programId',
+      'program id',
+      'program code',
+      'course',
+    ]);
+    final idxEmail = _headerIndex(headerIndexByKey, [
+      'email',
+      'emailAddress',
+      'email address',
+    ]);
+
+    final missingHeaders = <String>[
+      if (idxStudentNo == null) 'studentNo',
+      if (idxFirstName == null) 'firstName',
+      if (idxLastName == null) 'lastName',
+      if (idxCollege == null) 'college',
+      if (idxProgram == null) 'program',
+    ];
+    if (missingHeaders.isNotEmpty) {
+      return _StudentImportValidationResult(
+        totalRows: rows.length <= 1 ? 0 : rows.length - 1,
+        validRows: const [],
+        issues: [
+          _StudentImportIssue(
+            rowNumber: 0,
+            message:
+                'Missing required header(s): ${missingHeaders.join(', ')}.',
+          ),
+        ],
+      );
+    }
+
+    final db = FirebaseFirestore.instance;
+    final collegeSnap = await db
+        .collection('colleges')
+        .where('active', isEqualTo: true)
+        .get();
+    final programSnap = await db
+        .collection('programs')
+        .where('active', isEqualTo: true)
+        .get();
+    final usersSnap = await db.collection('users').get();
+
+    final collegeLookup = <String, String>{};
+    for (final doc in collegeSnap.docs) {
+      final data = doc.data();
+      final collegeId = doc.id.trim();
+      final code = (data['collegeCode'] ?? '').toString().trim();
+      final name = (data['name'] ?? data['collegeName'] ?? data['title'] ?? '')
+          .toString()
+          .trim();
+      for (final raw in [collegeId, code, name]) {
+        final key = _importKey(raw);
+        if (key.isEmpty) continue;
+        collegeLookup[key] = collegeId;
+      }
+    }
+
+    final programsByCollegeAndKey = <String, String>{};
+    for (final doc in programSnap.docs) {
+      final data = doc.data();
+      final programId = doc.id.trim();
+      final collegeId = (data['collegeId'] ?? '').toString().trim();
+      final code = (data['programCode'] ?? '').toString().trim();
+      final name = (data['name'] ?? data['programName'] ?? data['title'] ?? '')
+          .toString()
+          .trim();
+      for (final raw in [programId, code, name]) {
+        final key = _importKey(raw);
+        if (key.isEmpty || collegeId.isEmpty) continue;
+        programsByCollegeAndKey['$collegeId::$key'] = programId;
+      }
+    }
+
+    final existingStudentNoToUid = <String, String>{};
+    final existingEmailToUid = <String, String>{};
+    for (final doc in usersSnap.docs) {
+      final data = doc.data();
+      final role = (data['role'] ?? '').toString().trim().toLowerCase();
+      if (role == 'student') {
+        final profile = data['studentProfile'] as Map<String, dynamic>?;
+        final studentNo = (profile?['studentNo'] ?? data['studentNo'] ?? '')
+            .toString()
+            .trim();
+        if (studentNo.isNotEmpty) {
+          existingStudentNoToUid.putIfAbsent(studentNo, () => doc.id);
+        }
+      }
+      final email = (data['email'] ?? '').toString().trim().toLowerCase();
+      if (email.isNotEmpty) {
+        existingEmailToUid.putIfAbsent(email, () => doc.id);
+      }
+    }
+
+    final issues = <_StudentImportIssue>[];
+    final valids = <_ImportedStudentDraft>[];
+    final seenStudentNos = <String>{};
+    final seenEmails = <String>{};
+
+    for (var i = 1; i < rows.length; i++) {
+      final row = rows[i];
+      final rowNumber = i + 1;
+
+      final studentNo = _csvCell(row, idxStudentNo);
+      final firstName = _titleCaseWords(_csvCell(row, idxFirstName));
+      final middleName = _titleCaseWords(_csvCell(row, idxMiddleName));
+      final lastName = _titleCaseWords(_csvCell(row, idxLastName));
+      final collegeRaw = _csvCell(row, idxCollege);
+      final programRaw = _csvCell(row, idxProgram);
+      final email = _csvCell(row, idxEmail).toLowerCase();
+
+      final isCompletelyBlank = [
+        studentNo,
+        firstName,
+        middleName,
+        lastName,
+        collegeRaw,
+        programRaw,
+        email,
+      ].every((v) => v.trim().isEmpty);
+      if (isCompletelyBlank) continue;
+
+      final rowErrors = <String>[];
+      if (studentNo.isEmpty) rowErrors.add('Student Number is required.');
+      if (firstName.isEmpty) rowErrors.add('First Name is required.');
+      if (lastName.isEmpty) rowErrors.add('Last Name is required.');
+      if (collegeRaw.isEmpty) rowErrors.add('College is required.');
+      if (programRaw.isEmpty) rowErrors.add('Program is required.');
+
+      if (studentNo.isNotEmpty &&
+          !RegExp(r'^\d{3}-\d{4}$').hasMatch(studentNo)) {
+        rowErrors.add('Student Number must follow 123-1234 format.');
+      }
+      if (studentNo.isNotEmpty && !seenStudentNos.add(studentNo)) {
+        rowErrors.add('Duplicate Student Number inside file.');
+      }
+
+      if (email.isNotEmpty) {
+        if (!_isValidImportEmail(email)) {
+          rowErrors.add('Invalid email format.');
+        } else if (!seenEmails.add(email)) {
+          rowErrors.add('Duplicate email inside file.');
+        }
+      }
+
+      final collegeId = collegeLookup[_importKey(collegeRaw)] ?? '';
+      if (collegeRaw.isNotEmpty && collegeId.isEmpty) {
+        rowErrors.add('Unknown college: "$collegeRaw".');
+      }
+
+      final programId =
+          programsByCollegeAndKey['$collegeId::${_importKey(programRaw)}'] ??
+          '';
+      if (programRaw.isNotEmpty && (collegeId.isEmpty || programId.isEmpty)) {
+        rowErrors.add(
+          collegeId.isEmpty
+              ? 'Program cannot be resolved without a valid college.'
+              : 'Unknown program "$programRaw" for selected college.',
+        );
+      }
+
+      final existingUid = existingStudentNoToUid[studentNo];
+      if (email.isNotEmpty) {
+        final existingUidByEmail = existingEmailToUid[email];
+        if (existingUidByEmail != null && existingUidByEmail != existingUid) {
+          rowErrors.add('Email is already used by another account.');
+        }
+      }
+
+      if (rowErrors.isNotEmpty) {
+        issues.add(
+          _StudentImportIssue(
+            rowNumber: rowNumber,
+            studentNo: studentNo,
+            fullName: _displayNameFromParts(
+              firstName: firstName,
+              middleName: middleName,
+              lastName: lastName,
+            ),
+            message: rowErrors.join(' '),
+          ),
+        );
+        continue;
+      }
+
+      valids.add(
+        _ImportedStudentDraft(
+          rowNumber: rowNumber,
+          studentNo: studentNo,
+          firstName: firstName,
+          middleName: middleName,
+          lastName: lastName,
+          collegeId: collegeId,
+          programId: programId,
+          email: email,
+          existingUid: existingUid,
+        ),
+      );
+    }
+
+    return _StudentImportValidationResult(
+      totalRows: rows.length <= 1 ? 0 : rows.length - 1,
+      validRows: valids,
+      issues: issues,
+    );
+  }
+
+  Future<_StudentImportCommitResult> _commitStudentImportRows(
+    List<_ImportedStudentDraft> rows,
+  ) async {
+    var created = 0;
+    var updated = 0;
+
+    final db = FirebaseFirestore.instance;
+    final createdByUid = FirebaseAuth.instance.currentUser?.uid;
+
+    WriteBatch batch = db.batch();
+    var pendingWrites = 0;
+
+    Future<void> flushIfNeeded({bool force = false}) async {
+      if (!force && pendingWrites < 400) return;
+      if (pendingWrites == 0) return;
+      await batch.commit();
+      batch = db.batch();
+      pendingWrites = 0;
+    }
+
+    for (final row in rows) {
+      final docRef = row.existingUid == null
+          ? db.collection('users').doc()
+          : db.collection('users').doc(row.existingUid!);
+
+      final displayName = _displayNameFromParts(
+        firstName: row.firstName,
+        middleName: row.middleName,
+        lastName: row.lastName,
+      );
+
+      if (row.existingUid == null) {
+        final verification = row.email.isEmpty
+            ? 'pending_profile'
+            : 'pending_email_verification';
+        final status = _legacyStatusValue(
+          role: 'student',
+          accountStatus: 'active',
+          studentVerificationStatus: verification,
+        );
+
+        batch.set(docRef, {
+          'uid': docRef.id,
+          'email': row.email.isEmpty ? null : row.email,
+          'firstName': row.firstName,
+          'middleName': row.middleName.isEmpty ? null : row.middleName,
+          'lastName': row.lastName,
+          'displayName': displayName.isEmpty ? null : displayName,
+          'role': 'student',
+          'accountStatus': 'active',
+          'studentVerificationStatus': verification,
+          'status': status,
+          'createdByAdmin': true,
+          'importedByAdmin': true,
+          'directoryVisible': true,
+          if (createdByUid != null) 'createdByUid': createdByUid,
+          'studentProfile': {
+            'studentNo': row.studentNo,
+            'collegeId': row.collegeId,
+            'programId': row.programId,
+          },
+          'employeeProfile': {'employeeNo': null, 'department': null},
+          'createdAt': FieldValue.serverTimestamp(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+        created++;
+      } else {
+        final update = <String, dynamic>{
+          'firstName': row.firstName,
+          'middleName': row.middleName.isEmpty ? null : row.middleName,
+          'lastName': row.lastName,
+          'displayName': displayName.isEmpty ? null : displayName,
+          'importedByAdmin': true,
+          'directoryVisible': true,
+          'studentProfile': {
+            'studentNo': row.studentNo,
+            'collegeId': row.collegeId,
+            'programId': row.programId,
+          },
+          'updatedAt': FieldValue.serverTimestamp(),
+        };
+        if (row.email.isNotEmpty) {
+          update['email'] = row.email;
+        }
+        batch.set(docRef, update, SetOptions(merge: true));
+        updated++;
+      }
+
+      pendingWrites++;
+      await flushIfNeeded();
+    }
+
+    await flushIfNeeded(force: true);
+    return _StudentImportCommitResult(created: created, updated: updated);
   }
 
   Future<void> _createAuthAndUserDoc(_CreateUserResult input) async {
@@ -2406,7 +3389,6 @@ class _UserManagementPageState extends State<UserManagementPage>
               'studentNo': input.studentNo.isEmpty ? null : input.studentNo,
               'collegeId': input.collegeId,
               'programId': input.programId,
-              'yearLevel': input.yearLevel,
             },
             'employeeProfile': {
               'employeeNo': input.employeeNo.isEmpty ? null : input.employeeNo,
@@ -2619,69 +3601,6 @@ class _UserManagementPageState extends State<UserManagementPage>
     return _resolveSetPasswordContinueUrl();
   }
 
-  Future<void> _updateUserStatus(
-    String uid,
-    String status, {
-    String? role,
-  }) async {
-    try {
-      final ref = FirebaseFirestore.instance.collection('users').doc(uid);
-      final snap = await ref.get();
-      if (!snap.exists) throw StateError('User not found');
-
-      final data = snap.data() ?? <String, dynamic>{};
-      final roleKey = (role ?? data['role'] ?? '')
-          .toString()
-          .trim()
-          .toLowerCase();
-      final isStudent = _isStudentRole(roleKey);
-
-      var nextAccountStatus = _readAccountStatus(data, role: roleKey);
-      var nextStudentVerification = _readStudentVerification(
-        data,
-        role: roleKey,
-      );
-      final action = status.trim().toLowerCase();
-
-      if (action == 'active' || action == 'inactive') {
-        nextAccountStatus = _normalizeAccountStatus(action);
-      } else if (isStudent &&
-          (action == 'pending_profile' ||
-              action == 'pending_email_verification' ||
-              action == 'pending_approval' ||
-              action == 'rejected' ||
-              action == 'verified')) {
-        nextStudentVerification = _normalizeStudentVerification(action);
-      } else if (!isStudent && action == 'verified') {
-        nextAccountStatus = 'active';
-      }
-
-      final legacyStatus = _legacyStatusValue(
-        role: roleKey,
-        accountStatus: nextAccountStatus,
-        studentVerificationStatus: nextStudentVerification,
-      );
-
-      await ref.update({
-        'accountStatus': nextAccountStatus,
-        if (isStudent) 'studentVerificationStatus': nextStudentVerification,
-        if (!isStudent) 'studentVerificationStatus': FieldValue.delete(),
-        'status': legacyStatus,
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
-      if (!mounted) return;
-      _invalidateFilterCache();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('User status updated to $legacyStatus')),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Update failed: $e')));
-    }
-  }
-
   Future<String?> _showRejectReasonDialog() async {
     final reasonCtrl = TextEditingController();
     String? reasonError;
@@ -2890,7 +3809,7 @@ class _UserManagementPageState extends State<UserManagementPage>
       );
       if (!mounted) return;
       _invalidateFilterCache();
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
             approve ? 'Student profile approved.' : 'Student profile rejected.',
@@ -2902,7 +3821,7 @@ class _UserManagementPageState extends State<UserManagementPage>
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Review failed: $e'),
           backgroundColor: Colors.red,
@@ -2918,138 +3837,100 @@ class _UserManagementPageState extends State<UserManagementPage>
     final showStudentsOnly =
         widget.studentsOnlyScope || widget.pendingApprovalOnlyScope;
     final showProfessorsOnly = widget.professorsOnlyScope;
-    const detailsPaneWidth = 430.0;
+    // Keep the same compact header layout style used by Student Management
+    // so search/actions/tabs align consistently across management pages.
+    const showHeaderTitleSection = false;
+    final showImportStudentButton =
+        showStudentsOnly && !widget.pendingApprovalOnlyScope;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final useCompactHeaderActions =
+            !widget.hideCreateAction && constraints.maxWidth < 900;
+        final detailsPaneWidth = (constraints.maxWidth * 0.33)
+            .clamp(320.0, 420.0)
+            .toDouble();
 
-    return Scaffold(
-      backgroundColor: widget.pageBackgroundColor,
-      body: ModernTableLayout(
-        detailsWidth: detailsPaneWidth,
-        header: ModernTableHeader(
-          title: widget.headerTitle ?? 'User Management',
-          subtitle:
-              widget.headerSubtitle ??
-              (widget.pendingApprovalOnlyScope
-                  ? 'Review, approve, or reject pending students'
-                  : showStudentsOnly
-                  ? 'Manage students under your department'
-                  : showProfessorsOnly
-                  ? 'Manage professors under your department'
-                  : 'Control access and verify accounts'),
-          action: widget.hideCreateAction
-              ? null
-              : Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (_submitting)
-                      const Padding(
-                        padding: EdgeInsets.only(right: 16),
-                        child: SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: primaryColor,
-                          ),
-                        ),
-                      ),
-                    FilledButton.icon(
-                      onPressed: _submitting ? null : _openCreateUser,
-                      style: FilledButton.styleFrom(
-                        backgroundColor: primaryColor,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 20,
-                          vertical: 16,
-                        ),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(AppRadii.md),
-                        ),
-                        elevation: 2,
-                      ),
-                      icon: const Icon(
-                        Icons.person_add_alt_1_rounded,
-                        size: 20,
-                      ),
-                      label: Text(
-                        showStudentsOnly
-                            ? 'Create New Student'
-                            : (showProfessorsOnly
-                                  ? 'Create New Professor'
-                                  : 'Create New User'),
-                        style: TextStyle(
-                          fontWeight: FontWeight.w900,
-                          fontSize: 15,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-          searchBar: TextField(
-            controller: _searchCtrl,
-            decoration: InputDecoration(
-              hintText: 'Search by name, ID, or email...',
-              prefixIcon: const Icon(
-                Icons.search,
-                size: 20,
-                color: primaryColor,
+        return Scaffold(
+          backgroundColor: widget.pageBackgroundColor,
+          body: ModernTableLayout(
+            detailsWidth: detailsPaneWidth,
+            header: ModernTableHeader(
+              title: widget.headerTitle ?? 'User Management',
+              subtitle:
+                  widget.headerSubtitle ??
+                  (widget.pendingApprovalOnlyScope
+                      ? 'Review, approve, or reject pending students'
+                      : showStudentsOnly
+                      ? 'Manage students under your department'
+                      : showProfessorsOnly
+                      ? 'Manage professors under your department'
+                      : 'Control access and verify accounts'),
+              showTitleSection: showHeaderTitleSection,
+              showTopControlsWhenTitleHidden: !showHeaderTitleSection,
+              action: _buildFullHeaderActions(
+                showImportStudentButton: showImportStudentButton,
+                showStudentsOnly: showStudentsOnly,
+                showProfessorsOnly: showProfessorsOnly,
+                useCompactHeaderActions: useCompactHeaderActions,
               ),
-              filled: true,
-              fillColor: widget.pageBackgroundColor,
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(AppRadii.md),
-                borderSide: BorderSide.none,
-              ),
-              hintStyle: const TextStyle(
-                color: hintColor,
-                fontWeight: FontWeight.w600,
-                fontSize: 14,
-              ),
-              contentPadding: EdgeInsets.zero,
-            ),
-            onChanged: _onSearchInputChanged,
-          ),
-          tabs: widget.pendingApprovalOnlyScope
-              ? null
-              : _buildManagementTabs(
+              searchBar: _buildHandbookStyleSearchBar(
+                compactTrailingAction: _buildCompactHeaderOptionsButton(
+                  showImportStudentButton: showImportStudentButton,
                   showStudentsOnly: showStudentsOnly,
                   showProfessorsOnly: showProfessorsOnly,
+                  useCompactHeaderActions: useCompactHeaderActions,
                 ),
-        ),
-        body: widget.pendingApprovalOnlyScope
-            ? _buildUserList('pending_approval_queue')
-            : showStudentsOnly && _studentsOnlyListType() == 'pending'
-            ? Column(
-                children: [
-                  _buildPendingStudentFilterBar(),
-                  Expanded(child: _buildUserList(_studentsOnlyListType())),
-                ],
-              )
-            : _buildUserList(
-                showStudentsOnly
-                    ? _studentsOnlyListType()
-                    : _activeUserListType(),
               ),
-        showDetails: _selectedUserId != null,
-        details: _selectedUserId != null
-            ? ValueListenableBuilder<
-                List<QueryDocumentSnapshot<Map<String, dynamic>>>
-              >(
-                valueListenable: _visibleUserDocs,
-                builder: (context, docs, _) {
-                  QueryDocumentSnapshot<Map<String, dynamic>>? selectedDoc;
-                  for (final doc in docs) {
-                    if (doc.id == _selectedUserId) {
-                      selectedDoc = doc;
-                      break;
-                    }
-                  }
-                  if (selectedDoc == null) {
-                    return const SizedBox();
-                  }
-                  return _buildDesktopDetailsPanel(selectedDoc: selectedDoc);
-                },
-              )
-            : null,
-      ),
+              tabs: widget.pendingApprovalOnlyScope
+                  ? null
+                  : _buildManagementTabs(
+                      showStudentsOnly: showStudentsOnly,
+                      showProfessorsOnly: showProfessorsOnly,
+                    ),
+            ),
+            body: widget.pendingApprovalOnlyScope
+                ? _buildUserList('pending_approval_queue')
+                : showStudentsOnly && _studentsOnlyListType() == 'pending'
+                ? Column(
+                    children: [
+                      _buildPendingStudentFilterBar(),
+                      Expanded(child: _buildUserList(_studentsOnlyListType())),
+                    ],
+                  )
+                : _buildUserList(
+                    showStudentsOnly
+                        ? _studentsOnlyListType()
+                        : _activeUserListType(),
+                  ),
+            showDetails: _selectedUserId != null,
+            details: _selectedUserId != null
+                ? ValueListenableBuilder<
+                    List<QueryDocumentSnapshot<Map<String, dynamic>>>
+                  >(
+                    valueListenable: _visibleUserDocs,
+                    builder: (context, docs, _) {
+                      QueryDocumentSnapshot<Map<String, dynamic>>? selectedDoc;
+                      for (final doc in docs) {
+                        if (doc.id == _selectedUserId) {
+                          selectedDoc = doc;
+                          break;
+                        }
+                      }
+                      if (selectedDoc == null) {
+                        return const SizedBox();
+                      }
+                      return Padding(
+                        padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+                        child: _buildDesktopDetailsPanel(
+                          selectedDoc: selectedDoc,
+                        ),
+                      );
+                    },
+                  )
+                : null,
+          ),
+        );
+      },
     );
   }
 
@@ -3170,23 +4051,18 @@ class _UserManagementPageState extends State<UserManagementPage>
           );
         }
 
-        return LayoutBuilder(
-          builder: (context, constraints) {
-            final bool isDesktop = constraints.maxWidth >= 900;
+        final useDesktopTable = MediaQuery.sizeOf(context).width >= 900;
+        if (useDesktopTable) {
+          return _buildDesktopTable(filtered, type: type);
+        }
 
-            if (isDesktop) {
-              return _buildDesktopTable(filtered, type: type);
-            }
-
-            return ListView.builder(
-              padding: const EdgeInsets.all(AppSpacing.xl),
-              itemCount: filtered.length,
-              itemBuilder: (context, i) {
-                final doc = filtered[i];
-                final data = doc.data();
-                return _buildUserCard(doc.id, data);
-              },
-            );
+        return ListView.builder(
+          padding: const EdgeInsets.all(14),
+          itemCount: filtered.length,
+          itemBuilder: (context, i) {
+            final doc = filtered[i];
+            final data = doc.data();
+            return _buildUserCard(doc.id, data, listType: type);
           },
         );
       },
@@ -3197,33 +4073,95 @@ class _UserManagementPageState extends State<UserManagementPage>
     List<QueryDocumentSnapshot<Map<String, dynamic>>> docs, {
     required String type,
   }) {
-    final statusHeaderText = (type == 'students' || type == 'pending')
-        ? 'VERIFICATION STATUS'
-        : 'STATUS';
+    final hideRoleInStudentViews =
+        widget.studentsOnlyScope || widget.pendingApprovalOnlyScope;
+    final showAccountStatusColumn =
+        type != 'pending' &&
+        type != 'pending_approval_queue' &&
+        type != 'active_students';
+    final showVerificationColumn =
+        type == 'students' || type == 'active_students';
+    final showRoleColumn = !hideRoleInStudentViews;
 
     return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+      padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
       child: Container(
         width: double.infinity,
         decoration: BoxDecoration(
           color: Colors.white,
           borderRadius: BorderRadius.circular(AppRadii.xl),
+        ),
+        foregroundDecoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(AppRadii.xl),
           border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
         ),
+        clipBehavior: Clip.antiAlias,
         child: LayoutBuilder(
           builder: (context, constraints) {
             final tableWidth = constraints.maxWidth;
-            const totalWeight = 10.4;
-            double colWidth(double weight, double minWidth) {
-              final value = tableWidth * (weight / totalWeight);
-              return value < minWidth ? minWidth : value;
+            final detailsPaneVisible =
+                _selectedUserId != null &&
+                MediaQuery.sizeOf(context).width >=
+                    ResponsiveBreakpoints.splitDetails;
+            final compactTable = detailsPaneVisible || tableWidth < 1120;
+            final tableHorizontalMargin = compactTable ? 8.0 : 12.0;
+            final tableColumnSpacing = compactTable ? 12.0 : 24.0;
+            final columnCount =
+                3 +
+                (showRoleColumn ? 1 : 0) +
+                (showAccountStatusColumn ? 1 : 0) +
+                (showVerificationColumn ? 1 : 0);
+            const nameWeight = 2.4;
+            const emailWeight = 2.8;
+            const idWeight = 1.2;
+            const roleWeight = 1.3;
+            const accountStatusWeight = 1.2;
+            const verificationWeight = 1.5;
+            final totalWeight =
+                nameWeight +
+                emailWeight +
+                idWeight +
+                (showRoleColumn ? roleWeight : 0) +
+                (showAccountStatusColumn ? accountStatusWeight : 0) +
+                (showVerificationColumn ? verificationWeight : 0);
+            final usableWidth =
+                (tableWidth -
+                        (tableHorizontalMargin * 2) -
+                        (tableColumnSpacing * (columnCount - 1)))
+                    .clamp(420.0, double.infinity)
+                    .toDouble();
+            double colWidth(
+              double weight,
+              double minWidth, {
+              double? compactMinWidth,
+            }) {
+              final value = usableWidth * (weight / totalWeight);
+              final effectiveMin = compactTable
+                  ? (compactMinWidth ?? minWidth)
+                  : minWidth;
+              return value < effectiveMin ? effectiveMin : value;
             }
 
-            final nameColWidth = colWidth(2.5, 190);
-            final emailColWidth = colWidth(2.8, 220);
-            final idColWidth = colWidth(1.5, 120);
-            final roleColWidth = colWidth(1.8, 150);
-            final statusColWidth = colWidth(1.8, 170);
+            final nameColWidth = colWidth(
+              nameWeight,
+              190,
+              compactMinWidth: 164,
+            );
+            final emailColWidth = colWidth(
+              emailWeight,
+              220,
+              compactMinWidth: 180,
+            );
+            final idColWidth = colWidth(idWeight, 120, compactMinWidth: 100);
+            final roleColWidth = showRoleColumn
+                ? colWidth(roleWeight, 130, compactMinWidth: 110)
+                : 0.0;
+            final accountStatusColWidth = showAccountStatusColumn
+                ? colWidth(accountStatusWeight, 130, compactMinWidth: 108)
+                : 0.0;
+            final verificationColWidth = showVerificationColumn
+                ? colWidth(verificationWeight, 170, compactMinWidth: 132)
+                : 0.0;
 
             return SingleChildScrollView(
               scrollDirection: Axis.horizontal,
@@ -3234,7 +4172,8 @@ class _UserManagementPageState extends State<UserManagementPage>
                   headingRowColor: WidgetStateProperty.all(
                     widget.pageBackgroundColor,
                   ),
-                  columnSpacing: 24,
+                  horizontalMargin: tableHorizontalMargin,
+                  columnSpacing: tableColumnSpacing,
                   columns: [
                     DataColumn(
                       label: SizedBox(
@@ -3278,34 +4217,51 @@ class _UserManagementPageState extends State<UserManagementPage>
                         ),
                       ),
                     ),
-                    DataColumn(
-                      label: SizedBox(
-                        width: roleColWidth,
-                        child: Text(
-                          'ROLE',
-                          style: TextStyle(
-                            fontWeight: FontWeight.w900,
-                            color: hintColor,
-                            fontSize: 12,
-                            letterSpacing: 0.5,
+                    if (showRoleColumn)
+                      DataColumn(
+                        label: SizedBox(
+                          width: roleColWidth,
+                          child: Text(
+                            'ROLE',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w900,
+                              color: hintColor,
+                              fontSize: 12,
+                              letterSpacing: 0.5,
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                    DataColumn(
-                      label: SizedBox(
-                        width: statusColWidth,
-                        child: Text(
-                          statusHeaderText,
-                          style: TextStyle(
-                            fontWeight: FontWeight.w900,
-                            color: hintColor,
-                            fontSize: 12,
-                            letterSpacing: 0.5,
+                    if (showAccountStatusColumn)
+                      DataColumn(
+                        label: SizedBox(
+                          width: accountStatusColWidth,
+                          child: Text(
+                            'STATUS',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w900,
+                              color: hintColor,
+                              fontSize: 12,
+                              letterSpacing: 0.5,
+                            ),
                           ),
                         ),
                       ),
-                    ),
+                    if (showVerificationColumn)
+                      DataColumn(
+                        label: SizedBox(
+                          width: verificationColWidth,
+                          child: Text(
+                            'VERIFICATION STATUS',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w900,
+                              color: hintColor,
+                              fontSize: 12,
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                        ),
+                      ),
                   ],
                   rows: docs.map((doc) {
                     final data = doc.data();
@@ -3332,6 +4288,16 @@ class _UserManagementPageState extends State<UserManagementPage>
                       }),
                       onSelectChanged: (selected) {
                         if (selected == null) return;
+                        final canShowSideDetails =
+                            MediaQuery.sizeOf(context).width >=
+                            ResponsiveBreakpoints.splitDetails;
+                        if (!canShowSideDetails && selected) {
+                          _openMobileProfileDetailsSheet(
+                            uid: doc.id,
+                            data: data,
+                          );
+                          return;
+                        }
                         if (!selected) {
                           if (!_detailEditing) {
                             _clearDetailSelection();
@@ -3402,35 +4368,47 @@ class _UserManagementPageState extends State<UserManagementPage>
                             ),
                           ),
                         ),
-                        DataCell(
-                          SizedBox(
-                            width: roleColWidth,
-                            child: Text(
-                              _formatRole(role),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: textDark,
-                                fontWeight: FontWeight.w600,
+                        if (showRoleColumn)
+                          DataCell(
+                            SizedBox(
+                              width: roleColWidth,
+                              child: Text(
+                                _formatRole(role),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: textDark,
+                                  fontWeight: FontWeight.w600,
+                                ),
                               ),
                             ),
                           ),
-                        ),
-                        DataCell(
-                          SizedBox(
-                            width: statusColWidth,
-                            child: Align(
-                              alignment: Alignment.centerLeft,
-                              child: _buildStatusCell(
-                                listType: type,
-                                role: role,
-                                accountStatus: accountStatus,
-                                studentVerificationStatus: studentVerification,
-                                compact: true,
+                        if (showAccountStatusColumn)
+                          DataCell(
+                            SizedBox(
+                              width: accountStatusColWidth,
+                              child: Align(
+                                alignment: Alignment.centerLeft,
+                                child: _buildStatusChip(
+                                  accountStatus,
+                                  compact: true,
+                                ),
                               ),
                             ),
                           ),
-                        ),
+                        if (showVerificationColumn)
+                          DataCell(
+                            SizedBox(
+                              width: verificationColWidth,
+                              child: Align(
+                                alignment: Alignment.centerLeft,
+                                child: _buildVerificationChip(
+                                  studentVerification,
+                                  compact: true,
+                                ),
+                              ),
+                            ),
+                          ),
                       ],
                     );
                   }).toList(),
@@ -3445,6 +4423,7 @@ class _UserManagementPageState extends State<UserManagementPage>
 
   Widget _buildDesktopDetailsPanel({
     required QueryDocumentSnapshot<Map<String, dynamic>>? selectedDoc,
+    VoidCallback? onClose,
   }) {
     if (selectedDoc == null) {
       return const SizedBox.shrink();
@@ -3458,7 +4437,7 @@ class _UserManagementPageState extends State<UserManagementPage>
           border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withValues(alpha: 0.02),
+              color: Colors.black.withValues(alpha: 0.03),
               blurRadius: 10,
               offset: const Offset(0, 4),
             ),
@@ -3494,6 +4473,8 @@ class _UserManagementPageState extends State<UserManagementPage>
     final data = selectedDoc.data();
     final detailName = _displayName(data);
     final isStudent = _isStudentRole(_detailRole);
+    final hideRoleInStudentViews =
+        widget.studentsOnlyScope || widget.pendingApprovalOnlyScope;
     final detailAccountStatus = _readAccountStatus(data, role: _detailRole);
     final detailVerification = _readStudentVerification(
       data,
@@ -3542,13 +4523,9 @@ class _UserManagementPageState extends State<UserManagementPage>
       final fallback = _detailCollegeCtrl.text.trim();
       return fallback.isEmpty ? '--' : fallback;
     })();
-    final selectedYear =
-        _detailSelectedYearLevel ??
-        int.tryParse(_detailYearLevelCtrl.text.trim());
-    final yearChoices = <int>[1, 2, 3, 4, 5];
-    if (selectedYear != null && !yearChoices.contains(selectedYear)) {
-      yearChoices.insert(0, selectedYear);
-    }
+    final readOnlyMode = !_detailEditing;
+    final detailStudentNo = _detailStudentNoCtrl.text.trim();
+    final detailEmployeeNo = _detailEmployeeNoCtrl.text.trim();
 
     Widget sectionCard(String title, List<Widget> children) {
       return Container(
@@ -3564,11 +4541,11 @@ class _UserManagementPageState extends State<UserManagementPage>
           children: [
             Text(
               title,
-              style: const TextStyle(
-                color: hintColor,
+              style: TextStyle(
+                color: readOnlyMode ? textDark : hintColor,
                 fontWeight: FontWeight.w900,
-                letterSpacing: 0.7,
-                fontSize: 11,
+                letterSpacing: readOnlyMode ? 0.0 : 0.7,
+                fontSize: readOnlyMode ? 31 / 2 : 11,
               ),
             ),
             const SizedBox(height: 10),
@@ -3645,356 +4622,378 @@ class _UserManagementPageState extends State<UserManagementPage>
         border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.02),
+            color: Colors.black.withValues(alpha: 0.03),
             blurRadius: 10,
             offset: const Offset(0, 4),
           ),
         ],
       ),
       child: Padding(
-        padding: const EdgeInsets.all(14),
+        padding: EdgeInsets.zero,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                const Icon(
-                  Icons.person_outline_rounded,
-                  color: primaryColor,
-                  size: 20,
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    _detailEditing ? 'Edit Profile' : 'Profile Details',
-                    style: const TextStyle(
-                      color: primaryColor,
-                      fontWeight: FontWeight.w900,
-                      fontSize: 17,
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 14, 10, 8),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.person_outline_rounded,
+                    color: primaryColor,
+                    size: 20,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      _detailEditing ? 'Edit Profile' : 'Profile Details',
+                      style: const TextStyle(
+                        color: primaryColor,
+                        fontWeight: FontWeight.w900,
+                        fontSize: 17,
+                      ),
                     ),
                   ),
-                ),
-                IconButton(
-                  tooltip: 'Clear selection',
-                  onPressed: _clearDetailSelection,
-                  icon: const Icon(Icons.close_rounded, color: hintColor),
-                ),
-              ],
+                  IconButton(
+                    tooltip: onClose != null
+                        ? 'Close details'
+                        : 'Clear selection',
+                    onPressed: onClose ?? _clearDetailSelection,
+                    icon: const Icon(Icons.close_rounded, color: hintColor),
+                  ),
+                ],
+              ),
             ),
             const SizedBox(height: 8),
             const Divider(height: 1),
-            const SizedBox(height: 12),
-            if (_detailEditing) ...[
-              const Text(
-                '* Required fields',
-                style: TextStyle(
-                  color: hintColor,
-                  fontWeight: FontWeight.w800,
-                  fontSize: 12,
-                ),
-              ),
-              const SizedBox(height: 10),
-            ],
             Expanded(
               child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    sectionCard('PROFILE PHOTO', [
-                      Row(
-                        children: [
-                          _buildUserAvatar(
-                            data,
-                            detailName,
-                            radius: 24,
-                            fontSize: 16,
-                          ),
-                          const SizedBox(width: 10),
-                          const Expanded(
-                            child: Text(
-                              'Profile Photo',
-                              style: TextStyle(
-                                color: textDark,
-                                fontWeight: FontWeight.w900,
-                                fontSize: 14.5,
-                              ),
+                    if (_detailEditing) ...[
+                      const Text(
+                        '* Required fields',
+                        style: TextStyle(
+                          color: hintColor,
+                          fontWeight: FontWeight.w800,
+                          fontSize: 12,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                    ],
+                    sectionCard(
+                      readOnlyMode ? 'Student Information' : 'PROFILE PHOTO',
+                      [
+                        Row(
+                          children: [
+                            _buildUserAvatar(
+                              data,
+                              detailName,
+                              radius: 24,
+                              fontSize: 16,
                             ),
-                          ),
-                          if (canDeptAdminEditPhoto) ...[
-                            const SizedBox(width: 8),
-                            SizedBox(
-                              height: 36,
-                              child: OutlinedButton.icon(
-                                onPressed: _detailPhotoUploading
-                                    ? null
-                                    : () => _changeDetailProfilePhoto(
-                                        targetUid: selectedDoc.id,
-                                        targetData: data,
-                                        targetVerificationStatus:
-                                            detailVerification,
-                                      ),
-                                icon: _detailPhotoUploading
-                                    ? const SizedBox(
-                                        width: 14,
-                                        height: 14,
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2,
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: readOnlyMode
+                                  ? Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          detailName,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                            color: textDark,
+                                            fontWeight: FontWeight.w900,
+                                            fontSize: 17,
+                                          ),
                                         ),
-                                      )
-                                    : const Icon(
-                                        Icons.photo_camera_outlined,
-                                        size: 16,
+                                        const SizedBox(height: 3),
+                                        Text(
+                                          isStudent
+                                              ? 'Student No: ${detailStudentNo.isEmpty ? '--' : detailStudentNo}'
+                                              : 'Employee ID: ${detailEmployeeNo.isEmpty ? '--' : detailEmployeeNo}',
+                                          style: const TextStyle(
+                                            color: hintColor,
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          isStudent
+                                              ? 'Program: $selectedProgramLabel'
+                                              : 'Role: ${_formatRole(_detailRole)}',
+                                          style: const TextStyle(
+                                            color: hintColor,
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                      ],
+                                    )
+                                  : const Text(
+                                      'Profile Photo',
+                                      style: TextStyle(
+                                        color: textDark,
+                                        fontWeight: FontWeight.w900,
+                                        fontSize: 14.5,
                                       ),
-                                label: Text(
-                                  _detailPhotoUploading
-                                      ? 'Uploading...'
-                                      : 'Change Photo',
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.w800,
-                                    fontSize: 12.5,
+                                    ),
+                            ),
+                            if (canDeptAdminEditPhoto) ...[
+                              const SizedBox(width: 8),
+                              SizedBox(
+                                height: 36,
+                                child: OutlinedButton.icon(
+                                  onPressed: _detailPhotoUploading
+                                      ? null
+                                      : () => _changeDetailProfilePhoto(
+                                          targetUid: selectedDoc.id,
+                                          targetData: data,
+                                          targetVerificationStatus:
+                                              detailVerification,
+                                        ),
+                                  icon: _detailPhotoUploading
+                                      ? const SizedBox(
+                                          width: 14,
+                                          height: 14,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                          ),
+                                        )
+                                      : const Icon(
+                                          Icons.photo_camera_outlined,
+                                          size: 16,
+                                        ),
+                                  label: Text(
+                                    _detailPhotoUploading
+                                        ? 'Uploading...'
+                                        : 'Change Photo',
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w800,
+                                      fontSize: 12.5,
+                                    ),
                                   ),
-                                ),
-                                style: OutlinedButton.styleFrom(
-                                  foregroundColor: primaryColor,
-                                  side: BorderSide(
-                                    color: primaryColor.withValues(alpha: 0.4),
-                                  ),
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 10,
-                                    vertical: 0,
-                                  ),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(
-                                      AppRadii.md,
+                                  style: OutlinedButton.styleFrom(
+                                    foregroundColor: primaryColor,
+                                    side: BorderSide(
+                                      color: primaryColor.withValues(
+                                        alpha: 0.4,
+                                      ),
+                                    ),
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 10,
+                                      vertical: 0,
+                                    ),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(
+                                        AppRadii.md,
+                                      ),
                                     ),
                                   ),
                                 ),
                               ),
-                            ),
+                            ],
                           ],
-                        ],
-                      ),
-                    ]),
-                    sectionCard('BASIC INFO', [
-                      editableField(
-                        _detailFirstNameCtrl,
-                        'First Name',
-                        icon: Icons.person_outline_rounded,
-                        enabled: _detailEditing,
-                        required: _detailEditing,
-                        errorText:
-                            _detailEditing &&
-                                _detailFirstNameCtrl.text.trim().isEmpty
-                            ? 'First Name is required.'
-                            : null,
-                      ),
-                      const SizedBox(height: 10),
-                      editableField(
-                        _detailMiddleNameCtrl,
-                        'Middle Name',
-                        icon: Icons.badge_outlined,
-                        enabled: _detailEditing,
-                      ),
-                      const SizedBox(height: 10),
-                      editableField(
-                        _detailLastNameCtrl,
-                        'Last Name',
-                        icon: Icons.person_outline_rounded,
-                        enabled: _detailEditing,
-                        required: _detailEditing,
-                        errorText:
-                            _detailEditing &&
-                                _detailLastNameCtrl.text.trim().isEmpty
-                            ? 'Last Name is required.'
-                            : null,
-                      ),
-                      const SizedBox(height: 10),
-                      editableField(
-                        _detailEmailCtrl,
-                        'Email',
-                        icon: Icons.email_outlined,
-                        enabled: false,
-                      ),
-                      if (!(isStudent && isDeptScopedReviewer)) ...[
-                        const SizedBox(height: 10),
-                        readOnlyField(
-                          'Role',
-                          _formatRole(_detailRole),
-                          icon: Icons.admin_panel_settings_outlined,
                         ),
                       ],
-                    ]),
-                    sectionCard(isStudent ? 'STUDENT PROFILE' : 'STAFF PROFILE', [
-                      if (isStudent) ...[
+                    ),
+                    sectionCard(
+                      readOnlyMode ? 'Basic Information' : 'BASIC INFO',
+                      [
                         editableField(
-                          _detailStudentNoCtrl,
-                          'Student Number',
-                          icon: Icons.badge_outlined,
-                          enabled: _detailEditing,
-                          required: false,
-                          keyboardType: TextInputType.number,
-                          inputFormatters: const [
-                            _HyphenatedDigitsFormatter(
-                              firstGroup: 3,
-                              secondGroup: 4,
-                            ),
-                          ],
-                          onChanged: _scheduleDetailStudentNoAvailabilityCheck,
-                          helperText: _detailStudentNoHelperText(),
-                          errorText: _detailStudentNoErrorText(),
-                        ),
-                        if (!isDeptScopedReviewer) ...[
-                          const SizedBox(height: 10),
-                          readOnlyField(
-                            'College',
-                            selectedCollegeLabel,
-                            icon: Icons.account_balance_outlined,
-                            required: false,
-                          ),
-                        ],
-                        const SizedBox(height: 10),
-                        if (!_detailEditing)
-                          readOnlyField(
-                            'Program',
-                            selectedProgramLabel,
-                            icon: Icons.school_outlined,
-                          )
-                        else
-                          DropdownButtonFormField<String>(
-                            key: ValueKey(
-                              'detail-program-${_selectedUserId ?? ''}-${selectedProgram ?? 'none'}-${_detailProgramOptions.length}',
-                            ),
-                            isExpanded: true,
-                            initialValue: selectedProgram,
-                            decoration: _detailDecor(
-                              'Program',
-                              enabled: !_detailProgramLoading,
-                              icon: Icons.school_outlined,
-                              required: true,
-                              helperText: _detailProgramLoading
-                                  ? 'Loading programs...'
-                                  : null,
-                              errorText:
-                                  (selectedProgram == null ||
-                                      selectedProgram.trim().isEmpty)
-                                  ? 'Program is required.'
-                                  : null,
-                            ),
-                            items: [
-                              if (selectedProgram != null &&
-                                  !hasSelectedProgram)
-                                DropdownMenuItem<String>(
-                                  value: selectedProgram,
-                                  child: Text(
-                                    selectedProgram,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                ),
-                              ..._detailProgramOptions.map((doc) {
-                                final row = doc.data();
-                                final code = (row['programCode'] ?? doc.id)
-                                    .toString();
-                                final name =
-                                    (row['name'] ??
-                                            row['programName'] ??
-                                            row['title'] ??
-                                            '')
-                                        .toString()
-                                        .trim();
-                                final label = name.isEmpty ? code : name;
-                                return DropdownMenuItem<String>(
-                                  value: doc.id,
-                                  child: Text(
-                                    label,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                );
-                              }),
-                            ],
-                            onChanged: !_detailProgramLoading
-                                ? (v) {
-                                    setState(() {
-                                      _detailSelectedProgramId = v;
-                                      _detailProgramCtrl.text = (v ?? '')
-                                          .trim();
-                                    });
-                                  }
-                                : null,
-                          ),
-                        const SizedBox(height: 10),
-                        if (!_detailEditing)
-                          readOnlyField(
-                            'Year Level',
-                            selectedYear == null ? '--' : 'Year $selectedYear',
-                            icon: Icons.layers_outlined,
-                          )
-                        else
-                          DropdownButtonFormField<int>(
-                            key: ValueKey(
-                              'detail-year-${_selectedUserId ?? ''}-${selectedYear ?? 'none'}',
-                            ),
-                            isExpanded: true,
-                            initialValue: selectedYear,
-                            decoration: _detailDecor(
-                              'Year Level',
-                              enabled: true,
-                              icon: Icons.layers_outlined,
-                              required: true,
-                              errorText: selectedYear == null
-                                  ? 'Year Level is required.'
-                                  : null,
-                            ),
-                            items: yearChoices.map((year) {
-                              return DropdownMenuItem<int>(
-                                value: year,
-                                child: Text('Year $year'),
-                              );
-                            }).toList(),
-                            onChanged: (v) {
-                              setState(() {
-                                _detailSelectedYearLevel = v;
-                                _detailYearLevelCtrl.text = v?.toString() ?? '';
-                              });
-                            },
-                          ),
-                      ] else ...[
-                        editableField(
-                          _detailEmployeeNoCtrl,
-                          'Employee ID',
-                          icon: Icons.badge_outlined,
+                          _detailFirstNameCtrl,
+                          'First Name',
+                          icon: Icons.person_outline_rounded,
                           enabled: _detailEditing,
                           required: _detailEditing,
-                          keyboardType: TextInputType.number,
-                          inputFormatters: const [
-                            _HyphenatedDigitsFormatter(
-                              firstGroup: 4,
-                              secondGroup: 3,
-                            ),
-                          ],
-                          onChanged: _scheduleDetailEmployeeNoAvailabilityCheck,
-                          helperText: _detailEmployeeNoHelperText(),
-                          errorText: _detailEmployeeNoErrorText(),
+                          errorText:
+                              _detailEditing &&
+                                  _detailFirstNameCtrl.text.trim().isEmpty
+                              ? 'First Name is required.'
+                              : null,
                         ),
-                        if (_roleNeedsDepartmentFor(_detailRole)) ...[
+                        const SizedBox(height: 10),
+                        editableField(
+                          _detailMiddleNameCtrl,
+                          'Middle Name',
+                          icon: Icons.badge_outlined,
+                          enabled: _detailEditing,
+                        ),
+                        const SizedBox(height: 10),
+                        editableField(
+                          _detailLastNameCtrl,
+                          'Last Name',
+                          icon: Icons.person_outline_rounded,
+                          enabled: _detailEditing,
+                          required: _detailEditing,
+                          errorText:
+                              _detailEditing &&
+                                  _detailLastNameCtrl.text.trim().isEmpty
+                              ? 'Last Name is required.'
+                              : null,
+                        ),
+                        const SizedBox(height: 10),
+                        editableField(
+                          _detailEmailCtrl,
+                          'Email',
+                          icon: Icons.email_outlined,
+                          enabled: false,
+                        ),
+                        if (!hideRoleInStudentViews &&
+                            !(isStudent && isDeptScopedReviewer)) ...[
                           const SizedBox(height: 10),
-                          editableField(
-                            _detailDepartmentCtrl,
-                            'Department (College Code)',
-                            icon: Icons.business_outlined,
-                            enabled: _detailEditing,
-                            required: _detailEditing,
-                            errorText:
-                                _detailEditing &&
-                                    _detailDepartmentCtrl.text.trim().isEmpty
-                                ? 'Department is required.'
-                                : null,
+                          readOnlyField(
+                            'Role',
+                            _formatRole(_detailRole),
+                            icon: Icons.admin_panel_settings_outlined,
                           ),
                         ],
                       ],
-                    ]),
-                    sectionCard('ACCESS', [
+                    ),
+                    sectionCard(
+                      readOnlyMode
+                          ? (isStudent ? 'Student Profile' : 'Staff Profile')
+                          : (isStudent ? 'STUDENT PROFILE' : 'STAFF PROFILE'),
+                      [
+                        if (isStudent) ...[
+                          editableField(
+                            _detailStudentNoCtrl,
+                            'Student Number',
+                            icon: Icons.badge_outlined,
+                            enabled: _detailEditing,
+                            required: false,
+                            keyboardType: TextInputType.number,
+                            inputFormatters: const [
+                              _HyphenatedDigitsFormatter(
+                                firstGroup: 3,
+                                secondGroup: 4,
+                              ),
+                            ],
+                            onChanged:
+                                _scheduleDetailStudentNoAvailabilityCheck,
+                            helperText: _detailStudentNoHelperText(),
+                            errorText: _detailStudentNoErrorText(),
+                          ),
+                          if (!isDeptScopedReviewer) ...[
+                            const SizedBox(height: 10),
+                            readOnlyField(
+                              'College',
+                              selectedCollegeLabel,
+                              icon: Icons.account_balance_outlined,
+                              required: false,
+                            ),
+                          ],
+                          const SizedBox(height: 10),
+                          if (!_detailEditing)
+                            readOnlyField(
+                              'Program',
+                              selectedProgramLabel,
+                              icon: Icons.school_outlined,
+                            )
+                          else
+                            DropdownButtonFormField<String>(
+                              key: ValueKey(
+                                'detail-program-${_selectedUserId ?? ''}-${selectedProgram ?? 'none'}-${_detailProgramOptions.length}',
+                              ),
+                              isExpanded: true,
+                              initialValue: selectedProgram,
+                              decoration: _detailDecor(
+                                'Program',
+                                enabled: !_detailProgramLoading,
+                                icon: Icons.school_outlined,
+                                required: true,
+                                helperText: _detailProgramLoading
+                                    ? 'Loading programs...'
+                                    : null,
+                                errorText:
+                                    (selectedProgram == null ||
+                                        selectedProgram.trim().isEmpty)
+                                    ? 'Program is required.'
+                                    : null,
+                              ),
+                              items: [
+                                if (selectedProgram != null &&
+                                    !hasSelectedProgram)
+                                  DropdownMenuItem<String>(
+                                    value: selectedProgram,
+                                    child: Text(
+                                      selectedProgram,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                ..._detailProgramOptions.map((doc) {
+                                  final row = doc.data();
+                                  final code = (row['programCode'] ?? doc.id)
+                                      .toString();
+                                  final name =
+                                      (row['name'] ??
+                                              row['programName'] ??
+                                              row['title'] ??
+                                              '')
+                                          .toString()
+                                          .trim();
+                                  final label = name.isEmpty ? code : name;
+                                  return DropdownMenuItem<String>(
+                                    value: doc.id,
+                                    child: Text(
+                                      label,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  );
+                                }),
+                              ],
+                              onChanged: !_detailProgramLoading
+                                  ? (v) {
+                                      setState(() {
+                                        _detailSelectedProgramId = v;
+                                        _detailProgramCtrl.text = (v ?? '')
+                                            .trim();
+                                      });
+                                    }
+                                  : null,
+                            ),
+                        ] else ...[
+                          editableField(
+                            _detailEmployeeNoCtrl,
+                            'Employee ID',
+                            icon: Icons.badge_outlined,
+                            enabled: _detailEditing,
+                            required: _detailEditing,
+                            keyboardType: TextInputType.number,
+                            inputFormatters: const [
+                              _HyphenatedDigitsFormatter(
+                                firstGroup: 4,
+                                secondGroup: 3,
+                              ),
+                            ],
+                            onChanged:
+                                _scheduleDetailEmployeeNoAvailabilityCheck,
+                            helperText: _detailEmployeeNoHelperText(),
+                            errorText: _detailEmployeeNoErrorText(),
+                          ),
+                          if (_roleNeedsDepartmentFor(_detailRole)) ...[
+                            const SizedBox(height: 10),
+                            editableField(
+                              _detailDepartmentCtrl,
+                              'Department (College Code)',
+                              icon: Icons.business_outlined,
+                              enabled: _detailEditing,
+                              required: _detailEditing,
+                              errorText:
+                                  _detailEditing &&
+                                      _detailDepartmentCtrl.text.trim().isEmpty
+                                  ? 'Department is required.'
+                                  : null,
+                            ),
+                          ],
+                        ],
+                      ],
+                    ),
+                    sectionCard(readOnlyMode ? 'Access' : 'ACCESS', [
                       if (!_detailEditing)
                         readOnlyField(
                           'Account Status',
@@ -4002,7 +5001,6 @@ class _UserManagementPageState extends State<UserManagementPage>
                               .trim()
                               .replaceAll('_', ' ')
                               .toUpperCase(),
-                          icon: Icons.security_outlined,
                         )
                       else
                         DropdownButtonFormField<String>(
@@ -4034,8 +5032,8 @@ class _UserManagementPageState extends State<UserManagementPage>
               ),
             ),
             Container(
-              margin: const EdgeInsets.only(top: 10),
-              padding: const EdgeInsets.only(top: 10),
+              margin: const EdgeInsets.only(top: 12),
+              padding: const EdgeInsets.only(top: 12),
               decoration: BoxDecoration(
                 border: Border(
                   top: BorderSide(color: Colors.black.withValues(alpha: 0.08)),
@@ -4121,38 +5119,33 @@ class _UserManagementPageState extends State<UserManagementPage>
                           ),
                           const SizedBox(height: 8),
                         ],
-                        if (inPendingEditContext) ...[
+                        if (canEditProfileNow) ...[
                           SizedBox(
                             width: double.infinity,
                             child: FilledButton.icon(
-                              onPressed: canEditProfileNow
-                                  ? () {
-                                      setState(() {
-                                        _detailEditing = true;
-                                        _detailEmailAvailabilityError = null;
-                                        _detailStudentNoAvailabilityError =
-                                            null;
-                                        _detailEmployeeNoAvailabilityError =
-                                            null;
-                                      });
-                                      if (_isStudentRole(_detailRole)) {
-                                        _loadDetailProgramsForCollege(
-                                          _detailCollegeCtrl.text.trim(),
-                                          initialProgramId:
-                                              _detailSelectedProgramId,
-                                        );
-                                      }
-                                      _scheduleDetailEmailAvailabilityCheck(
-                                        _detailEmailCtrl.text,
-                                      );
-                                      _scheduleDetailStudentNoAvailabilityCheck(
-                                        _detailStudentNoCtrl.text,
-                                      );
-                                      _scheduleDetailEmployeeNoAvailabilityCheck(
-                                        _detailEmployeeNoCtrl.text,
-                                      );
-                                    }
-                                  : null,
+                              onPressed: () {
+                                setState(() {
+                                  _detailEditing = true;
+                                  _detailEmailAvailabilityError = null;
+                                  _detailStudentNoAvailabilityError = null;
+                                  _detailEmployeeNoAvailabilityError = null;
+                                });
+                                if (_isStudentRole(_detailRole)) {
+                                  _loadDetailProgramsForCollege(
+                                    _detailCollegeCtrl.text.trim(),
+                                    initialProgramId: _detailSelectedProgramId,
+                                  );
+                                }
+                                _scheduleDetailEmailAvailabilityCheck(
+                                  _detailEmailCtrl.text,
+                                );
+                                _scheduleDetailStudentNoAvailabilityCheck(
+                                  _detailStudentNoCtrl.text,
+                                );
+                                _scheduleDetailEmployeeNoAvailabilityCheck(
+                                  _detailEmployeeNoCtrl.text,
+                                );
+                              },
                               style: FilledButton.styleFrom(
                                 backgroundColor: primaryColor,
                                 foregroundColor: Colors.white,
@@ -4176,17 +5169,6 @@ class _UserManagementPageState extends State<UserManagementPage>
                               ),
                             ),
                           ),
-                          if (!canEditProfileNow) ...[
-                            const SizedBox(height: 8),
-                            const Text(
-                              'Editing is available only when student status is Pending Approval.',
-                              style: TextStyle(
-                                color: hintColor,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                          ],
                         ],
                         const SizedBox(height: 8),
                         SizedBox(
@@ -4331,12 +5313,12 @@ class _UserManagementPageState extends State<UserManagementPage>
         case 'verified':
           return 'Verified';
         case 'pending_email_verification':
-          return compact ? 'Email Pend' : 'Email Pending';
+          return 'Email Pending';
         case 'pending_profile':
-          return compact ? 'Profile Pend' : 'Profile Pending';
+          return 'Profile Pending';
         case 'pending_approval':
         case 'pending_verification':
-          return compact ? 'Approval Pend' : 'Approval Pending';
+          return 'Approval Pending';
         case 'rejected':
           return 'Rejected';
         default:
@@ -4384,48 +5366,88 @@ class _UserManagementPageState extends State<UserManagementPage>
     );
   }
 
-  Widget _buildStatusCell({
-    required String listType,
-    required String role,
-    required String accountStatus,
-    required String studentVerificationStatus,
-    bool compact = false,
-  }) {
-    if (!_isStudentRole(role)) {
-      return _buildStatusChip(accountStatus, compact: compact);
-    }
-    if (listType == 'active_students') {
-      return _buildStatusChip(accountStatus, compact: compact);
-    }
-    if (accountStatus == 'active') {
-      return _buildVerificationChip(
-        studentVerificationStatus,
-        compact: compact,
-      );
-    }
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _buildStatusChip(accountStatus, compact: compact),
-        const SizedBox(height: 6),
-        _buildVerificationChip(studentVerificationStatus, compact: compact),
-      ],
+  Future<void> _openMobileProfileDetailsSheet({
+    required String uid,
+    required Map<String, dynamic> data,
+  }) async {
+    _loadDetailFromData(uid, data);
+    if (!mounted) return;
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(AppRadii.xxl)),
+      ),
+      builder: (sheetContext) {
+        final media = MediaQuery.of(sheetContext);
+        final reservedTop = media.padding.top + kToolbarHeight + 8;
+        final modalHeight = (media.size.height - reservedTop)
+            .clamp(420.0, media.size.height * 0.92)
+            .toDouble();
+        return SafeArea(
+          top: false,
+          child: SizedBox(
+            height: modalHeight,
+            child:
+                ValueListenableBuilder<
+                  List<QueryDocumentSnapshot<Map<String, dynamic>>>
+                >(
+                  valueListenable: _allUserDocs,
+                  builder: (context, docs, _) {
+                    QueryDocumentSnapshot<Map<String, dynamic>>? selectedDoc;
+                    for (final doc in docs) {
+                      if (doc.id == uid) {
+                        selectedDoc = doc;
+                        break;
+                      }
+                    }
+                    if (selectedDoc == null) {
+                      return const Center(
+                        child: CircularProgressIndicator(strokeWidth: 2.4),
+                      );
+                    }
+                    return Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+                      child: _buildDesktopDetailsPanel(
+                        selectedDoc: selectedDoc,
+                        onClose: () => Navigator.of(sheetContext).pop(),
+                      ),
+                    );
+                  },
+                ),
+          ),
+        );
+      },
     );
+
+    if (!mounted) return;
+    _clearDetailSelection();
   }
 
-  Widget _buildUserCard(String uid, Map<String, dynamic> data) {
+  Widget _buildUserCard(
+    String uid,
+    Map<String, dynamic> data, {
+    required String listType,
+  }) {
     final role = (data['role'] ?? '').toString().trim().toLowerCase();
     final accountStatus = _readAccountStatus(data, role: role);
     final studentVerification = _readStudentVerification(data, role: role);
     final isStudent = _isStudentRole(role);
+    final hideRoleInStudentViews =
+        widget.studentsOnlyScope || widget.pendingApprovalOnlyScope;
     final name = _displayName(data);
     final id = _displayId(data);
     final email = (data['email'] ?? '').toString();
 
-    final badgeStatus = isStudent && accountStatus == 'active'
-        ? studentVerification
-        : accountStatus;
+    final badgeStatus = (() {
+      if (!isStudent) return accountStatus;
+      if (listType == 'active_students') return studentVerification;
+      if (listType == 'students') return accountStatus;
+      return accountStatus == 'active' ? studentVerification : accountStatus;
+    })();
     Color statusColor;
     IconData statusIcon;
     switch (badgeStatus) {
@@ -4450,232 +5472,626 @@ class _UserManagementPageState extends State<UserManagementPage>
         statusIcon = Icons.help_outline_rounded;
     }
 
-    return Container(
-      margin: const EdgeInsets.only(bottom: 16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(AppRadii.xl),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.03),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
-      child: Padding(
+    final showPendingStatusChip =
+        listType != 'pending' && listType != 'pending_approval_queue';
+    final isSelected = _selectedUserId == uid;
+
+    return GestureDetector(
+      onTap: () => _openMobileProfileDetailsSheet(uid: uid, data: data),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 12),
         padding: const EdgeInsets.all(AppSpacing.md),
+        decoration: BoxDecoration(
+          color: isSelected
+              ? primaryColor.withValues(alpha: 0.05)
+              : Colors.white,
+          borderRadius: BorderRadius.circular(AppRadii.xl),
+          border: Border.all(
+            color: isSelected
+                ? primaryColor
+                : Colors.black.withValues(alpha: 0.05),
+            width: isSelected ? 2 : 1,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.02),
+              blurRadius: 10,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
         child: Row(
           children: [
-            _buildUserAvatar(data, name, radius: 28, fontSize: 22),
-            const SizedBox(width: 16),
+            _buildUserAvatar(data, name, radius: 24, fontSize: 18),
+            const SizedBox(width: 12),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(
                     children: [
-                      Flexible(
+                      Expanded(
                         child: Text(
                           name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
                             fontWeight: FontWeight.w900,
-                            fontSize: 17,
+                            fontSize: 16,
                             color: textDark,
                           ),
-                          overflow: TextOverflow.ellipsis,
                         ),
                       ),
-                      const SizedBox(width: 8),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 3,
-                        ),
-                        decoration: BoxDecoration(
-                          color: statusColor.withValues(alpha: 0.12),
-                          borderRadius: BorderRadius.circular(AppRadii.xxl),
-                          border: Border.all(
-                            color: statusColor.withValues(alpha: 0.2),
-                            width: 1,
+                      if (showPendingStatusChip) ...[
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 9,
+                            vertical: 3,
+                          ),
+                          decoration: BoxDecoration(
+                            color: statusColor.withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(AppRadii.xxl),
+                            border: Border.all(
+                              color: statusColor.withValues(alpha: 0.2),
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(statusIcon, size: 11, color: statusColor),
+                              const SizedBox(width: 5),
+                              Text(
+                                badgeStatus.replaceAll('_', ' ').toUpperCase(),
+                                style: TextStyle(
+                                  color: statusColor,
+                                  fontSize: 9.8,
+                                  fontWeight: FontWeight.w900,
+                                  letterSpacing: 0.4,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(statusIcon, size: 12, color: statusColor),
-                            const SizedBox(width: 5),
-                            Text(
-                              badgeStatus.replaceAll('_', ' ').toUpperCase(),
-                              style: TextStyle(
-                                color: statusColor,
-                                fontSize: 10,
-                                fontWeight: FontWeight.w900,
-                                letterSpacing: 0.5,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
+                      ],
                     ],
                   ),
                   const SizedBox(height: 6),
                   Text(
                     email,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                       color: hintColor,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
                     ),
                   ),
-                  const SizedBox(height: 8),
-                  Row(
+                  const SizedBox(height: 6),
+                  Wrap(
+                    spacing: 12,
+                    runSpacing: 4,
+                    crossAxisAlignment: WrapCrossAlignment.center,
                     children: [
-                      Icon(
-                        Icons.badge_outlined,
-                        size: 16,
-                        color: primaryColor.withValues(alpha: 0.5),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.badge_outlined,
+                            size: 14,
+                            color: primaryColor.withValues(alpha: 0.55),
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            id,
+                            style: const TextStyle(
+                              color: textDark,
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ],
                       ),
-                      const SizedBox(width: 6),
-                      Text(
-                        'ID: $id',
-                        style: const TextStyle(
-                          color: textDark,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w800,
+                      if (!hideRoleInStudentViews)
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.work_outline_rounded,
+                              size: 14,
+                              color: primaryColor.withValues(alpha: 0.55),
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              _formatRole(role),
+                              style: const TextStyle(
+                                color: textDark,
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ],
                         ),
-                      ),
-                      const SizedBox(width: 16),
-                      Icon(
-                        Icons.work_outline_rounded,
-                        size: 16,
-                        color: primaryColor.withValues(alpha: 0.5),
-                      ),
-                      const SizedBox(width: 6),
-                      Text(
-                        _formatRole(role),
-                        style: const TextStyle(
-                          color: textDark,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                    ],
-                  ),
-                  if (isStudent && accountStatus != 'active') ...[
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Icon(
-                          Icons.fact_check_outlined,
-                          size: 16,
-                          color: Colors.orange.shade700,
-                        ),
-                        const SizedBox(width: 6),
+                      if (isStudent && !showPendingStatusChip)
                         Text(
-                          'Verification: ${studentVerification.replaceAll('_', ' ').toUpperCase()}',
+                          studentVerification
+                              .replaceAll('_', ' ')
+                              .toUpperCase(),
                           style: TextStyle(
                             color: Colors.orange.shade700,
-                            fontSize: 12,
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            const Icon(Icons.chevron_right_rounded, color: Colors.grey),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+typedef _StudentImportValidator =
+    Future<_StudentImportValidationResult> Function(String csvText);
+
+class _ImportedStudentDraft {
+  final int rowNumber;
+  final String studentNo;
+  final String firstName;
+  final String middleName;
+  final String lastName;
+  final String collegeId;
+  final String programId;
+  final String email;
+  final String? existingUid;
+
+  const _ImportedStudentDraft({
+    required this.rowNumber,
+    required this.studentNo,
+    required this.firstName,
+    required this.middleName,
+    required this.lastName,
+    required this.collegeId,
+    required this.programId,
+    required this.email,
+    required this.existingUid,
+  });
+
+  String get fullName => [
+    firstName.trim(),
+    middleName.trim(),
+    lastName.trim(),
+  ].where((p) => p.isNotEmpty).join(' ').trim();
+}
+
+class _StudentImportIssue {
+  final int rowNumber;
+  final String message;
+  final String? studentNo;
+  final String? fullName;
+
+  const _StudentImportIssue({
+    required this.rowNumber,
+    required this.message,
+    this.studentNo,
+    this.fullName,
+  });
+}
+
+class _StudentImportValidationResult {
+  final int totalRows;
+  final List<_ImportedStudentDraft> validRows;
+  final List<_StudentImportIssue> issues;
+
+  const _StudentImportValidationResult({
+    required this.totalRows,
+    required this.validRows,
+    required this.issues,
+  });
+
+  int get invalidCount => issues.length;
+}
+
+class _StudentImportDialogResult {
+  final List<_ImportedStudentDraft> rows;
+  final int invalidCount;
+  final int totalRows;
+  final String fileName;
+
+  const _StudentImportDialogResult({
+    required this.rows,
+    required this.invalidCount,
+    required this.totalRows,
+    required this.fileName,
+  });
+}
+
+class _StudentImportCommitResult {
+  final int created;
+  final int updated;
+
+  const _StudentImportCommitResult({
+    required this.created,
+    required this.updated,
+  });
+}
+
+class _StudentBulkImportDialog extends StatefulWidget {
+  final _StudentImportValidator onValidateCsv;
+
+  const _StudentBulkImportDialog({required this.onValidateCsv});
+
+  @override
+  State<_StudentBulkImportDialog> createState() =>
+      _StudentBulkImportDialogState();
+}
+
+class _StudentBulkImportDialogState extends State<_StudentBulkImportDialog> {
+  static const _bg = Colors.white;
+  static const _primary = Color(0xFF1B5E20);
+  static const _hint = Color(0xFF6D7F62);
+  static const _text = Color(0xFF1F2A1F);
+
+  bool _validating = false;
+  String _fileName = '';
+  _StudentImportValidationResult? _result;
+  String? _errorText;
+
+  Future<void> _pickAndValidateCsv() async {
+    setState(() {
+      _validating = true;
+      _errorText = null;
+    });
+
+    try {
+      final picked = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['csv'],
+        withData: kIsWeb,
+      );
+      if (picked == null || picked.files.isEmpty) {
+        if (!mounted) return;
+        setState(() => _validating = false);
+        return;
+      }
+
+      final file = picked.files.first;
+      Uint8List? bytes = file.bytes;
+      if (bytes == null && file.path != null) {
+        bytes = await File(file.path!).readAsBytes();
+      }
+
+      if (bytes == null || bytes.isEmpty) {
+        if (!mounted) return;
+        setState(() {
+          _validating = false;
+          _errorText = 'Unable to read selected file.';
+        });
+        return;
+      }
+
+      final csvText = utf8.decode(bytes, allowMalformed: true);
+      final validated = await widget.onValidateCsv(csvText);
+      if (!mounted) return;
+      setState(() {
+        _fileName = file.name.trim().isEmpty
+            ? 'students.csv'
+            : file.name.trim();
+        _result = validated;
+        _validating = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _validating = false;
+        _errorText = 'Unable to validate CSV: $e';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final result = _result;
+    final validCount = result?.validRows.length ?? 0;
+    final invalidCount = result?.invalidCount ?? 0;
+    final totalRows = result?.totalRows ?? 0;
+    final viewport = MediaQuery.sizeOf(context);
+    final compact = viewport.width < 760;
+    final dialogWidth = compact ? (viewport.width * 0.95) : 760.0;
+
+    return AlertDialog(
+      backgroundColor: _bg,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      insetPadding: EdgeInsets.symmetric(
+        horizontal: compact ? 10 : 24,
+        vertical: compact ? 10 : 24,
+      ),
+      titlePadding: const EdgeInsets.fromLTRB(24, 18, 12, 0),
+      title: Row(
+        children: [
+          const Expanded(
+            child: Text(
+              'Import Students',
+              style: TextStyle(
+                color: _primary,
+                fontWeight: FontWeight.w900,
+                fontSize: 22,
+              ),
+            ),
+          ),
+          IconButton(
+            onPressed: _validating ? null : () => Navigator.pop(context),
+            tooltip: 'Close',
+            icon: const Icon(Icons.close_rounded, color: _hint),
+            style: IconButton.styleFrom(
+              backgroundColor: Colors.black.withValues(alpha: 0.06),
+            ),
+          ),
+        ],
+      ),
+      content: SizedBox(
+        width: dialogWidth,
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(height: 6),
+              const Text(
+                'Upload a CSV file using this header format:',
+                style: TextStyle(color: _hint, fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 8),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.black12),
+                ),
+                child: const Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.table_rows_rounded, size: 18, color: _hint),
+                        SizedBox(width: 8),
+                        Text(
+                          'Template Header',
+                          style: TextStyle(
+                            color: _hint,
                             fontWeight: FontWeight.w800,
                           ),
                         ),
                       ],
                     ),
+                    SizedBox(height: 8),
+                    SelectableText(
+                      'studentNo,firstName,middleName,lastName,college,program,email',
+                      style: TextStyle(
+                        color: _text,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 13,
+                      ),
+                    ),
+                    SizedBox(height: 4),
+                    Text(
+                      'Required: studentNo, firstName, lastName, college, program',
+                      style: TextStyle(
+                        color: _hint,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 12,
+                      ),
+                    ),
                   ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  FilledButton.icon(
+                    onPressed: _validating ? null : _pickAndValidateCsv,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: _primary,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 18,
+                        vertical: 12,
+                      ),
+                    ),
+                    icon: const Icon(Icons.upload_file_rounded),
+                    label: const Text(
+                      'Choose CSV',
+                      style: TextStyle(fontWeight: FontWeight.w800),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      _fileName.isEmpty ? 'No file selected.' : _fileName,
+                      style: TextStyle(
+                        color: _fileName.isEmpty ? _hint : _text,
+                        fontWeight: FontWeight.w700,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
                 ],
               ),
-            ),
-            if (isStudent &&
-                accountStatus == 'active' &&
-                studentVerification == 'pending_approval')
-              Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    FilledButton(
-                      onPressed: () =>
-                          _reviewPendingStudent(uid: uid, approve: true),
-                      style: FilledButton.styleFrom(
-                        backgroundColor: const Color(0xFF81C784),
-                        foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        elevation: 0,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 8,
-                        ),
-                      ),
-                      child: const Text(
-                        'Approve',
-                        style: TextStyle(fontWeight: FontWeight.w900),
-                      ),
+              if (_validating) ...[
+                const SizedBox(height: 12),
+                const LinearProgressIndicator(color: _primary),
+              ],
+              if (_errorText != null && _errorText!.trim().isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.red.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: Colors.red.withValues(alpha: 0.25),
                     ),
-                    const SizedBox(height: 6),
-                    FilledButton(
-                      onPressed: () async {
-                        final reason = await _showRejectReasonDialog();
-                        if (!mounted || reason == null) return;
-                        await _reviewPendingStudent(
-                          uid: uid,
-                          approve: false,
-                          rejectReason: reason,
-                        );
-                      },
-                      style: FilledButton.styleFrom(
-                        backgroundColor: const Color(0xFFE57373),
-                        foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        elevation: 0,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 8,
-                        ),
-                      ),
-                      child: const Text(
-                        'Reject',
-                        style: TextStyle(fontWeight: FontWeight.w900),
-                      ),
+                  ),
+                  child: Text(
+                    _errorText!,
+                    style: TextStyle(
+                      color: Colors.red.shade700,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ],
+              if (result != null) ...[
+                const SizedBox(height: 14),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    _SummaryChip(label: 'Rows: $totalRows', color: _hint),
+                    _SummaryChip(label: 'Valid: $validCount', color: _primary),
+                    _SummaryChip(
+                      label: 'Invalid: $invalidCount',
+                      color: invalidCount > 0 ? Colors.red : _hint,
                     ),
                   ],
                 ),
-              ),
-            PopupMenuButton<String>(
-              icon: const Icon(Icons.more_vert, color: Colors.grey),
-              onSelected: (val) {
-                if (val == 'verify') {
-                  _updateUserStatus(uid, 'verified', role: role);
-                }
-                if (val == 'deactivate') {
-                  _updateUserStatus(uid, 'inactive', role: role);
-                }
-                if (val == 'activate') {
-                  _updateUserStatus(uid, 'active', role: role);
-                }
-              },
-              itemBuilder: (context) => [
-                if (accountStatus != 'active')
-                  const PopupMenuItem(
-                    value: 'activate',
-                    child: Text('Activate Account'),
+                if (result.issues.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Validation Issues',
+                    style: TextStyle(
+                      color: _text,
+                      fontWeight: FontWeight.w800,
+                      fontSize: 14,
+                    ),
                   ),
-                if (accountStatus != 'inactive')
-                  const PopupMenuItem(
-                    value: 'deactivate',
-                    child: Text('Deactivate Account'),
+                  const SizedBox(height: 8),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 220),
+                    child: ListView.separated(
+                      shrinkWrap: true,
+                      itemCount: result.issues.length.clamp(0, 8),
+                      separatorBuilder: (_, _) => const SizedBox(height: 8),
+                      itemBuilder: (context, index) {
+                        final issue = result.issues[index];
+                        final titleBits = <String>[
+                          'Row ${issue.rowNumber}',
+                          if ((issue.studentNo ?? '').isNotEmpty)
+                            issue.studentNo!,
+                          if ((issue.fullName ?? '').isNotEmpty)
+                            issue.fullName!,
+                        ];
+                        return Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: Colors.red.withValues(alpha: 0.06),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                              color: Colors.red.withValues(alpha: 0.25),
+                            ),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                titleBits.join(' - '),
+                                style: TextStyle(
+                                  color: Colors.red.shade700,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                issue.message,
+                                style: TextStyle(
+                                  color: Colors.red.shade700,
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 12.5,
+                                ),
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
                   ),
-                const PopupMenuItem(
-                  value: 'reset',
-                  child: Text('Send Password Reset'),
-                ),
+                ],
               ],
+            ],
+          ),
+        ),
+      ),
+      actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+      actions: [
+        TextButton(
+          onPressed: _validating ? null : () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton.icon(
+          onPressed: _validating || validCount == 0
+              ? null
+              : () {
+                  Navigator.pop(
+                    context,
+                    _StudentImportDialogResult(
+                      rows: result!.validRows,
+                      invalidCount: result.invalidCount,
+                      totalRows: result.totalRows,
+                      fileName: _fileName,
+                    ),
+                  );
+                },
+          style: FilledButton.styleFrom(
+            backgroundColor: _primary,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
             ),
-          ],
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+          ),
+          icon: const Icon(Icons.playlist_add_check_rounded),
+          label: Text(
+            validCount == 0 ? 'Import' : 'Import $validCount',
+            style: const TextStyle(fontWeight: FontWeight.w800),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _SummaryChip extends StatelessWidget {
+  final String label;
+  final Color color;
+
+  const _SummaryChip({required this.label, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withValues(alpha: 0.28)),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: color,
+          fontWeight: FontWeight.w800,
+          fontSize: 12.5,
         ),
       ),
     );
@@ -4698,7 +6114,6 @@ class _CreateUserResult {
 
   final String? collegeId;
   final String? programId;
-  final int? yearLevel;
   final XFile? profilePhoto;
 
   const _CreateUserResult({
@@ -4716,7 +6131,6 @@ class _CreateUserResult {
     this.department = '',
     this.collegeId,
     this.programId,
-    this.yearLevel,
     this.profilePhoto,
   });
 }
@@ -4776,7 +6190,6 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
   // Additional student details
   String? _selectedCollege;
   String? _selectedProgram;
-  int? _selectedYear;
 
   List<QueryDocumentSnapshot> _colleges = [];
   List<QueryDocumentSnapshot> _programs = [];
@@ -4823,7 +6236,18 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
         .where('active', isEqualTo: true)
         .get();
     if (!mounted) return;
-    setState(() => _colleges = snap.docs);
+    final docs = [...snap.docs]
+      ..sort((a, b) {
+        final ad = a.data() as Map<String, dynamic>? ?? const {};
+        final bd = b.data() as Map<String, dynamic>? ?? const {};
+        final ao = (ad['sortOrder'] as num?)?.toInt() ?? 999;
+        final bo = (bd['sortOrder'] as num?)?.toInt() ?? 999;
+        if (ao != bo) return ao.compareTo(bo);
+        final ac = (ad['collegeCode'] ?? a.id).toString().trim();
+        final bc = (bd['collegeCode'] ?? b.id).toString().trim();
+        return ac.compareTo(bc);
+      });
+    setState(() => _colleges = docs);
 
     if (widget.forcedDepartment != null) {
       final found = _colleges.any((doc) => doc.id == widget.forcedDepartment);
@@ -4843,7 +6267,56 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
         .where('active', isEqualTo: true)
         .get();
     if (!mounted) return;
-    setState(() => _programs = snap.docs);
+    final docs = [...snap.docs]
+      ..sort((a, b) {
+        final ad = a.data() as Map<String, dynamic>? ?? const {};
+        final bd = b.data() as Map<String, dynamic>? ?? const {};
+        final ao = (ad['sortOrder'] as num?)?.toInt() ?? 999;
+        final bo = (bd['sortOrder'] as num?)?.toInt() ?? 999;
+        if (ao != bo) return ao.compareTo(bo);
+        final ac = (ad['programCode'] ?? a.id).toString().trim();
+        final bc = (bd['programCode'] ?? b.id).toString().trim();
+        return ac.compareTo(bc);
+      });
+    setState(() => _programs = docs);
+  }
+
+  String _collegeDropdownLabel(QueryDocumentSnapshot doc) {
+    final data = doc.data() as Map<String, dynamic>? ?? const {};
+    final code = (data['collegeCode'] ?? doc.id).toString().trim();
+    final name = (data['name'] ?? data['collegeName'] ?? data['title'] ?? '')
+        .toString()
+        .trim();
+    return name.isEmpty ? code : '$code - $name';
+  }
+
+  String _programDropdownLabel(QueryDocumentSnapshot doc) {
+    final data = doc.data() as Map<String, dynamic>? ?? const {};
+    final code = (data['programCode'] ?? doc.id).toString().trim();
+    final name = (data['name'] ?? data['programName'] ?? data['title'] ?? '')
+        .toString()
+        .trim();
+    return name.isEmpty ? code : '$code - $name';
+  }
+
+  String _collegeLabelById(String collegeId) {
+    final id = collegeId.trim();
+    if (id.isEmpty) return '-';
+    for (final doc in _colleges) {
+      if (doc.id != id) continue;
+      return _collegeDropdownLabel(doc);
+    }
+    return id;
+  }
+
+  String _programLabelById(String programId) {
+    final id = programId.trim();
+    if (id.isEmpty) return '-';
+    for (final doc in _programs) {
+      if (doc.id != id) continue;
+      return _programDropdownLabel(doc);
+    }
+    return id;
   }
 
   @override
@@ -4888,7 +6361,7 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
       });
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Failed to pick photo: $e'),
           backgroundColor: Colors.red,
@@ -5209,7 +6682,6 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
       if (!formatOk) return false;
       if ((_selectedCollege ?? '').trim().isEmpty) return false;
       if ((_selectedProgram ?? '').trim().isEmpty) return false;
-      if (_selectedYear == null) return false;
       if (_profilePhoto == null) return false;
       if (_studentNoChecking) return false;
       if (_studentNoAvailabilityError != null) return false;
@@ -5288,6 +6760,9 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
     required String lastName,
     required String studentNo,
     required String employeeNo,
+    required String departmentCode,
+    required String collegeId,
+    required String programId,
     required bool hasProfilePhoto,
   }) async {
     final fullName = [
@@ -5297,6 +6772,12 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
     ].where((v) => v.trim().isNotEmpty).join(' ');
     final idLabel = role == 'student' ? 'Student Number' : 'Employee ID';
     final idValue = role == 'student' ? studentNo : employeeNo;
+    final roleNeedsDepartment =
+        role != 'student' &&
+        role != 'osa_admin' &&
+        role != 'counseling_admin' &&
+        role != 'super_admin' &&
+        role != 'guard';
     final createLabel = widget.studentsOnly
         ? 'Create Student'
         : ((widget.forcedRole ?? '').trim().toLowerCase() == 'professor'
@@ -5369,6 +6850,15 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
                   ),
                   _confirmRow('Role', _roleLabel(role)),
                   _confirmRow(idLabel, idValue.trim().isEmpty ? '-' : idValue),
+                  if (role == 'student') ...[
+                    _confirmRow('College', _collegeLabelById(collegeId)),
+                    _confirmRow('Program', _programLabelById(programId)),
+                  ],
+                  if (roleNeedsDepartment)
+                    _confirmRow(
+                      'Department',
+                      _collegeLabelById(departmentCode),
+                    ),
                   _confirmRow(
                     'Profile Photo',
                     hasProfilePhoto ? 'Selected' : 'Not uploaded',
@@ -5448,6 +6938,9 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
       lastName: _lastCtrl.text.trim(),
       studentNo: _studentNoCtrl.text.trim(),
       employeeNo: _employeeNoCtrl.text.trim(),
+      departmentCode: normalizedDepartment,
+      collegeId: (_selectedCollege ?? '').trim(),
+      programId: (_selectedProgram ?? '').trim(),
       hasProfilePhoto: _profilePhoto != null,
     );
     if (!confirmed || !mounted) return;
@@ -5469,7 +6962,6 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
         department: normalizedDepartment,
         collegeId: _selectedCollege,
         programId: _selectedProgram,
-        yearLevel: _selectedYear,
         profilePhoto: _profilePhoto,
       ),
     );
@@ -5512,7 +7004,7 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
         color: _UserManagementPageState.primaryColor.withValues(alpha: 0.85),
       ),
       filled: true,
-      fillColor: enabled ? Colors.white : Colors.grey[100],
+      fillColor: Colors.white,
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(AppRadii.md),
         borderSide: BorderSide(color: Colors.grey[300]!),
@@ -5534,6 +7026,9 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final viewport = MediaQuery.sizeOf(context);
+    final compact = viewport.width < 760;
+    final dialogWidth = compact ? (viewport.width * 0.95) : 500.0;
     final forcedRole = widget.forcedRole?.trim().toLowerCase();
     final forceProfessor = forcedRole == 'professor';
     final dialogTitle = widget.studentsOnly
@@ -5552,8 +7047,12 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
       ),
       backgroundColor: _UserManagementPageState.backgroundColor,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      insetPadding: EdgeInsets.symmetric(
+        horizontal: compact ? 10 : 24,
+        vertical: compact ? 10 : 24,
+      ),
       content: SizedBox(
-        width: 500,
+        width: dialogWidth,
         child: Form(
           key: _formKey,
           child: SingleChildScrollView(
@@ -5958,7 +7457,11 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
                     items: _colleges.map((doc) {
                       return DropdownMenuItem(
                         value: doc.id,
-                        child: Text(doc.id),
+                        child: Text(
+                          _collegeDropdownLabel(doc),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       );
                     }).toList(),
                     onChanged: widget.forcedDepartment != null
@@ -5993,17 +7496,10 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
                       required: true,
                     ),
                     items: _programs.map((doc) {
-                      final data =
-                          doc.data() as Map<String, dynamic>? ?? const {};
-                      final code = (data['programCode'] ?? doc.id).toString();
-                      final name = (data['name'] ?? data['programName'] ?? '')
-                          .toString()
-                          .trim();
-                      final label = name.isEmpty ? code : '$code - $name';
                       return DropdownMenuItem(
                         value: doc.id,
                         child: Text(
-                          label,
+                          _programDropdownLabel(doc),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
@@ -6014,30 +7510,6 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
                       if (_selectedProgram == null ||
                           _selectedProgram!.trim().isEmpty) {
                         return 'Program is required';
-                      }
-                      return null;
-                    },
-                  ),
-                  const SizedBox(height: 12),
-                  DropdownButtonFormField<int>(
-                    isExpanded: true,
-                    initialValue: _selectedYear,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w700,
-                      color: _UserManagementPageState.textDark,
-                    ),
-                    decoration: _decor(
-                      label: 'Year Level',
-                      icon: Icons.layers_outlined,
-                      required: true,
-                    ),
-                    items: [1, 2, 3, 4, 5].map((y) {
-                      return DropdownMenuItem(value: y, child: Text('Year $y'));
-                    }).toList(),
-                    onChanged: (v) => setState(() => _selectedYear = v),
-                    validator: (_) {
-                      if (_selectedYear == null) {
-                        return 'Year level is required';
                       }
                       return null;
                     },
@@ -6101,7 +7573,11 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
                           items: _colleges.map((doc) {
                             return DropdownMenuItem(
                               value: doc.id,
-                              child: Text(doc.id),
+                              child: Text(
+                                _collegeDropdownLabel(doc),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
                             );
                           }).toList(),
                           onChanged: widget.forcedDepartment != null

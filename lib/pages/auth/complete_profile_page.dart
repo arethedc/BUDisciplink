@@ -11,6 +11,7 @@ import 'package:image_picker/image_picker.dart';
 import '../../services/role_router.dart';
 import '../shared/widgets/logout_confirm_dialog.dart';
 import '../shared/widgets/unsaved_changes_guard.dart';
+import 'package:apps/pages/shared/widgets/app_inline_notice.dart';
 
 class CompleteProfilePage extends StatefulWidget {
   const CompleteProfilePage({super.key});
@@ -27,7 +28,6 @@ class _CompleteProfilePageState extends State<CompleteProfilePage> {
 
   String? selectedCollege;
   String? selectedProgram;
-  int? selectedYear;
 
   List<QueryDocumentSnapshot<Map<String, dynamic>>> colleges = [];
   List<QueryDocumentSnapshot<Map<String, dynamic>>> programs = [];
@@ -48,10 +48,9 @@ class _CompleteProfilePageState extends State<CompleteProfilePage> {
   String? _studentNoError;
   String? _collegeError;
   String? _programError;
-  String? _yearError;
   String? _photoError;
 
-  static const bg = Color(0xFFF6FAF6);
+  static const bg = Colors.white;
   static const primary = Color(0xFF1B5E20);
   static const hint = Color(0xFF6D7F62);
   static const textDark = Color(0xFF1F2A1F);
@@ -60,20 +59,32 @@ class _CompleteProfilePageState extends State<CompleteProfilePage> {
   final ImagePicker _imagePicker = ImagePicker();
 
   bool _snapshotReady = false;
+  Stream<QuerySnapshot<Map<String, dynamic>>>? _profileLogsStream;
   String _initialFirstName = '';
   String _initialMiddleName = '';
   String _initialLastName = '';
   String _initialStudentNo = '';
   String _initialCollege = '';
   String _initialProgram = '';
-  int? _initialYear;
   String _initialPhotoUrl = '';
 
   @override
   void initState() {
     super.initState();
+    _initProfileLogsStream();
     _bootstrap();
     _studentNoController.addListener(_formatStudentNo);
+  }
+
+  void _initProfileLogsStream() {
+    final uid = (FirebaseAuth.instance.currentUser?.uid ?? '').trim();
+    if (uid.isEmpty) return;
+    _profileLogsStream ??= FirebaseFirestore.instance
+        .collection('users')
+        .doc(uid)
+        .collection('profile_logs')
+        .limit(50)
+        .snapshots();
   }
 
   @override
@@ -106,7 +117,18 @@ class _CompleteProfilePageState extends State<CompleteProfilePage> {
         .where('active', isEqualTo: true)
         .get();
     if (!mounted) return;
-    setState(() => colleges = snap.docs);
+    final docs = [...snap.docs]
+      ..sort((a, b) {
+        final ad = a.data();
+        final bd = b.data();
+        final ao = (ad['sortOrder'] as num?)?.toInt() ?? 999;
+        final bo = (bd['sortOrder'] as num?)?.toInt() ?? 999;
+        if (ao != bo) return ao.compareTo(bo);
+        final ac = (ad['collegeCode'] ?? a.id).toString().trim();
+        final bc = (bd['collegeCode'] ?? b.id).toString().trim();
+        return ac.compareTo(bc);
+      });
+    setState(() => colleges = docs);
   }
 
   Future<void> _loadPrograms(String collegeId) async {
@@ -116,14 +138,36 @@ class _CompleteProfilePageState extends State<CompleteProfilePage> {
         .where('active', isEqualTo: true)
         .get();
     if (!mounted) return;
-    setState(() => programs = snap.docs);
+    final docs = [...snap.docs]
+      ..sort((a, b) {
+        final ad = a.data();
+        final bd = b.data();
+        final ao = (ad['sortOrder'] as num?)?.toInt() ?? 999;
+        final bo = (bd['sortOrder'] as num?)?.toInt() ?? 999;
+        if (ao != bo) return ao.compareTo(bo);
+        final ac = (ad['programCode'] ?? a.id).toString().trim();
+        final bc = (bd['programCode'] ?? b.id).toString().trim();
+        return ac.compareTo(bc);
+      });
+    setState(() => programs = docs);
   }
 
-  int? _parseYear(dynamic raw) {
-    if (raw is int) return raw;
-    if (raw is num) return raw.toInt();
-    if (raw is String) return int.tryParse(raw.trim());
-    return null;
+  String _collegeOptionLabel(QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+    final data = doc.data();
+    final code = (data['collegeCode'] ?? doc.id).toString().trim();
+    final name = (data['name'] ?? data['collegeName'] ?? data['title'] ?? '')
+        .toString()
+        .trim();
+    return name.isEmpty ? code : '$code - $name';
+  }
+
+  String _programOptionLabel(QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+    final data = doc.data();
+    final code = (data['programCode'] ?? doc.id).toString().trim();
+    final name = (data['name'] ?? data['programName'] ?? data['title'] ?? '')
+        .toString()
+        .trim();
+    return name.isEmpty ? code : '$code - $name';
   }
 
   Future<void> _loadExistingProfile() async {
@@ -151,7 +195,17 @@ class _CompleteProfilePageState extends State<CompleteProfilePage> {
           .where('collegeId', isEqualTo: collegeId)
           .where('active', isEqualTo: true)
           .get();
-      programs = snap.docs;
+      programs = [...snap.docs]
+        ..sort((a, b) {
+          final ad = a.data();
+          final bd = b.data();
+          final ao = (ad['sortOrder'] as num?)?.toInt() ?? 999;
+          final bo = (bd['sortOrder'] as num?)?.toInt() ?? 999;
+          if (ao != bo) return ao.compareTo(bo);
+          final ac = (ad['programCode'] ?? a.id).toString().trim();
+          final bc = (bd['programCode'] ?? b.id).toString().trim();
+          return ac.compareTo(bc);
+        });
     }
 
     final verification = (data['studentVerificationStatus'] ?? '')
@@ -184,10 +238,6 @@ class _CompleteProfilePageState extends State<CompleteProfilePage> {
       selectedProgram = programs.any((p) => p.id == programId)
           ? programId
           : null;
-      selectedYear = _parseYear(
-        studentProfile['yearLevel'] ?? data['yearLevel'],
-      );
-
       _photoUrl = (data['photoUrl'] ?? '').toString().trim();
       _lastRejectionReason =
           verification == 'rejected' && reviewReason.isNotEmpty
@@ -204,7 +254,6 @@ class _CompleteProfilePageState extends State<CompleteProfilePage> {
     _initialStudentNo = _studentNoController.text.trim();
     _initialCollege = (selectedCollege ?? '').trim();
     _initialProgram = (selectedProgram ?? '').trim();
-    _initialYear = selectedYear;
     _initialPhotoUrl = (_photoUrl ?? '').trim();
     _snapshotReady = true;
   }
@@ -220,7 +269,6 @@ class _CompleteProfilePageState extends State<CompleteProfilePage> {
         _studentNoController.text.trim() != _initialStudentNo ||
         (selectedCollege ?? '').trim() != _initialCollege ||
         (selectedProgram ?? '').trim() != _initialProgram ||
-        selectedYear != _initialYear ||
         (_photoUrl ?? '').trim() != _initialPhotoUrl ||
         _pickedPhoto != null;
   }
@@ -278,7 +326,6 @@ class _CompleteProfilePageState extends State<CompleteProfilePage> {
     _studentNoError = null;
     _collegeError = null;
     _programError = null;
-    _yearError = null;
     _photoError = null;
   }
 
@@ -313,11 +360,6 @@ class _CompleteProfilePageState extends State<CompleteProfilePage> {
       _programError = 'Please select a program';
       ok = false;
     }
-    if (selectedYear == null) {
-      _yearError = 'Please select a year level';
-      ok = false;
-    }
-
     final hasExistingPhoto = (_photoUrl ?? '').trim().isNotEmpty;
     final hasPickedPhoto = _pickedPhoto != null;
     if (!hasExistingPhoto && !hasPickedPhoto) {
@@ -347,7 +389,7 @@ class _CompleteProfilePageState extends State<CompleteProfilePage> {
       });
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Failed to pick photo: $e'),
           backgroundColor: Colors.red,
@@ -396,7 +438,6 @@ class _CompleteProfilePageState extends State<CompleteProfilePage> {
     required String studentNo,
     required String collegeId,
     required String programId,
-    required int? yearLevel,
   }) async {
     final departmentCode = collegeId.trim();
     if (departmentCode.isEmpty) return;
@@ -448,7 +489,6 @@ class _CompleteProfilePageState extends State<CompleteProfilePage> {
                 'studentNo': studentNo,
                 'collegeId': departmentCode,
                 'programId': programId,
-                'yearLevel': yearLevel,
               },
               'createdAt': FieldValue.serverTimestamp(),
               'readAt': null,
@@ -502,7 +542,6 @@ class _CompleteProfilePageState extends State<CompleteProfilePage> {
           'studentNo': studentNo,
           'collegeId': selectedCollege,
           'programId': selectedProgram,
-          'yearLevel': selectedYear,
         },
         'firstName': firstName,
         'middleName': middleName,
@@ -522,14 +561,13 @@ class _CompleteProfilePageState extends State<CompleteProfilePage> {
         studentNo: studentNo,
         collegeId: currentCollege,
         programId: currentProgram,
-        yearLevel: selectedYear,
       );
 
       if (!mounted) return;
       await RoleRouter.route(context);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Failed to save: $e'),
           backgroundColor: Colors.red,
@@ -721,16 +759,11 @@ class _CompleteProfilePageState extends State<CompleteProfilePage> {
   }
 
   Widget _buildRevisionAuditCard() {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null || uid.trim().isEmpty) return const SizedBox.shrink();
+    final stream = _profileLogsStream;
+    if (stream == null) return const SizedBox.shrink();
 
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance
-          .collection('users')
-          .doc(uid)
-          .collection('profile_logs')
-          .limit(50)
-          .snapshots(),
+      stream: stream,
       builder: (context, snapshot) {
         final docs = snapshot.data?.docs ?? const [];
         final rejected =
@@ -1121,7 +1154,7 @@ class _CompleteProfilePageState extends State<CompleteProfilePage> {
                 (c) => DropdownMenuItem<String>(
                   value: c.id,
                   child: Text(
-                    (c.data()['name'] ?? '').toString(),
+                    _collegeOptionLabel(c),
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
@@ -1154,7 +1187,7 @@ class _CompleteProfilePageState extends State<CompleteProfilePage> {
                 (p) => DropdownMenuItem<String>(
                   value: p.id,
                   child: Text(
-                    (p.data()['name'] ?? '').toString(),
+                    _programOptionLabel(p),
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
@@ -1165,26 +1198,6 @@ class _CompleteProfilePageState extends State<CompleteProfilePage> {
             _programError = null;
           }),
         );
-        Widget year = DropdownButtonFormField<int>(
-          initialValue: selectedYear,
-          isExpanded: true,
-          decoration: _decor(
-            label: 'Year Level',
-            isRequired: true,
-            icon: Icons.calendar_today_outlined,
-            errorText: _yearError,
-          ),
-          items: [1, 2, 3, 4]
-              .map(
-                (y) => DropdownMenuItem<int>(value: y, child: Text('Year $y')),
-              )
-              .toList(),
-          onChanged: (value) => setState(() {
-            selectedYear = value;
-            _yearError = null;
-          }),
-        );
-
         if (!twoColumns) {
           return Column(
             children: [
@@ -1199,8 +1212,6 @@ class _CompleteProfilePageState extends State<CompleteProfilePage> {
               college,
               const SizedBox(height: 16),
               program,
-              const SizedBox(height: 16),
-              year,
             ],
           );
         }
@@ -1230,8 +1241,6 @@ class _CompleteProfilePageState extends State<CompleteProfilePage> {
                 Expanded(child: program),
               ],
             ),
-            const SizedBox(height: 12),
-            year,
           ],
         );
       },
@@ -1400,3 +1409,4 @@ class _CompleteProfilePageState extends State<CompleteProfilePage> {
     );
   }
 }
+

@@ -1,6 +1,7 @@
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:apps/pages/shared/widgets/app_inline_notice.dart';
 
 enum _AssistanceMode { verifyEmail, activation }
 
@@ -14,7 +15,7 @@ class ForgotPasswordAssistancePage extends StatefulWidget {
 
 class _ForgotPasswordAssistancePageState
     extends State<ForgotPasswordAssistancePage> {
-  static const bg = Color(0xFFF6FAF6);
+  static const bg = Colors.white;
   static const primary = Color(0xFF1B5E20);
   static const hint = Color(0xFF6D7F62);
   static const textDark = Color(0xFF1F2A1F);
@@ -58,7 +59,7 @@ class _ForgotPasswordAssistancePageState
   Future<void> _sendAssistanceEmail() async {
     if (_sending) return;
     if (_email.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Missing email address.'),
           backgroundColor: Colors.red,
@@ -85,12 +86,12 @@ class _ForgotPasswordAssistancePageState
       final message = _mode == _AssistanceMode.activation
           ? 'New activation email sent. Please check your inbox.'
           : 'Verification email sent. Please check your inbox.';
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(message), backgroundColor: Colors.green),
       );
     } on FirebaseFunctionsException catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(e.message ?? 'Failed to send email.'),
           backgroundColor: Colors.red,
@@ -98,7 +99,7 @@ class _ForgotPasswordAssistancePageState
       );
     } catch (_) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Failed to send email.'),
           backgroundColor: Colors.red,
@@ -250,3 +251,4 @@ class _ForgotPasswordAssistancePageState
     );
   }
 }
+

@@ -3,9 +3,9 @@ import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:apps/models/handbook_node_doc.dart';
-import 'package:apps/pages/shared/handbook/hb_handbook_page.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
@@ -14,9 +14,45 @@ import 'package:flutter/services.dart';
 import 'package:flutter_quill/flutter_quill.dart' as quill;
 import 'package:flutter_quill_extensions/flutter_quill_extensions.dart'
     as quill_ext;
+import 'package:apps/pages/shared/widgets/app_inline_notice.dart';
+import 'package:apps/pages/shared/widgets/unsaved_changes_guard.dart';
 
 const String _tableEmbedType = 'x-embed-table';
 const double _tableMaxColWidth = 2000;
+typedef _TableStyleSetter = void Function({
+  bool? bold,
+  bool? italic,
+  String? align,
+  String? fontFamilyKey,
+  int? fontSizePoint,
+});
+
+class _TableSelectionState {
+  const _TableSelectionState({
+    required this.hasActiveCell,
+    required this.bold,
+    required this.italic,
+    required this.align,
+    required this.fontFamilyKey,
+    required this.fontSizePoint,
+  });
+
+  final bool hasActiveCell;
+  final bool bold;
+  final bool italic;
+  final String align;
+  final String fontFamilyKey;
+  final int fontSizePoint;
+
+  static const empty = _TableSelectionState(
+    hasActiveCell: false,
+    bold: false,
+    italic: false,
+    align: 'left',
+    fontFamilyKey: 'default',
+    fontSizePoint: 12,
+  );
+}
 
 Map<String, dynamic> _buildTablePayload({
   required int columns,
@@ -96,13 +132,36 @@ Map<String, dynamic> _normalizeTablePayload(String raw) {
       final align = switch (alignRaw) {
         'center' => 'center',
         'right' => 'right',
+        'justify' => 'justify',
         _ => 'left',
       };
-      if (!bold && !italic && align == 'left') continue;
+      final fontRaw = (rawMap['font'] ?? '').toString().trim();
+      final font = switch (fontRaw) {
+        'serif' => 'serif',
+        'monospace' => 'monospace',
+        'sans-serif' => 'sans-serif',
+        _ => 'default',
+      };
+      final sizeRaw = rawMap['size'];
+      int size = 12;
+      if (sizeRaw is num) {
+        size = sizeRaw.round().clamp(10, 32);
+      } else if (sizeRaw is String) {
+        size = (int.tryParse(sizeRaw.trim()) ?? 12).clamp(10, 32);
+      }
+      if (!bold &&
+          !italic &&
+          align == 'left' &&
+          font == 'default' &&
+          size == 12) {
+        continue;
+      }
       normalized['$row:$col'] = {
         'bold': bold,
         'italic': italic,
         'align': align,
+        'font': font,
+        'size': size,
       };
     }
     return normalized;
@@ -250,13 +309,21 @@ class _TableEmbedBuilder extends quill.EmbedBuilder {
     required this.onCommitRequested,
     required this.onDeleteRequested,
     required this.onEditingStateChanged,
+    required this.onSelectionStateChanged,
+    required this.onStyleSetterChanged,
+    required this.interactionGroupId,
   });
 
   final void Function(int offset, Map<String, dynamic> payload) onDraftChanged;
   final void Function(int offset, Map<String, dynamic> payload)
   onCommitRequested;
   final void Function(int offset) onDeleteRequested;
-  final void Function(bool editing) onEditingStateChanged;
+  final void Function(int offset, bool editing) onEditingStateChanged;
+  final void Function(int offset, _TableSelectionState state)
+  onSelectionStateChanged;
+  final void Function(int offset, _TableStyleSetter? setter)
+  onStyleSetterChanged;
+  final Object interactionGroupId;
 
   @override
   String get key => _tableEmbedType;
@@ -274,6 +341,9 @@ class _TableEmbedBuilder extends quill.EmbedBuilder {
       onCommitRequested: onCommitRequested,
       onDeleteRequested: onDeleteRequested,
       onEditingStateChanged: onEditingStateChanged,
+      onSelectionStateChanged: onSelectionStateChanged,
+      onStyleSetterChanged: onStyleSetterChanged,
+      interactionGroupId: interactionGroupId,
     );
   }
 }
@@ -287,6 +357,9 @@ class _TableEmbedFrame extends StatefulWidget {
     required this.onCommitRequested,
     required this.onDeleteRequested,
     required this.onEditingStateChanged,
+    required this.onSelectionStateChanged,
+    required this.onStyleSetterChanged,
+    required this.interactionGroupId,
   });
 
   final int offset;
@@ -296,7 +369,12 @@ class _TableEmbedFrame extends StatefulWidget {
   final void Function(int offset, Map<String, dynamic> payload)
   onCommitRequested;
   final void Function(int offset) onDeleteRequested;
-  final void Function(bool editing) onEditingStateChanged;
+  final void Function(int offset, bool editing) onEditingStateChanged;
+  final void Function(int offset, _TableSelectionState state)
+  onSelectionStateChanged;
+  final void Function(int offset, _TableStyleSetter? setter)
+  onStyleSetterChanged;
+  final Object interactionGroupId;
 
   @override
   State<_TableEmbedFrame> createState() => _TableEmbedFrameState();
@@ -310,6 +388,7 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
   final Map<String, TextEditingController> _controllers =
       <String, TextEditingController>{};
   final Map<String, FocusNode> _cellFocusNodes = <String, FocusNode>{};
+  final Map<String, GlobalKey> _cellKeys = <String, GlobalKey>{};
 
   late List<String> _headers;
   late List<List<String>> _rows;
@@ -320,11 +399,20 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
   bool _optionsMenuOpen = false;
   int _activeRow = 0;
   int _activeCol = 0;
+  int _selectionAnchorRow = 0;
+  int _selectionAnchorCol = 0;
+  int _selectionExtentRow = 0;
+  int _selectionExtentCol = 0;
+  bool _hasCellSelectionRange = false;
+  bool _allCellsSelected = false;
+  bool _isDisposed = false;
 
   @override
   void initState() {
     super.initState();
     _loadFromPayload(widget.payload);
+    widget.onStyleSetterChanged(widget.offset, _setActiveCellStyle);
+    _notifySelectionState();
   }
 
   @override
@@ -339,6 +427,8 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
 
   @override
   void dispose() {
+    _isDisposed = true;
+    widget.onStyleSetterChanged(widget.offset, null);
     _tableFocusNode.dispose();
     _disposeCellControllers();
     super.dispose();
@@ -353,6 +443,7 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
     }
     _controllers.clear();
     _cellFocusNodes.clear();
+    _cellKeys.clear();
   }
 
   void _loadFromPayload(Map<String, dynamic> payload) {
@@ -457,16 +548,22 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
 
     final node = FocusNode(debugLabel: 'table_cell_$key');
     node.addListener(() {
+      if (_isDisposed || !mounted) return;
       if (node.hasFocus) {
-        widget.onEditingStateChanged(true);
-        _selected = true;
+        _selected = false;
+        widget.onEditingStateChanged(widget.offset, true);
         _activeRow = row;
         _activeCol = col;
+        _notifySelectionState();
       } else {
         WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
           if (!_anyCellHasFocus() && !_optionsMenuOpen) {
-            widget.onEditingStateChanged(false);
-            _commitNow();
+            if (!_allCellsSelected && !_hasCellSelectionRange) {
+              widget.onEditingStateChanged(widget.offset, false);
+              _commitNow();
+            }
+            _notifySelectionState();
           }
         });
       }
@@ -489,6 +586,7 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
   }
 
   void _commitNow() {
+    if (!mounted) return;
     final payload = {
       'headers': _headers,
       'rows': _rows,
@@ -499,8 +597,11 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
   }
 
   void _clearTableInteraction({bool commit = true}) {
+    if (_isDisposed || !mounted) return;
     var hadFocus = false;
     final hadSelection = _selected;
+    _allCellsSelected = false;
+    _hasCellSelectionRange = false;
     for (final node in _cellFocusNodes.values) {
       if (node.hasFocus) {
         hadFocus = true;
@@ -508,13 +609,20 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
       }
     }
     _tableFocusNode.unfocus();
-    widget.onEditingStateChanged(false);
+    widget.onEditingStateChanged(widget.offset, false);
     _selected = false;
     _hovered = false;
     if (commit && (hadFocus || hadSelection)) {
       _commitNow();
     }
+    _notifySelectionState();
     if (mounted) setState(() {});
+  }
+
+  bool _isShiftPressed() {
+    final pressed = HardwareKeyboard.instance.logicalKeysPressed;
+    return pressed.contains(LogicalKeyboardKey.shiftLeft) ||
+        pressed.contains(LogicalKeyboardKey.shiftRight);
   }
 
   void _updateCellValue({
@@ -558,46 +666,279 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
     return switch (raw) {
       'center' => TextAlign.center,
       'right' => TextAlign.right,
+      'justify' => TextAlign.justify,
       _ => TextAlign.left,
     };
   }
 
-  void _setActiveCellStyle({bool? bold, bool? italic, String? align}) {
+  String _cellFontFamilyKey(int row, int col) {
+    final raw = (_cellStyleFor(row, col)['font'] ?? 'default').toString().trim();
+    return switch (raw) {
+      'serif' => 'serif',
+      'monospace' => 'monospace',
+      'sans-serif' => 'sans-serif',
+      _ => 'default',
+    };
+  }
+
+  double _cellFontSize(int row, int col) {
+    final raw = _cellStyleFor(row, col)['size'];
+    if (raw is num) return raw.toDouble().clamp(10, 32);
+    if (raw is String) {
+      final parsed = double.tryParse(raw.trim());
+      if (parsed != null) return parsed.clamp(10, 32);
+    }
+    return 12;
+  }
+
+  String? _fontFamilyFromKey(String key) {
+    return switch (key) {
+      'serif' => 'serif',
+      'monospace' => 'monospace',
+      'sans-serif' => 'sans-serif',
+      _ => null,
+    };
+  }
+
+  List<_TableCellPosition> _targetCellsForStyleUpdate() {
+    if (_rows.isEmpty || _headers.isEmpty) return const <_TableCellPosition>[];
+    if (_allCellsSelected) {
+      return _allPositions();
+    }
+    if (_hasCellSelectionRange) {
+      final minRow = math.min(_selectionAnchorRow, _selectionExtentRow).clamp(
+        0,
+        _rows.length - 1,
+      );
+      final maxRow = math.max(_selectionAnchorRow, _selectionExtentRow).clamp(
+        0,
+        _rows.length - 1,
+      );
+      final minCol = math.min(_selectionAnchorCol, _selectionExtentCol).clamp(
+        0,
+        _headers.length - 1,
+      );
+      final maxCol = math.max(_selectionAnchorCol, _selectionExtentCol).clamp(
+        0,
+        _headers.length - 1,
+      );
+      final cells = <_TableCellPosition>[];
+      for (var row = minRow; row <= maxRow; row++) {
+        for (var col = minCol; col <= maxCol; col++) {
+          cells.add(_TableCellPosition(isHeader: false, row: row, col: col));
+        }
+      }
+      return cells;
+    }
     if (_activeRow < 0 ||
         _activeRow >= _rows.length ||
         _activeCol < 0 ||
         _activeCol >= _headers.length) {
+      return const <_TableCellPosition>[];
+    }
+    return [
+      _TableCellPosition(isHeader: false, row: _activeRow, col: _activeCol),
+    ];
+  }
+
+  bool _isCellInsideSelection(int row, int col) {
+    if (_allCellsSelected) return true;
+    if (!_hasCellSelectionRange) return row == _activeRow && col == _activeCol;
+    final minRow = math.min(_selectionAnchorRow, _selectionExtentRow);
+    final maxRow = math.max(_selectionAnchorRow, _selectionExtentRow);
+    final minCol = math.min(_selectionAnchorCol, _selectionExtentCol);
+    final maxCol = math.max(_selectionAnchorCol, _selectionExtentCol);
+    return row >= minRow && row <= maxRow && col >= minCol && col <= maxCol;
+  }
+
+  void _setCellSelection(int row, int col) {
+    _activeRow = row;
+    _activeCol = col;
+    _selectionAnchorRow = row;
+    _selectionAnchorCol = col;
+    _selectionExtentRow = row;
+    _selectionExtentCol = col;
+    _hasCellSelectionRange = true;
+    _allCellsSelected = false;
+    widget.onEditingStateChanged(widget.offset, true);
+    _notifySelectionState();
+    if (mounted) setState(() {});
+  }
+
+  void _setActiveCellWithoutResettingAnchor(int row, int col) {
+    _activeRow = row;
+    _activeCol = col;
+    _hasCellSelectionRange = true;
+    _allCellsSelected = false;
+    widget.onEditingStateChanged(widget.offset, true);
+    _notifySelectionState();
+    if (mounted) setState(() {});
+  }
+
+  void _updateDragSelectionExtent(int row, int col) {
+    final clampedRow = row.clamp(0, _rows.length - 1);
+    final clampedCol = col.clamp(0, _headers.length - 1);
+    if (_selectionExtentRow == clampedRow && _selectionExtentCol == clampedCol) {
       return;
     }
-    _ensureMutableTableState();
-    final key = _styleKey(_activeRow, _activeCol);
-    final next = Map<String, dynamic>.from(_cellStyles[key] ?? const {});
-    if (bold != null) next['bold'] = bold;
-    if (italic != null) next['italic'] = italic;
-    if (align != null) {
-      next['align'] = switch (align) {
-        'center' => 'center',
-        'right' => 'right',
-        _ => 'left',
-      };
+    _selectionExtentRow = clampedRow;
+    _selectionExtentCol = clampedCol;
+    _activeRow = clampedRow;
+    _activeCol = clampedCol;
+    _notifySelectionState();
+    if (mounted) setState(() {});
+  }
+
+  void _selectWholeTable() {
+    if (_rows.isEmpty || _headers.isEmpty) return;
+    _selected = true;
+    _allCellsSelected = true;
+    _hasCellSelectionRange = false;
+    _activeRow = 0;
+    _activeCol = 0;
+    _selectionAnchorRow = 0;
+    _selectionAnchorCol = 0;
+    _selectionExtentRow = _rows.length - 1;
+    _selectionExtentCol = _headers.length - 1;
+    widget.onEditingStateChanged(widget.offset, true);
+    _notifySelectionState();
+    if (mounted) setState(() {});
+  }
+
+  GlobalKey _cellContainerKey(int row, int col) {
+    final key = _cellKey(isHeader: false, row: row, col: col);
+    return _cellKeys.putIfAbsent(key, GlobalKey.new);
+  }
+
+  _TableCellPosition? _cellAtGlobalPosition(Offset globalPosition) {
+    for (var row = 0; row < _rows.length; row++) {
+      for (var col = 0; col < _headers.length; col++) {
+        final key = _cellContainerKey(row, col);
+        final context = key.currentContext;
+        if (context == null) continue;
+        final box = context.findRenderObject() as RenderBox?;
+        if (box == null || !box.hasSize) continue;
+        final local = box.globalToLocal(globalPosition);
+        final inside =
+            local.dx >= 0 &&
+            local.dy >= 0 &&
+            local.dx <= box.size.width &&
+            local.dy <= box.size.height;
+        if (inside) {
+          return _TableCellPosition(isHeader: false, row: row, col: col);
+        }
+      }
     }
-    final normalized = {
-      'bold': next['bold'] == true,
-      'italic': next['italic'] == true,
-      'align': (next['align'] ?? 'left').toString(),
-    };
-    final isDefault =
-        normalized['bold'] == false &&
-        normalized['italic'] == false &&
-        normalized['align'] == 'left';
-    if (isDefault) {
-      _cellStyles.remove(key);
-    } else {
-      _cellStyles[key] = normalized;
+    return null;
+  }
+
+  void _setActiveCellStyle({
+    bool? bold,
+    bool? italic,
+    String? align,
+    String? fontFamilyKey,
+    int? fontSizePoint,
+  }) {
+    final targets = _targetCellsForStyleUpdate();
+    if (targets.isEmpty) return;
+    _ensureMutableTableState();
+    for (final cell in targets) {
+      final key = _styleKey(cell.row, cell.col);
+      final next = Map<String, dynamic>.from(_cellStyles[key] ?? const {});
+      if (bold != null) next['bold'] = bold;
+      if (italic != null) next['italic'] = italic;
+      if (align != null) {
+        next['align'] = switch (align) {
+          'center' => 'center',
+          'right' => 'right',
+          'justify' => 'justify',
+          _ => 'left',
+        };
+      }
+      if (fontFamilyKey != null) {
+        next['font'] = switch (fontFamilyKey) {
+          'serif' => 'serif',
+          'monospace' => 'monospace',
+          'sans-serif' => 'sans-serif',
+          _ => 'default',
+        };
+      }
+      if (fontSizePoint != null) {
+        next['size'] = fontSizePoint.clamp(10, 32);
+      }
+      final normalized = {
+        'bold': next['bold'] == true,
+        'italic': next['italic'] == true,
+        'align': (next['align'] ?? 'left').toString(),
+        'font': (next['font'] ?? 'default').toString(),
+        'size': ((next['size'] ?? 12) as num).round().clamp(10, 32),
+      };
+      final isDefault =
+          normalized['bold'] == false &&
+          normalized['italic'] == false &&
+          normalized['align'] == 'left' &&
+          normalized['font'] == 'default' &&
+          normalized['size'] == 12;
+      if (isDefault) {
+        _cellStyles.remove(key);
+      } else {
+        _cellStyles[key] = normalized;
+      }
     }
     _emitDraft();
-    _commitNow();
+    _notifySelectionState();
     if (mounted) setState(() {});
+  }
+
+  void _notifySelectionState() {
+    if (_isDisposed || !mounted) return;
+    final targets = _targetCellsForStyleUpdate();
+    if (targets.isEmpty) {
+      widget.onSelectionStateChanged(widget.offset, _TableSelectionState.empty);
+      return;
+    }
+    final first = targets.first;
+    final baseAlign = switch (_cellAlign(first.row, first.col)) {
+      TextAlign.center => 'center',
+      TextAlign.right => 'right',
+      TextAlign.justify => 'justify',
+      _ => 'left',
+    };
+    final baseFont = _cellFontFamilyKey(first.row, first.col);
+    final baseSize = _cellFontSize(first.row, first.col).round();
+
+    var allBold = true;
+    var allItalic = true;
+    var sameAlign = true;
+    var sameFont = true;
+    var sameSize = true;
+    for (final cell in targets) {
+      if (!_cellBold(cell.row, cell.col)) allBold = false;
+      if (!_cellItalic(cell.row, cell.col)) allItalic = false;
+      final align = switch (_cellAlign(cell.row, cell.col)) {
+        TextAlign.center => 'center',
+        TextAlign.right => 'right',
+        TextAlign.justify => 'justify',
+        _ => 'left',
+      };
+      if (align != baseAlign) sameAlign = false;
+      if (_cellFontFamilyKey(cell.row, cell.col) != baseFont) sameFont = false;
+      if (_cellFontSize(cell.row, cell.col).round() != baseSize) {
+        sameSize = false;
+      }
+    }
+
+    widget.onSelectionStateChanged(
+      widget.offset,
+      _TableSelectionState(
+        hasActiveCell: true,
+        bold: allBold,
+        italic: allItalic,
+        align: sameAlign ? baseAlign : 'left',
+        fontFamilyKey: sameFont ? baseFont : 'default',
+        fontSizePoint: sameSize ? baseSize : 12,
+      ),
+    );
   }
 
   void _remapStylesOnRowInsert(int index) {
@@ -774,7 +1115,6 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
     _activeRow = safeIndex;
     _clearControllersAndFocusNodes();
     _emitDraft();
-    _commitNow();
     if (mounted) setState(() {});
   }
 
@@ -791,7 +1131,6 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
     _activeCol = safeIndex;
     _clearControllersAndFocusNodes();
     _emitDraft();
-    _commitNow();
     if (mounted) setState(() {});
   }
 
@@ -804,7 +1143,6 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
     _activeRow = (_activeRow - 1).clamp(0, _rows.length - 1);
     _clearControllersAndFocusNodes();
     _emitDraft();
-    _commitNow();
     if (mounted) setState(() {});
   }
 
@@ -821,7 +1159,6 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
     _activeCol = (_activeCol - 1).clamp(0, _headers.length - 1);
     _clearControllersAndFocusNodes();
     _emitDraft();
-    _commitNow();
     if (mounted) setState(() {});
   }
 
@@ -834,6 +1171,7 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
     }
     _controllers.clear();
     _cellFocusNodes.clear();
+    _cellKeys.clear();
   }
 
   void _handleTableAction(String value) {
@@ -862,35 +1200,6 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
       default:
         break;
     }
-  }
-
-  Widget _cellFormatButton({
-    required IconData icon,
-    required String tooltip,
-    required bool active,
-    required VoidCallback onPressed,
-  }) {
-    return Tooltip(
-      message: tooltip,
-      child: MouseRegion(
-        cursor: SystemMouseCursors.click,
-        child: IconButton(
-          visualDensity: VisualDensity.compact,
-          iconSize: 17,
-          onPressed: onPressed,
-          color: active ? const Color(0xFF1B5E20) : const Color(0xFF6D7F62),
-          style: IconButton.styleFrom(
-            backgroundColor: active
-                ? const Color(0xFF1B5E20).withValues(alpha: 0.12)
-                : Colors.transparent,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(8),
-            ),
-          ),
-          icon: Icon(icon),
-        ),
-      ),
-    );
   }
 
   List<double> _resolvedWidths(double maxWidth) {
@@ -979,24 +1288,18 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
   Widget build(BuildContext context) {
     final showTableControls =
         !widget.readOnly && (_hovered || _selected || _optionsMenuOpen);
-    final hasActiveCell =
-        _activeRow >= 0 &&
-        _activeRow < _rows.length &&
-        _activeCol >= 0 &&
-        _activeCol < _headers.length;
-    final activeBold = hasActiveCell
-        ? _cellBold(_activeRow, _activeCol)
-        : false;
-    final activeItalic = hasActiveCell
-        ? _cellItalic(_activeRow, _activeCol)
-        : false;
-    final activeAlign = hasActiveCell
-        ? _cellAlign(_activeRow, _activeCol)
-        : TextAlign.left;
     return TapRegion(
+      groupId: widget.interactionGroupId,
       onTapOutside: (_) {
         if (_optionsMenuOpen) return;
-        if (!_anyCellHasFocus() && !_selected) return;
+        // Clicking outside the table should always exit table-cell selection
+        // and restore normal editor typing/caret behavior.
+        if (!_anyCellHasFocus() &&
+            !_selected &&
+            !_hasCellSelectionRange &&
+            !_allCellsSelected) {
+          return;
+        }
         _clearTableInteraction();
       },
       child: Focus(
@@ -1004,10 +1307,14 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
         onFocusChange: (focused) {
           if (!focused) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (!mounted) return;
               if (!_anyCellHasFocus() && !_optionsMenuOpen) {
-                widget.onEditingStateChanged(false);
-                _selected = false;
-                _commitNow();
+                if (!_allCellsSelected && !_hasCellSelectionRange) {
+                  widget.onEditingStateChanged(widget.offset, false);
+                  _selected = false;
+                  _commitNow();
+                }
+                _notifySelectionState();
                 if (mounted) setState(() {});
               }
             });
@@ -1042,20 +1349,66 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
                     color: Colors.white,
                     borderRadius: BorderRadius.circular(8),
                     border: Border.all(
-                      color: _selected
+                      color: _selected && !_anyCellHasFocus()
                           ? const Color(0xFF1B5E20)
                           : Colors.black.withValues(alpha: 0.10),
-                      width: _selected ? 1.6 : 1,
+                      width: _selected && !_anyCellHasFocus() ? 1.6 : 1,
                     ),
                   ),
                   child: Stack(
                     clipBehavior: Clip.none,
                     children: [
-                      SingleChildScrollView(
-                        scrollDirection: Axis.horizontal,
-                        child: SizedBox(
-                          width: math.max(totalWidth, maxWidth),
-                          child: Table(
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: Listener(
+                          behavior: HitTestBehavior.translucent,
+                          onPointerDown: (event) {
+                            if (widget.readOnly) return;
+                            final target = _cellAtGlobalPosition(event.position);
+                            if (target == null) return;
+                            final targetNode = _focusNodeFor(
+                              isHeader: false,
+                              row: target.row,
+                              col: target.col,
+                            );
+                            final shiftSelecting = _isShiftPressed() &&
+                                (_hasCellSelectionRange || _allCellsSelected);
+                            if (shiftSelecting) {
+                              _setActiveCellWithoutResettingAnchor(
+                                target.row,
+                                target.col,
+                              );
+                              _updateDragSelectionExtent(
+                                target.row,
+                                target.col,
+                              );
+                            } else {
+                              // Normal click re-anchors selection to clicked cell.
+                              _setCellSelection(target.row, target.col);
+                            }
+                            // If user is already editing this exact cell,
+                            // preserve native text selection drag behavior.
+                            if (targetNode.hasFocus) {
+                              return;
+                            }
+                            targetNode.requestFocus();
+                          },
+                          onPointerMove: (event) {
+                            if (widget.readOnly) return;
+                            // Drag range selection across web text inputs can
+                            // trigger active-input assertions in Flutter web.
+                            // Keep selection stable and use Shift+click for range.
+                            return;
+                          },
+                          onPointerUp: (_) {
+                          },
+                          onPointerCancel: (_) {
+                          },
+                          child: SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            child: SizedBox(
+                              width: math.max(totalWidth, maxWidth),
+                              child: Table(
                             columnWidths: {
                               for (var i = 0; i < widths.length; i++)
                                 i: FixedColumnWidth(widths[i]),
@@ -1077,11 +1430,18 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
                                     row: row,
                                     col: col,
                                   );
-                                  final isActiveCell =
-                                      row == _activeRow && col == _activeCol;
                                   final cellBold = _cellBold(row, col);
                                   final cellItalic = _cellItalic(row, col);
                                   final cellAlign = _cellAlign(row, col);
+                                  final cellFontKey = _cellFontFamilyKey(
+                                    row,
+                                    col,
+                                  );
+                                  final cellFontSize = _cellFontSize(row, col);
+                                  final cellSelected = _isCellInsideSelection(
+                                    row,
+                                    col,
+                                  );
                                   return Stack(
                                     clipBehavior: Clip.none,
                                     children: [
@@ -1091,7 +1451,7 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
                                             duration: const Duration(
                                               milliseconds: 90,
                                             ),
-                                            color: isActiveCell
+                                            color: cellSelected
                                                 ? const Color(
                                                     0xFF1B5E20,
                                                   ).withValues(alpha: 0.08)
@@ -1100,6 +1460,7 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
                                         ),
                                       ),
                                       Focus(
+                                        key: _cellContainerKey(row, col),
                                         onKeyEvent: (focusNode, event) =>
                                             _handleCellKey(
                                               event: event,
@@ -1109,6 +1470,7 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
                                             ),
                                         child: TextField(
                                           readOnly: widget.readOnly,
+                                          enableInteractiveSelection: false,
                                           controller: ctrl,
                                           focusNode: node,
                                           textAlign: cellAlign,
@@ -1118,10 +1480,16 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
                                           textInputAction:
                                               TextInputAction.newline,
                                           onTap: () {
-                                            _selected = true;
-                                            _activeRow = row;
-                                            _activeCol = col;
-                                            widget.onEditingStateChanged(true);
+                                            _selected = false;
+                                            // Selection is handled on pointer-down.
+                                            // Keep tap focused on entering text mode.
+                                            widget.onEditingStateChanged(
+                                              widget.offset,
+                                              true,
+                                            );
+                                            if (!node.hasFocus) {
+                                              node.requestFocus();
+                                            }
                                             if (mounted) setState(() {});
                                           },
                                           onChanged: (value) =>
@@ -1134,6 +1502,12 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
                                           decoration: const InputDecoration(
                                             isDense: true,
                                             border: InputBorder.none,
+                                            enabledBorder: InputBorder.none,
+                                            focusedBorder: InputBorder.none,
+                                            disabledBorder: InputBorder.none,
+                                            errorBorder: InputBorder.none,
+                                            focusedErrorBorder: InputBorder.none,
+                                            filled: false,
                                             contentPadding: EdgeInsets.fromLTRB(
                                               10,
                                               8,
@@ -1152,6 +1526,10 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
                                                 fontStyle: cellItalic
                                                     ? FontStyle.italic
                                                     : FontStyle.normal,
+                                                fontFamily: _fontFamilyFromKey(
+                                                  cellFontKey,
+                                                ),
+                                                fontSize: cellFontSize,
                                               ),
                                         ),
                                       ),
@@ -1183,7 +1561,7 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
                                                 if (mounted) setState(() {});
                                               },
                                               onHorizontalDragEnd: (_) {
-                                                _commitNow();
+                                                _emitDraft();
                                               },
                                             ),
                                           ),
@@ -1193,6 +1571,8 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
                                 }),
                               );
                             }),
+                              ),
+                            ),
                           ),
                         ),
                       ),
@@ -1211,52 +1591,6 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
                             child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                if (hasActiveCell) ...[
-                                  _cellFormatButton(
-                                    icon: Icons.format_bold_rounded,
-                                    tooltip: 'Bold cell',
-                                    active: activeBold,
-                                    onPressed: () =>
-                                        _setActiveCellStyle(bold: !activeBold),
-                                  ),
-                                  _cellFormatButton(
-                                    icon: Icons.format_italic_rounded,
-                                    tooltip: 'Italic cell',
-                                    active: activeItalic,
-                                    onPressed: () => _setActiveCellStyle(
-                                      italic: !activeItalic,
-                                    ),
-                                  ),
-                                  _cellFormatButton(
-                                    icon: Icons.format_align_left_rounded,
-                                    tooltip: 'Align left',
-                                    active: activeAlign == TextAlign.left,
-                                    onPressed: () =>
-                                        _setActiveCellStyle(align: 'left'),
-                                  ),
-                                  _cellFormatButton(
-                                    icon: Icons.format_align_center_rounded,
-                                    tooltip: 'Align center',
-                                    active: activeAlign == TextAlign.center,
-                                    onPressed: () =>
-                                        _setActiveCellStyle(align: 'center'),
-                                  ),
-                                  _cellFormatButton(
-                                    icon: Icons.format_align_right_rounded,
-                                    tooltip: 'Align right',
-                                    active: activeAlign == TextAlign.right,
-                                    onPressed: () =>
-                                        _setActiveCellStyle(align: 'right'),
-                                  ),
-                                  Container(
-                                    width: 1,
-                                    height: 20,
-                                    margin: const EdgeInsets.symmetric(
-                                      horizontal: 4,
-                                    ),
-                                    color: Colors.black.withValues(alpha: 0.12),
-                                  ),
-                                ],
                                 Tooltip(
                                   message: 'Move table',
                                   child: MouseRegion(
@@ -1264,14 +1598,12 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
                                     child: GestureDetector(
                                       behavior: HitTestBehavior.opaque,
                                       onTap: () {
-                                        _selected = true;
-                                        if (mounted) setState(() {});
+                                        _selectWholeTable();
                                       },
                                       child: IconButton(
                                         tooltip: 'Move table',
                                         onPressed: () {
-                                          _selected = true;
-                                          if (mounted) setState(() {});
+                                          _selectWholeTable();
                                         },
                                         mouseCursor: SystemMouseCursors.move,
                                         visualDensity: VisualDensity.compact,
@@ -1292,19 +1624,24 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
                                     tooltip: 'Table options',
                                     onOpened: () {
                                       _optionsMenuOpen = true;
-                                      _selected = true;
-                                      widget.onEditingStateChanged(true);
+                                      _selectWholeTable();
                                       if (mounted) setState(() {});
                                     },
                                     onCanceled: () {
                                       _optionsMenuOpen = false;
                                       WidgetsBinding.instance
                                           .addPostFrameCallback((_) {
+                                            if (!mounted) return;
                                             if (!_anyCellHasFocus()) {
-                                              widget.onEditingStateChanged(
-                                                false,
-                                              );
-                                              _commitNow();
+                                              if (!_allCellsSelected &&
+                                                  !_hasCellSelectionRange) {
+                                                widget.onEditingStateChanged(
+                                                  widget.offset,
+                                                  false,
+                                                );
+                                                _commitNow();
+                                              }
+                                              _notifySelectionState();
                                             }
                                           });
                                       if (mounted) setState(() {});
@@ -1404,8 +1741,13 @@ class _TableCellPosition {
 
 class HandbookDocsEditorPage extends StatefulWidget {
   final VoidCallback? onBack;
+  final UnsavedChangesController? unsavedChangesController;
 
-  const HandbookDocsEditorPage({super.key, this.onBack});
+  const HandbookDocsEditorPage({
+    super.key,
+    this.onBack,
+    this.unsavedChangesController,
+  });
 
   @override
   State<HandbookDocsEditorPage> createState() => _HandbookDocsEditorPageState();
@@ -1662,6 +2004,10 @@ class _InteractiveImageEmbedFrame extends StatelessWidget {
                 safeWidth = math.min(safeWidth, maxContentWidth - 4);
               }
 
+              final rotatedFrameSize = _rotatedFrameSize(
+                safeWidth,
+                safeHeight,
+              );
               final imageFrame = _buildEditableImageFrame(
                 safeWidth: safeWidth,
                 safeHeight: safeHeight,
@@ -1684,7 +2030,10 @@ class _InteractiveImageEmbedFrame extends StatelessWidget {
 
               Widget content;
               if (displayMode == 'side') {
-                final imageCard = SizedBox(width: safeWidth, child: imageFrame);
+                final imageCard = SizedBox(
+                  width: rotatedFrameSize.width,
+                  child: imageFrame,
+                );
                 final textCard = Expanded(
                   child: Container(
                     constraints: BoxConstraints(minHeight: safeHeight * 0.65),
@@ -1722,7 +2071,7 @@ class _InteractiveImageEmbedFrame extends StatelessWidget {
                 content = Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    SizedBox(width: safeWidth, child: imageFrame),
+                    imageFrame,
                     captionWidget,
                   ],
                 );
@@ -1748,6 +2097,15 @@ class _InteractiveImageEmbedFrame extends StatelessWidget {
     return Alignment.center;
   }
 
+  Size _rotatedFrameSize(double width, double height) {
+    final angle = rotationDegrees * math.pi / 180;
+    final cosA = math.cos(angle).abs();
+    final sinA = math.sin(angle).abs();
+    final rotatedWidth = math.max(1.0, (width * cosA) + (height * sinA));
+    final rotatedHeight = math.max(1.0, (width * sinA) + (height * cosA));
+    return Size(rotatedWidth, rotatedHeight);
+  }
+
   Widget _buildEditableImageFrame({
     required double safeWidth,
     required double safeHeight,
@@ -1764,6 +2122,7 @@ class _InteractiveImageEmbedFrame extends StatelessWidget {
     );
     final hasCrop =
         cropLeft > 0 || cropTop > 0 || cropRight > 0 || cropBottom > 0;
+    final rotatedFrameSize = _rotatedFrameSize(safeWidth, safeHeight);
 
     final imageWidget = _buildImageWidget(
       imageSource: imageSource,
@@ -1781,7 +2140,7 @@ class _InteractiveImageEmbedFrame extends StatelessWidget {
       ),
     );
 
-    return Stack(
+    final frame = Stack(
       clipBehavior: Clip.none,
       children: [
         Container(
@@ -1798,10 +2157,7 @@ class _InteractiveImageEmbedFrame extends StatelessWidget {
           ),
           child: ClipRRect(
             borderRadius: BorderRadius.circular(7),
-            child: Transform.rotate(
-              angle: rotationDegrees * math.pi / 180,
-              child: croppedImage,
-            ),
+            child: croppedImage,
           ),
         ),
         if (selected && !readOnly) ...[
@@ -1871,6 +2227,16 @@ class _InteractiveImageEmbedFrame extends StatelessWidget {
           ),
         ],
       ],
+    );
+    return SizedBox(
+      width: rotatedFrameSize.width,
+      height: rotatedFrameSize.height,
+      child: Center(
+        child: Transform.rotate(
+          angle: rotationDegrees * math.pi / 180,
+          child: frame,
+        ),
+      ),
     );
   }
 
@@ -1991,83 +2357,6 @@ class _InteractiveImageEmbedFrame extends StatelessWidget {
   }
 }
 
-class _ImageCropPreview extends StatelessWidget {
-  const _ImageCropPreview({
-    required this.imageSource,
-    required this.cropLeft,
-    required this.cropTop,
-    required this.cropRight,
-    required this.cropBottom,
-  });
-
-  final String imageSource;
-  final double cropLeft;
-  final double cropTop;
-  final double cropRight;
-  final double cropBottom;
-
-  @override
-  Widget build(BuildContext context) {
-    final visibleWidthFactor = (1 - cropLeft - cropRight).clamp(0.10, 1.0);
-    final visibleHeightFactor = (1 - cropTop - cropBottom).clamp(0.10, 1.0);
-    final alignmentX = ((cropLeft - cropRight) / visibleWidthFactor).clamp(
-      -1.0,
-      1.0,
-    );
-    final alignmentY = ((cropTop - cropBottom) / visibleHeightFactor).clamp(
-      -1.0,
-      1.0,
-    );
-
-    final previewImage = _buildImage();
-    return ClipRect(
-      child: Align(
-        alignment: Alignment(alignmentX, alignmentY),
-        widthFactor: visibleWidthFactor,
-        heightFactor: visibleHeightFactor,
-        child: previewImage,
-      ),
-    );
-  }
-
-  Widget _buildImage() {
-    final bytes = _tryDecodeDataUri(imageSource);
-    if (bytes != null) {
-      return Image.memory(bytes, fit: BoxFit.cover, width: double.infinity);
-    }
-    return Image.network(
-      imageSource,
-      fit: BoxFit.cover,
-      width: double.infinity,
-      gaplessPlayback: true,
-      filterQuality: FilterQuality.medium,
-      errorBuilder: (_, _, _) => Container(
-        alignment: Alignment.center,
-        color: const Color(0xFFF2F2F2),
-        child: const Text(
-          'Image preview unavailable',
-          style: TextStyle(
-            color: Color(0xFF6D7F62),
-            fontWeight: FontWeight.w700,
-          ),
-        ),
-      ),
-    );
-  }
-
-  Uint8List? _tryDecodeDataUri(String source) {
-    if (!source.startsWith('data:image/')) return null;
-    final commaIndex = source.indexOf(',');
-    if (commaIndex < 0 || commaIndex >= source.length - 1) return null;
-    final encoded = source.substring(commaIndex + 1);
-    try {
-      return base64Decode(encoded);
-    } catch (_) {
-      return null;
-    }
-  }
-}
-
 class _EditorSaveIntent extends Intent {
   const _EditorSaveIntent();
 }
@@ -2076,7 +2365,7 @@ class _EditorSelectAllIntent extends Intent {
   const _EditorSelectAllIntent();
 }
 
-enum _InlineFormatType { bold, italic, underline }
+enum _InlineFormatType { bold, italic, underline, strike }
 
 class _EditorToggleInlineIntent extends Intent {
   const _EditorToggleInlineIntent(this.type);
@@ -2084,7 +2373,11 @@ class _EditorToggleInlineIntent extends Intent {
   final _InlineFormatType type;
 }
 
-enum _ListFormatType { bullet, numbered }
+enum _ListFormatType { bullet, numbered, check }
+
+enum _CaseTransform { sentence, lowercase, uppercase, capitalize, toggle }
+
+enum _EditorViewToggleAction { ribbon, entries, outline }
 
 class _EditorToggleListIntent extends Intent {
   const _EditorToggleListIntent(this.type);
@@ -2125,8 +2418,52 @@ class _EditorSaveViewState {
   final bool autoSaveEnabled;
 }
 
+enum _UnsavedExitAction { save, discard, cancel }
+
+class _SaveNotePromptResult {
+  const _SaveNotePromptResult({required this.note});
+
+  final String note;
+}
+
+class _EntryOutlineHeading {
+  const _EntryOutlineHeading({
+    required this.text,
+    required this.offset,
+    required this.depth,
+  });
+
+  final String text;
+  final int offset;
+  final int depth;
+}
+
+class _PendingNodeDraft {
+  const _PendingNodeDraft({
+    required this.title,
+    required this.useSectionNumbering,
+    required this.contentOps,
+    required this.attachments,
+  });
+
+  final String title;
+  final bool useSectionNumbering;
+  final List<dynamic> contentOps;
+  final List<Map<String, dynamic>> attachments;
+}
+
+class _CachedNodeContent {
+  const _CachedNodeContent({
+    required this.contentJson,
+    required this.attachments,
+  });
+
+  final String contentJson;
+  final List<Map<String, dynamic>> attachments;
+}
+
 class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
-  static const _bg = Color(0xFFF6FAF6);
+  static const _bg = Colors.white;
   static const _primary = Color(0xFF1B5E20);
   static const _text = Color(0xFF1F2A1F);
   static const _muted = Color(0xFF6D7F62);
@@ -2134,6 +2471,50 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
   static const _colHbSection = 'hb_section';
   static const _colHbContents = 'hb_contents';
   static const _autosaveDebounce = Duration(seconds: 2);
+  static const List<MapEntry<String, String>> _fontFamilyOptions = [
+    MapEntry('default', 'Aptos (Body)'),
+    MapEntry('sans-serif', 'Arial'),
+    MapEntry('serif', 'Times New Roman'),
+    MapEntry('monospace', 'Courier New'),
+  ];
+  static const List<String> _standardColorPalette = [
+    '#C00000',
+    '#FF0000',
+    '#FFC000',
+    '#FFFF00',
+    '#92D050',
+    '#00B050',
+    '#00B0F0',
+    '#0070C0',
+    '#002060',
+    '#7030A0',
+  ];
+  static const List<String> _extendedColorPalette = [
+    '#FFFF00',
+    '#00FF00',
+    '#00FFFF',
+    '#FF00FF',
+    '#0000FF',
+    '#FF0000',
+    '#008080',
+    '#006400',
+    '#800080',
+    '#4B0082',
+    '#B8860B',
+    '#2F4F4F',
+    '#808000',
+    '#708090',
+    '#8B0000',
+    '#1B5E20',
+    '#000000',
+    '#FFFFFF',
+    '#D9D9D9',
+    '#BFBFBF',
+    '#A6A6A6',
+    '#7F7F7F',
+    '#595959',
+    '#3F3F3F',
+  ];
 
   final _db = FirebaseFirestore.instance;
   final _titleCtrl = TextEditingController();
@@ -2159,13 +2540,16 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
   Map<String, String>? _pendingImageStyleMap;
   final Map<int, Map<String, dynamic>> _pendingTablePayloadByOffset =
       <int, Map<String, dynamic>>{};
+  final Map<int, _TableStyleSetter> _tableStyleSetters =
+      <int, _TableStyleSetter>{};
+  int? _activeTableOffset;
+  _TableSelectionState _activeTableSelection = _TableSelectionState.empty;
   bool _isTableCellEditing = false;
 
   bool _loadingContext = true;
   String? _contextError;
   String? _handbookId;
   String _handbookVersion = '--';
-  String _editingVersionStatus = 'draft';
   String _treeSnapshotSignature = '';
 
   List<HandbookNodeDoc> _nodes = const [];
@@ -2174,12 +2558,14 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
   int? _activeImageOffset;
   bool _imageCropMode = false;
   bool _imageInteractionMode = false;
-  bool _previewMode = false;
-  final bool _enableImageBehavior = false;
+  bool _editingEnabled = false;
+  bool _showRibbon = true;
+  final bool _enableImageBehavior = true;
   bool _useSectionNumbering = true;
 
   bool _isSaving = false;
   bool _hasUnsavedChanges = false;
+  bool _currentNodeDirty = false;
   bool _suppressDirty = false;
   bool _autoSaveEnabled = false;
   Future<void>? _saveInFlight;
@@ -2188,7 +2574,18 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
   bool _isRootReordering = false;
   DateTime _sectionTapLockedUntil = DateTime.fromMillisecondsSinceEpoch(0);
   String _saveMessage = 'Saved';
+  String _lastSaveNote = '';
   String _query = '';
+  final Map<String, _PendingNodeDraft> _pendingNodeDrafts =
+      <String, _PendingNodeDraft>{};
+  final Map<String, _CachedNodeContent> _contentCacheByNodeId =
+      <String, _CachedNodeContent>{};
+  bool _entriesPanelCollapsed = false;
+  bool _outlinePanelCollapsed = true;
+  double _paperZoom = 1.0;
+  final GlobalKey _imageSizeButtonKey = GlobalKey();
+  final Object _editorInteractionTapGroup = Object();
+  OverlayEntry? _imageSizeOverlay;
 
   List<Map<String, dynamic>> _attachments = const [];
 
@@ -2224,6 +2621,9 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
         onCommitRequested: _onTableCommitRequested,
         onDeleteRequested: _onTableDeleteRequested,
         onEditingStateChanged: _onTableEditingStateChanged,
+        onSelectionStateChanged: _onTableSelectionStateChanged,
+        onStyleSetterChanged: _onTableStyleSetterChanged,
+        interactionGroupId: _editorInteractionTapGroup,
       ),
       ...fallbackBuilders.where(
         (builder) =>
@@ -2233,15 +2633,20 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
     ];
     _bindEditorDocChanges();
     _titleCtrl.addListener(_onMetaChanged);
+    widget.unsavedChangesController?.setDiscardHandler(_discardDraftFromGuard);
+    widget.unsavedChangesController?.setSaveHandler(_saveDraftFromGuard);
+    widget.unsavedChangesController?.setDirty(_hasUnsavedChanges);
     _publishSaveViewState();
     _loadContext();
   }
 
   @override
   void dispose() {
+    _closeImageSizeDropdown();
     _autosaveTimer?.cancel();
     _imageStyleFlushTimer?.cancel();
     _pendingTablePayloadByOffset.clear();
+    _tableStyleSetters.clear();
     _docChangeSub?.cancel();
     _nodeSub?.cancel();
     _editorController.dispose();
@@ -2250,7 +2655,19 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
     _saveViewState.dispose();
     _titleCtrl.dispose();
     _searchCtrl.dispose();
+    widget.unsavedChangesController?.setDiscardHandler(null);
+    widget.unsavedChangesController?.setSaveHandler(null);
+    widget.unsavedChangesController?.clear();
     super.dispose();
+  }
+
+  void _discardDraftFromGuard() {
+    unawaited(_discardCurrentDrafts());
+  }
+
+  Future<bool> _saveDraftFromGuard() async {
+    await _saveAllPendingDrafts(source: 'guard');
+    return !_hasUnsavedChanges;
   }
 
   HandbookNodeDoc? get _selectedNode => _nodeById(_selectedNodeId);
@@ -2361,6 +2778,7 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
       hasUnsavedChanges: _hasUnsavedChanges,
       autoSaveEnabled: _autoSaveEnabled,
     );
+    widget.unsavedChangesController?.setDirty(_hasUnsavedChanges);
   }
 
   quill.Document _parseDocument(String content) {
@@ -2427,19 +2845,6 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
     return hbMetaSnap.data() ?? const <String, dynamic>{};
   }
 
-  Future<String> _loadVersionStatus(String versionId) async {
-    final id = versionId.trim();
-    if (id.isEmpty || id == 'current') return 'draft';
-    final hbDoc = await _db.collection(_colHbVersion).doc(id).get();
-    if (hbDoc.exists) {
-      final hbData = hbDoc.data() ?? const <String, dynamic>{};
-      return _normalizeVersionWorkflowStatus(
-        (hbData['status'] ?? 'draft').toString(),
-      );
-    }
-    return 'draft';
-  }
-
   Future<void> _loadContext() async {
     setState(() {
       _loadingContext = true;
@@ -2457,7 +2862,7 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
           .trim();
       if (editingVersion.isEmpty) {
         throw Exception(
-          'No editing version selected. Open Manage Handbook and click Edit Version.',
+          'No editing version selected. Open Manage Handbook and click Open.',
         );
       }
       final editingLabel =
@@ -2468,13 +2873,10 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
               .toString()
               .trim();
 
-      final editingStatus = await _loadVersionStatus(editingVersion);
-
       if (!mounted) return;
       setState(() {
         _handbookId = editingVersion;
         _handbookVersion = editingLabel;
-        _editingVersionStatus = editingStatus;
         _loadingContext = false;
       });
       _bindNodes();
@@ -2487,59 +2889,30 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
     }
   }
 
-  String _normalizeVersionWorkflowStatus(String raw) {
-    final value = raw.trim().toLowerCase().replaceAll(' ', '_');
-    switch (value) {
-      case 'draft':
-      case 'under_review':
-      case 'approved':
-      case 'active':
-      case 'archived':
-      case 'published':
-        return value;
-      default:
-        return 'draft';
-    }
-  }
+  bool get _isWorkflowReadOnly => false;
 
-  String _workflowStatusLabel(String status) {
-    switch (_normalizeVersionWorkflowStatus(status)) {
-      case 'draft':
-        return 'Draft';
-      case 'under_review':
-        return 'Under Review';
-      case 'approved':
-        return 'Approved';
-      case 'active':
-        return 'Active';
-      case 'archived':
-        return 'Archived';
-      case 'published':
-        return 'Published';
-      default:
-        return 'Draft';
-    }
-  }
-
-  bool get _isWorkflowReadOnly {
-    final status = _normalizeVersionWorkflowStatus(_editingVersionStatus);
-    return status == 'active' || status == 'published' || status == 'archived';
-  }
-
-  bool get _isEditorReadOnly => _previewMode || _isWorkflowReadOnly;
+  bool get _isEditorReadOnly => !_editingEnabled || _isWorkflowReadOnly;
 
   String get _editorReadOnlyMessage {
-    if (_previewMode) return 'Preview mode - read-only';
-    return 'This handbook version is read-only.';
+    if (!_editingEnabled) {
+      return 'View mode - click Edit to make changes';
+    }
+    return 'Read-only mode';
   }
 
   void _showReadOnlyVersionWarning() {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text(
-          'This handbook version is read-only. Select a draft to edit.',
-        ),
+    AppScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('This section is currently read-only.')),
+    );
+  }
+
+  void _showSnack(String message, {bool isError = false}) {
+    if (!mounted) return;
+    AppScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: isError ? Colors.red.shade700 : _primary,
       ),
     );
   }
@@ -2568,6 +2941,13 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
             } else {
               _nodes = nodes;
             }
+            final nodeIds = nodes.map((n) => n.id).toSet();
+            _pendingNodeDrafts.removeWhere((id, _) => !nodeIds.contains(id));
+            _contentCacheByNodeId.removeWhere((id, _) => !nodeIds.contains(id));
+            if (_selectedNodeId != null && !nodeIds.contains(_selectedNodeId)) {
+              _currentNodeDirty = false;
+            }
+            _refreshUnsavedIndicator();
 
             final selectedId = _selectedNodeId;
             final hasSelectedNode =
@@ -2593,38 +2973,71 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
   Future<void> _switchToNode(String nodeId, {bool force = false}) async {
     if (!force && nodeId == _selectedNodeId) return;
     final switchVersion = ++_switchVersion;
-    await _saveNodeNow();
-    if (!mounted || switchVersion != _switchVersion) return;
+    if (_currentNodeDirty) {
+      _stashCurrentNodeDraft();
+      if (!mounted || switchVersion != _switchVersion) return;
+    }
     final node = _nodeById(nodeId);
     if (node == null) return;
     await _loadNodeToEditor(node);
   }
 
   Future<void> _loadNodeToEditor(HandbookNodeDoc node) async {
+    final pendingDraft = _pendingNodeDrafts[node.id];
     var resolvedContent = node.content;
     var resolvedAttachments = <Map<String, dynamic>>[];
-    try {
-      final contentSnap = await _db
-          .collection(_colHbContents)
-          .doc(node.id)
-          .get();
-      final contentData = contentSnap.data() ?? const <String, dynamic>{};
-      final stored = (contentData['content'] ?? '').toString();
-      if (stored.trim().isNotEmpty) {
-        resolvedContent = stored;
+    var resolvedTitle = node.title;
+    var resolvedUseSectionNumbering = node.useSectionNumbering;
+    quill.Document? prebuiltDocument;
+    final loadedFromDraft = pendingDraft != null;
+    if (loadedFromDraft) {
+      prebuiltDocument = quill.Document.fromJson(
+        _normalizeLegacyEmbeds(pendingDraft.contentOps),
+      );
+      resolvedAttachments = List<Map<String, dynamic>>.from(
+        pendingDraft.attachments,
+      );
+      resolvedTitle = pendingDraft.title;
+      resolvedUseSectionNumbering = pendingDraft.useSectionNumbering;
+    }
+    if (!loadedFromDraft) {
+      final cached = _contentCacheByNodeId[node.id];
+      if (cached != null) {
+        resolvedContent = cached.contentJson;
+        resolvedAttachments = List<Map<String, dynamic>>.from(
+          cached.attachments,
+        );
+      } else {
+      try {
+        final contentSnap = await _db
+            .collection(_colHbContents)
+            .doc(node.id)
+            .get();
+        final contentData = contentSnap.data() ?? const <String, dynamic>{};
+        final stored = (contentData['content'] ?? '').toString();
+        if (stored.trim().isNotEmpty) {
+          resolvedContent = stored;
+        }
+        final rawAttachments = (contentData['attachments'] as List?) ?? const [];
+        resolvedAttachments = rawAttachments
+            .whereType<Map>()
+            .map((e) => Map<String, dynamic>.from(e.cast<String, dynamic>()))
+            .toList();
+        _contentCacheByNodeId[node.id] = _CachedNodeContent(
+          contentJson: resolvedContent,
+          attachments: List<Map<String, dynamic>>.from(resolvedAttachments),
+        );
+      } catch (_) {}
       }
-      final rawAttachments = (contentData['attachments'] as List?) ?? const [];
-      resolvedAttachments = rawAttachments
-          .whereType<Map>()
-          .map((e) => Map<String, dynamic>.from(e.cast<String, dynamic>()))
-          .toList();
-    } catch (_) {}
+    }
 
     final oldController = _editorController;
-    final document = _parseDocument(resolvedContent);
+    final document = prebuiltDocument ?? _parseDocument(resolvedContent);
     _pendingTablePayloadByOffset.clear();
+    _tableStyleSetters.clear();
+    _activeTableOffset = null;
+    _activeTableSelection = _TableSelectionState.empty;
     _isTableCellEditing = false;
-    _previewMode = false;
     final nextController = quill.QuillController(
       document: document,
       selection: const TextSelection.collapsed(offset: 0),
@@ -2638,19 +3051,20 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
       _activeImageOffset = null;
       _imageCropMode = false;
       _imageInteractionMode = false;
-      _previewMode = false;
       _suppressDirty = true;
-      _titleCtrl.text = node.title;
-      _useSectionNumbering = node.useSectionNumbering;
+      _titleCtrl.text = resolvedTitle;
+      _useSectionNumbering = resolvedUseSectionNumbering;
       _attachments = List<Map<String, dynamic>>.from(resolvedAttachments);
-      _hasUnsavedChanges = false;
-      _saveMessage = 'Saved';
+      _currentNodeDirty = loadedFromDraft;
+      _hasUnsavedChanges = loadedFromDraft || _pendingNodeDrafts.isNotEmpty;
+      _saveMessage = _hasUnsavedChanges ? 'Unsaved changes' : 'Saved';
       _expandedNodeIds.add(node.parentId);
       _suppressDirty = false;
     });
     _publishSaveViewState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       oldController.dispose();
+      _requestEditorFocusIfEditable();
     });
   }
 
@@ -2669,14 +3083,18 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
 
   void _scheduleAutosaveDebounced() {
     _autosaveTimer?.cancel();
-    if (!_autoSaveEnabled || !_hasUnsavedChanges) return;
+    if (!_autoSaveEnabled || !_currentNodeDirty) return;
     if (_isTableCellEditing) return;
-    _autosaveTimer = Timer(_autosaveDebounce, _saveNodeNow);
+    _autosaveTimer = Timer(
+      _autosaveDebounce,
+      () => _saveNodeNow(source: 'autosave'),
+    );
   }
 
   void _markDirtyAndSchedule() {
     if (_selectedNode == null) return;
     _editVersion += 1;
+    _currentNodeDirty = true;
     final shouldRefreshStatus =
         !_hasUnsavedChanges || _saveMessage == 'Saved' || _saveMessage == '';
     _hasUnsavedChanges = true;
@@ -2687,27 +3105,142 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
     _scheduleAutosaveDebounced();
   }
 
-  Future<void> _saveNodeNow() async {
-    if (_isWorkflowReadOnly) {
-      _autosaveTimer?.cancel();
-      if (_saveMessage != 'Read-only version' || _hasUnsavedChanges) {
-        _hasUnsavedChanges = false;
-        _saveMessage = 'Read-only version';
-        _publishSaveViewState();
-      }
+  bool _shouldPromptSaveNote(String source) {
+    return source == 'manual' ||
+        source == 'back' ||
+        source == 'view_mode' ||
+        source == 'guard';
+  }
+
+  Future<_SaveNotePromptResult?> _promptSaveNoteOptional() async {
+    final controller = TextEditingController(text: _lastSaveNote);
+    final result = await showDialog<_SaveNotePromptResult>(
+      context: context,
+      builder: (context) {
+        return _buildEditorStyledDialog(
+          context: context,
+          icon: Icons.save_rounded,
+          title: 'Save changes',
+          width: 500,
+          body: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              TextField(
+                controller: controller,
+                minLines: 2,
+                maxLines: 4,
+                decoration: _editorDialogInputDecoration(
+                  label: 'Update note (optional)',
+                  hintText: 'Add a short update note',
+                  alignLabelWithHint: true,
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              style: _editorModalSecondaryButtonStyle(),
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            FilledButton.icon(
+              onPressed: () {
+                Navigator.pop(
+                  context,
+                  _SaveNotePromptResult(note: controller.text.trim()),
+                );
+              },
+              style: _editorModalPrimaryButtonStyle(),
+              icon: const Icon(Icons.save_rounded, size: 18),
+              label: const Text('Save'),
+            ),
+          ],
+        );
+      },
+    );
+    controller.dispose();
+    return result;
+  }
+
+  Future<void> _discardCurrentDrafts() async {
+    _pendingNodeDrafts.clear();
+    _currentNodeDirty = false;
+    final selected = _selectedNode;
+    if (selected != null) {
+      await _loadNodeToEditor(selected);
       return;
     }
+    _safeSetState(() {
+      _hasUnsavedChanges = false;
+      _saveMessage = 'Saved';
+    });
+    _publishSaveViewState();
+  }
+
+  Future<bool> _confirmDiscardChanges() async {
+    if (!_hasAnyUnsavedDrafts) return true;
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return _buildEditorStyledDialog(
+          context: context,
+          icon: Icons.delete_outline_rounded,
+          title: 'Discard unsaved changes?',
+          width: 460,
+          body: const Text(
+            'This will remove all changes since your last save.',
+            style: TextStyle(
+              color: _text,
+              fontWeight: FontWeight.w700,
+              fontSize: 13,
+            ),
+          ),
+          actions: [
+            TextButton(
+              style: _editorModalSecondaryButtonStyle(),
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton.icon(
+              onPressed: () => Navigator.pop(context, true),
+              style: _editorModalPrimaryButtonStyle(
+                backgroundColor: const Color(0xFFC62828),
+              ),
+              icon: const Icon(Icons.delete_rounded, size: 18),
+              label: const Text('Discard changes'),
+            ),
+          ],
+        );
+      },
+    );
+    return result == true;
+  }
+
+  Future<void> _confirmAndDiscardDraft() async {
+    final confirmed = await _confirmDiscardChanges();
+    if (!confirmed || !mounted) return;
+    await _discardCurrentDrafts();
+  }
+
+  Future<void> _saveNodeNow({String source = 'implicit'}) async {
     if (_isSaving) {
       final inFlight = _saveInFlight;
       if (inFlight != null) {
         await inFlight;
       }
-      if (!_hasUnsavedChanges) return;
+      if (!_currentNodeDirty) return;
     }
-    if (!_hasUnsavedChanges) return;
+    if (!_currentNodeDirty) return;
     final selected = _selectedNode;
     if (selected == null) return;
-
+    String note = '';
+    if (_shouldPromptSaveNote(source)) {
+      final noteResult = await _promptSaveNoteOptional();
+      if (noteResult == null) return;
+      note = noteResult.note;
+      _lastSaveNote = note;
+    }
     _flushPendingTablePayloads();
     _autosaveTimer?.cancel();
     final saveVersion = _editVersion;
@@ -2746,19 +3279,39 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
       if (!mounted) return;
       final stillCurrentNode = _selectedNodeId == selected.id;
       final changedDuringSave = _editVersion != saveVersion;
+      final logAction = source == 'autosave'
+          ? 'autosave_save'
+          : source == 'implicit'
+          ? 'implicit_save'
+          : 'save';
+      try {
+        await _appendHandbookEditLog(
+          action: logAction,
+          sectionId: selected.id,
+          sectionTitle: payload['title']?.toString() ?? '',
+          note: note,
+        );
+      } catch (_) {}
       if (!stillCurrentNode || changedDuringSave) {
+        _currentNodeDirty = true;
         _hasUnsavedChanges = true;
         _saveMessage = 'Unsaved changes';
       } else {
-        _hasUnsavedChanges = false;
-        _saveMessage = 'Saved';
+        _contentCacheByNodeId[selected.id] = _CachedNodeContent(
+          contentJson: contentJson,
+          attachments: List<Map<String, dynamic>>.from(_attachments),
+        );
+        _currentNodeDirty = false;
+        _pendingNodeDrafts.remove(selected.id);
+        _hasUnsavedChanges = _pendingNodeDrafts.isNotEmpty;
+        _saveMessage = _hasUnsavedChanges ? 'Unsaved changes' : 'Saved';
       }
       _publishSaveViewState();
     } catch (e) {
       if (!mounted) return;
       _saveMessage = 'Save failed';
       _publishSaveViewState();
-      ScaffoldMessenger.of(
+      AppScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Save failed: $e')));
     } finally {
@@ -2768,6 +3321,149 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
         _publishSaveViewState();
         _scheduleAutosaveDebounced();
       }
+    }
+  }
+
+  Future<void> _appendHandbookEditLog({
+    required String action,
+    required String sectionId,
+    required String sectionTitle,
+    String note = '',
+  }) async {
+    final versionId = (_handbookId ?? '').trim();
+    if (versionId.isEmpty) return;
+    final user = FirebaseAuth.instance.currentUser;
+    await _db
+        .collection(_colHbVersion)
+        .doc(versionId)
+        .collection('edit_logs')
+        .add({
+          'action': action,
+          'sectionId': sectionId,
+          'sectionTitle': sectionTitle,
+          'note': note.trim(),
+          'actorUid': user?.uid ?? '',
+          'actorEmail': user?.email ?? '',
+          'timestamp': FieldValue.serverTimestamp(),
+        });
+  }
+
+  Future<void> _commitOpsInChunks(
+    List<void Function(WriteBatch batch)> operations,
+  ) async {
+    const chunkSize = 380;
+    for (var i = 0; i < operations.length; i += chunkSize) {
+      final batch = _db.batch();
+      final end = math.min(i + chunkSize, operations.length);
+      for (var j = i; j < end; j++) {
+        operations[j](batch);
+      }
+      await batch.commit();
+    }
+  }
+
+  bool get _hasAnyUnsavedDrafts => _currentNodeDirty || _pendingNodeDrafts.isNotEmpty;
+
+  void _refreshUnsavedIndicator() {
+    _hasUnsavedChanges = _hasAnyUnsavedDrafts;
+    if (_isSaving) return;
+    _saveMessage = _hasUnsavedChanges ? 'Unsaved changes' : 'Saved';
+    _publishSaveViewState();
+  }
+
+  void _stashCurrentNodeDraft() {
+    final selected = _selectedNode;
+    if (selected == null) return;
+    _flushPendingTablePayloads();
+    final title = _titleCtrl.text.trim().isEmpty
+        ? '(Untitled node)'
+        : _titleCtrl.text.trim();
+    final contentOps = _editorController.document.toDelta().toJson();
+    _pendingNodeDrafts[selected.id] = _PendingNodeDraft(
+      title: title,
+      useSectionNumbering: _useSectionNumbering,
+      contentOps: contentOps,
+      attachments: List<Map<String, dynamic>>.from(_attachments),
+    );
+    _currentNodeDirty = false;
+    _refreshUnsavedIndicator();
+  }
+
+  Future<bool> _saveAllPendingDrafts({String source = 'manual'}) async {
+    if (_currentNodeDirty) {
+      _stashCurrentNodeDraft();
+    }
+    if (_pendingNodeDrafts.isEmpty) {
+      _currentNodeDirty = false;
+      _refreshUnsavedIndicator();
+      return true;
+    }
+    String note = '';
+    if (_shouldPromptSaveNote(source)) {
+      final noteResult = await _promptSaveNoteOptional();
+      if (noteResult == null) return false;
+      note = noteResult.note;
+      _lastSaveNote = note;
+    }
+    final versionId = (_handbookId ?? '').trim();
+    if (versionId.isEmpty) return false;
+
+    _isSaving = true;
+    _saveMessage = 'Saving...';
+    _publishSaveViewState();
+    try {
+      final existingNodeIds = _nodes.map((node) => node.id).toSet();
+      final ops = <void Function(WriteBatch batch)>[];
+      _pendingNodeDrafts.forEach((nodeId, draft) {
+        if (!existingNodeIds.contains(nodeId)) return;
+        ops.add((batch) {
+          batch.set(_db.collection(_colHbSection).doc(nodeId), {
+            'title': draft.title,
+            'useSectionNumbering': draft.useSectionNumbering,
+            'versionId': versionId,
+            'updatedAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
+          batch.set(_db.collection(_colHbContents).doc(nodeId), {
+            'sectionId': nodeId,
+            'versionId': versionId,
+            'content': jsonEncode(draft.contentOps),
+            'attachments': draft.attachments,
+            'updatedAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
+        });
+      });
+      if (ops.isNotEmpty) {
+        await _commitOpsInChunks(ops);
+      }
+      _pendingNodeDrafts.forEach((nodeId, draft) {
+        if (!existingNodeIds.contains(nodeId)) return;
+        _contentCacheByNodeId[nodeId] = _CachedNodeContent(
+          contentJson: jsonEncode(draft.contentOps),
+          attachments: List<Map<String, dynamic>>.from(draft.attachments),
+        );
+      });
+      try {
+        await _appendHandbookEditLog(
+          action: 'bulk_save_drafts_$source',
+          sectionId: _selectedNodeId ?? '',
+          sectionTitle: 'Saved ${_pendingNodeDrafts.length} draft entr${_pendingNodeDrafts.length == 1 ? 'y' : 'ies'}',
+          note: note,
+        );
+      } catch (_) {}
+      _pendingNodeDrafts.clear();
+      _currentNodeDirty = false;
+      _hasUnsavedChanges = false;
+      _saveMessage = 'Saved';
+      _publishSaveViewState();
+      return true;
+    } catch (e) {
+      _saveMessage = 'Save failed';
+      _publishSaveViewState();
+      _showSnack('Save failed: $e', isError: true);
+      return false;
+    } finally {
+      _isSaving = false;
+      _publishSaveViewState();
     }
   }
 
@@ -2784,19 +3480,118 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
   bool get _canEditDocumentActions =>
       _selectedNode != null && !_isEditorReadOnly && !_isTableCellEditing;
 
+  void _requestEditorFocusIfEditable() {
+    if (!mounted) return;
+    if (_selectedNode == null ||
+        _isEditorReadOnly ||
+        _isTableCellEditing) {
+      return;
+    }
+    _editorController.skipRequestKeyboard = false;
+    _editorFocusNode.requestFocus();
+  }
+
   void _syncEditorReadOnlyState() {
     _editorController.readOnly = _isEditorReadOnly;
   }
 
-  Future<void> _togglePreviewMode() async {
-    if (!_previewMode) {
-      await _saveNodeNow();
-      if (!mounted) return;
+  Future<_UnsavedExitAction> _askUnsavedChangesAction({
+    bool leavingPage = true,
+  }) async {
+    final result = await showDialog<_UnsavedExitAction>(
+      context: context,
+      builder: (context) {
+        final discardLabel = leavingPage
+            ? 'Discard and leave'
+            : 'Discard changes';
+        final saveLabel = leavingPage ? 'Save and leave' : 'Save';
+        final bodyMessage = leavingPage
+            ? 'Do you want to save before leaving this page?'
+            : 'Do you want to save before leaving edit mode?';
+        return _buildEditorStyledDialog(
+          context: context,
+          icon: Icons.warning_amber_rounded,
+          title: 'You have unsaved changes',
+          width: 460,
+          body: Text(
+            bodyMessage,
+            style: TextStyle(
+              color: _text,
+              fontWeight: FontWeight.w700,
+              fontSize: 13,
+            ),
+          ),
+          actions: [
+            TextButton(
+              style: _editorModalSecondaryButtonStyle(),
+              onPressed: () =>
+                  Navigator.pop(context, _UnsavedExitAction.cancel),
+              child: const Text('Continue editing'),
+            ),
+            TextButton(
+              style: _editorModalSecondaryButtonStyle().copyWith(
+                foregroundColor: WidgetStatePropertyAll(
+                  const Color(0xFFC62828),
+                ),
+              ),
+              onPressed: () =>
+                  Navigator.pop(context, _UnsavedExitAction.discard),
+              child: Text(discardLabel),
+            ),
+            FilledButton.icon(
+              onPressed: () => Navigator.pop(context, _UnsavedExitAction.save),
+              style: _editorModalPrimaryButtonStyle(),
+              icon: const Icon(Icons.save_rounded, size: 18),
+              label: Text(saveLabel),
+            ),
+          ],
+        );
+      },
+    );
+    return result ?? _UnsavedExitAction.cancel;
+  }
+
+  Future<bool> _setEditingEnabled(bool enabled) async {
+    if (_editingEnabled == enabled) return true;
+    if (!enabled && _hasAnyUnsavedDrafts) {
+      final action = await _askUnsavedChangesAction(leavingPage: false);
+      if (action == _UnsavedExitAction.cancel) return false;
+      if (action == _UnsavedExitAction.save) {
+        final saved = await _saveAllPendingDrafts(source: 'view_mode');
+        if (!saved) return false;
+      } else if (action == _UnsavedExitAction.discard) {
+        await _discardCurrentDrafts();
+      }
+      if (!mounted) return false;
     }
     setState(() {
-      _previewMode = !_previewMode;
+      _editingEnabled = enabled;
       _syncEditorReadOnlyState();
     });
+    if (enabled) {
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _requestEditorFocusIfEditable(),
+      );
+    }
+    return true;
+  }
+
+  int? _parseHeaderLevelValue(dynamic raw) {
+    if (raw is int) return raw;
+    if (raw is num) return raw.toInt();
+    return int.tryParse(raw?.toString() ?? '');
+  }
+
+  bool _isSelectionOnBlankLine(TextSelection selection) {
+    if (!selection.isValid) return false;
+    final plainText = _editorController.document.toPlainText();
+    if (plainText.isEmpty) return true;
+    final caret = selection.baseOffset.clamp(0, plainText.length);
+    final start = caret <= 0 ? 0 : plainText.lastIndexOf('\n', caret - 1) + 1;
+    final nextBreak = plainText.indexOf('\n', caret);
+    final end = nextBreak < 0 ? plainText.length : nextBreak;
+    final line = plainText.substring(start, end).trim();
+    return line.isEmpty;
   }
 
   KeyEventResult _handleEditorKeyPress(KeyEvent event) {
@@ -2804,16 +3599,117 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
       // Never consume keys here while editing table cells.
       return KeyEventResult.ignored;
     }
+    if (_imageInteractionMode && event is KeyDownEvent) {
+      final key = event.logicalKey;
+      final isTypingCharacter = event.character != null &&
+          event.character!.isNotEmpty &&
+          !HardwareKeyboard.instance.isControlPressed &&
+          !HardwareKeyboard.instance.isMetaPressed &&
+          !HardwareKeyboard.instance.isAltPressed;
+      final isNavigationOrEditKey =
+          key == LogicalKeyboardKey.backspace ||
+          key == LogicalKeyboardKey.delete ||
+          key == LogicalKeyboardKey.enter ||
+          key == LogicalKeyboardKey.tab;
+      if (isTypingCharacter || isNavigationOrEditKey) {
+        final deletedImageOffset = _deleteSelectedImage();
+        if (deletedImageOffset == null) {
+          _setImageInteractionMode(false);
+          return KeyEventResult.ignored;
+        }
+        if (!_isEditorReadOnly && _selectedNode != null) {
+          _editorController.skipRequestKeyboard = false;
+          _editorFocusNode.requestFocus();
+        }
+        if (key == LogicalKeyboardKey.backspace ||
+            key == LogicalKeyboardKey.delete) {
+          // Delete key should only remove the selected image on this press.
+          return KeyEventResult.handled;
+        }
+        // For typing/enter/tab: image is removed, then allow normal key behavior.
+        return KeyEventResult.ignored;
+      }
+    }
+    if (!_imageInteractionMode) {
+      final selection = _editorController.selection;
+      if (selection.isValid &&
+          selection.isCollapsed &&
+          _isImageOffset(selection.baseOffset)) {
+        final key = event.logicalKey;
+        final isTypingCharacter = event is KeyDownEvent &&
+            event.character != null &&
+            event.character!.isNotEmpty &&
+            !HardwareKeyboard.instance.isControlPressed &&
+            !HardwareKeyboard.instance.isMetaPressed &&
+            !HardwareKeyboard.instance.isAltPressed;
+        final isDestructiveKey =
+            key == LogicalKeyboardKey.backspace ||
+            key == LogicalKeyboardKey.delete;
+        if (isTypingCharacter && !isDestructiveKey) {
+          final maxOffset = math.max(0, _editorController.document.length - 1);
+          final safeOffset = math.min(maxOffset, selection.baseOffset + 1);
+          _editorController.updateSelection(
+            TextSelection.collapsed(offset: safeOffset),
+            quill.ChangeSource.local,
+          );
+        }
+      }
+    }
+    if (_canEditDocumentActions &&
+        event is KeyDownEvent &&
+        event.logicalKey == LogicalKeyboardKey.enter &&
+        !HardwareKeyboard.instance.isControlPressed &&
+        !HardwareKeyboard.instance.isMetaPressed &&
+        !HardwareKeyboard.instance.isAltPressed) {
+      final selection = _editorController.selection;
+      if (selection.isValid && selection.isCollapsed) {
+        final attrs = _editorController.getSelectionStyle().attributes;
+        final headerLevel = _parseHeaderLevelValue(
+          attrs[quill.Attribute.header.key]?.value,
+        );
+        if ((headerLevel == 1 || headerLevel == 2) &&
+            !_isSelectionOnBlankLine(selection)) {
+          final caret = selection.baseOffset;
+          _editorController.replaceText(
+            caret,
+            0,
+            '\n',
+            TextSelection.collapsed(offset: caret + 1),
+          );
+          _editorController.formatSelection(
+            quill.Attribute.fromKeyValue(
+              quill.Attribute.header.key,
+              headerLevel,
+            ),
+          );
+          return KeyEventResult.handled;
+        }
+      }
+    }
     return _handleEditorBackspace(event);
   }
 
   void _toggleInlineFormat(_InlineFormatType type) {
+    if (_hasActiveTableStyleTarget) {
+      switch (type) {
+        case _InlineFormatType.bold:
+          _applyTableCellStyle(bold: !_activeTableSelection.bold);
+          return;
+        case _InlineFormatType.italic:
+          _applyTableCellStyle(italic: !_activeTableSelection.italic);
+          return;
+        case _InlineFormatType.underline:
+        case _InlineFormatType.strike:
+          return;
+      }
+    }
     if (!_canEditDocumentActions) return;
     _editorFocusNode.requestFocus();
     final attribute = switch (type) {
       _InlineFormatType.bold => quill.Attribute.bold,
       _InlineFormatType.italic => quill.Attribute.italic,
       _InlineFormatType.underline => quill.Attribute.underline,
+      _InlineFormatType.strike => quill.Attribute.strikeThrough,
     };
     final active = _editorController.getSelectionStyle().attributes.containsKey(
       attribute.key,
@@ -2824,11 +3720,13 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
   }
 
   void _toggleListFormat(_ListFormatType type) {
+    if (_hasActiveTableStyleTarget) return;
     if (!_canEditDocumentActions) return;
     _editorFocusNode.requestFocus();
     final attribute = switch (type) {
       _ListFormatType.bullet => quill.Attribute.ul,
       _ListFormatType.numbered => quill.Attribute.ol,
+      _ListFormatType.check => quill.Attribute.checked,
     };
     final currentList = _editorController
         .getSelectionStyle()
@@ -2840,6 +3738,7 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
   }
 
   void _indentSelection({required bool increase}) {
+    if (_hasActiveTableStyleTarget) return;
     if (!_canEditDocumentActions) return;
     _editorFocusNode.requestFocus();
     if (!increase && _tryRemoveTabCharacterNearCaret()) {
@@ -2892,16 +3791,55 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
       return KeyEventResult.ignored;
     }
 
-    final plainText = _editorController.document.toPlainText();
     final caret = selection.baseOffset;
+    final imageAtCaret = _resolveImageOffset(caret);
+    if (imageAtCaret != null && _isImageOffset(imageAtCaret)) {
+      _onImageOffsetSelected(imageAtCaret);
+      return KeyEventResult.handled;
+    }
+    final imageBeforeCaret = _resolveImageOffset(caret - 1);
+    if (imageBeforeCaret != null &&
+        _isImageOffset(imageBeforeCaret) &&
+        caret > imageBeforeCaret) {
+      _onImageOffsetSelected(imageBeforeCaret);
+      return KeyEventResult.handled;
+    }
+
+    final plainText = _editorController.document.toPlainText();
     if (caret > plainText.length) return KeyEventResult.ignored;
     final lineStart = plainText.lastIndexOf('\n', caret - 1) + 1;
     if (caret != lineStart) return KeyEventResult.ignored;
 
     final attrs = _editorController.getSelectionStyle().attributes;
+    final indentAttr = attrs[quill.Attribute.indent.key]?.value;
+    final indentLevel = switch (indentAttr) {
+      int value => value,
+      num value => value.toInt(),
+      String value => int.tryParse(value) ?? 0,
+      _ => 0,
+    };
     final hasIndent = attrs.containsKey(quill.Attribute.indent.key);
     final hasList = attrs.containsKey(quill.Attribute.list.key);
-    if (hasIndent || hasList) {
+    if (hasList) {
+      // Word/Docs-like behavior: backspace at the start of a list item exits
+      // list formatting first (or decreases indent when nested).
+      if (hasIndent && indentLevel > 0) {
+        _indentSelection(increase: false);
+      } else {
+        _editorFocusNode.requestFocus();
+        _editorController.formatSelection(
+          quill.Attribute.fromKeyValue(quill.Attribute.list.key, null),
+        );
+        if (hasIndent) {
+          _editorController.formatSelection(
+            quill.Attribute.fromKeyValue(quill.Attribute.indent.key, null),
+          );
+        }
+      }
+      return KeyEventResult.handled;
+    }
+
+    if (hasIndent) {
       _indentSelection(increase: false);
       return KeyEventResult.handled;
     }
@@ -2930,8 +3868,1232 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
     unawaited(_promptInsertLink());
   }
 
+  bool _isCodeBlockActive() =>
+      _selectionAttributeValue(quill.Attribute.codeBlock.key) == true;
+
+  void _toggleCodeBlock() {
+    if (!_canEditDocumentActions) return;
+    _editorFocusNode.requestFocus();
+    final nextValue = _isCodeBlockActive() ? null : true;
+    _editorController.formatSelection(
+      quill.Attribute.fromKeyValue(quill.Attribute.codeBlock.key, nextValue),
+    );
+  }
+
+  dynamic _selectionAttributeValue(String key) {
+    return _editorController.getSelectionStyle().attributes[key]?.value;
+  }
+
+  bool get _hasActiveTableStyleTarget {
+    final activeOffset = _activeTableOffset;
+    if (!_isTableCellEditing || activeOffset == null) return false;
+    return _tableStyleSetters.containsKey(activeOffset) &&
+        _activeTableSelection.hasActiveCell;
+  }
+
+  void _applyTableCellStyle({
+    bool? bold,
+    bool? italic,
+    String? align,
+    String? fontFamilyKey,
+    int? fontSizePoint,
+  }) {
+    final activeOffset = _activeTableOffset;
+    if (!_hasActiveTableStyleTarget || activeOffset == null) return;
+    final setter = _tableStyleSetters[activeOffset];
+    if (setter == null) return;
+    setter(
+      bold: bold,
+      italic: italic,
+      align: align,
+      fontFamilyKey: fontFamilyKey,
+      fontSizePoint: fontSizePoint,
+    );
+  }
+
+  bool _isInlineActive(_InlineFormatType type) {
+    if (_hasActiveTableStyleTarget) {
+      return switch (type) {
+        _InlineFormatType.bold => _activeTableSelection.bold,
+        _InlineFormatType.italic => _activeTableSelection.italic,
+        _InlineFormatType.underline => false,
+        _InlineFormatType.strike => false,
+      };
+    }
+    final key = switch (type) {
+      _InlineFormatType.bold => quill.Attribute.bold.key,
+      _InlineFormatType.italic => quill.Attribute.italic.key,
+      _InlineFormatType.underline => quill.Attribute.underline.key,
+      _InlineFormatType.strike => quill.Attribute.strikeThrough.key,
+    };
+    return _editorController.getSelectionStyle().attributes.containsKey(key);
+  }
+
+  bool _isListActive(_ListFormatType type) {
+    final current = _selectionAttributeValue(quill.Attribute.list.key);
+    final expected = switch (type) {
+      _ListFormatType.bullet => quill.Attribute.ul.value,
+      _ListFormatType.numbered => quill.Attribute.ol.value,
+      _ListFormatType.check => quill.Attribute.checked.value,
+    };
+    return current == expected;
+  }
+
+  String _currentAlignment() {
+    if (_hasActiveTableStyleTarget) {
+      return _activeTableSelection.align;
+    }
+    final raw = _selectionAttributeValue('align')?.toString() ?? '';
+    return switch (raw) {
+      'center' => 'center',
+      'right' => 'right',
+      'justify' => 'justify',
+      _ => 'left',
+    };
+  }
+
+  String _currentFontSize() {
+    if (_hasActiveTableStyleTarget) {
+      return switch (_activeTableSelection.fontSizePoint) {
+        <= 10 => 'small',
+        >= 24 => 'huge',
+        >= 18 => 'large',
+        _ => 'normal',
+      };
+    }
+    final raw = _selectionAttributeValue('size')?.toString() ?? '';
+    return switch (raw) {
+      'small' => 'small',
+      'large' => 'large',
+      'huge' => 'huge',
+      _ => 'normal',
+    };
+  }
+
+  int _currentFontSizePoint() {
+    if (_hasActiveTableStyleTarget) {
+      return _activeTableSelection.fontSizePoint.clamp(10, 32);
+    }
+    return switch (_currentFontSize()) {
+      'small' => 10,
+      'large' => 18,
+      'huge' => 24,
+      _ => 12,
+    };
+  }
+
+  String _currentFontFamilyKey() {
+    if (_hasActiveTableStyleTarget) {
+      return _activeTableSelection.fontFamilyKey;
+    }
+    final raw = _selectionAttributeValue('font')?.toString().trim() ?? '';
+    return switch (raw) {
+      'serif' => 'serif',
+      'monospace' => 'monospace',
+      'sans-serif' => 'sans-serif',
+      _ => 'default',
+    };
+  }
+
+  String? _currentTextColorHex() {
+    final raw = _selectionAttributeValue('color')?.toString().trim() ?? '';
+    return raw.isEmpty ? null : raw;
+  }
+
+  String? _currentBackgroundColorHex() {
+    final raw = _selectionAttributeValue('background')?.toString().trim() ?? '';
+    return raw.isEmpty ? null : raw;
+  }
+
+  Color _hexToColor(String? raw, {required Color fallback}) {
+    final value = (raw ?? '').trim();
+    if (value.isEmpty) return fallback;
+    var hex = value.startsWith('#') ? value.substring(1) : value;
+    if (hex.length == 6) hex = 'FF$hex';
+    if (hex.length != 8) return fallback;
+    final parsed = int.tryParse(hex, radix: 16);
+    if (parsed == null) return fallback;
+    return Color(parsed);
+  }
+
+  String? _normalizeHexColor(String? raw) {
+    final value = (raw ?? '').trim();
+    if (value.isEmpty) return null;
+    var hex = value.startsWith('#') ? value.substring(1) : value;
+    if (hex.length == 8) {
+      hex = hex.substring(2);
+    }
+    if (hex.length != 6) return null;
+    return '#${hex.toUpperCase()}';
+  }
+
+  Widget _toolPopupIcon({required Widget icon, required String tooltip}) {
+    return Tooltip(
+      message: tooltip,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: Container(
+          width: 30,
+          height: 30,
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.black.withValues(alpha: 0.10)),
+          ),
+          child: Center(child: icon),
+        ),
+      ),
+    );
+  }
+
+  Widget _toolbarDropdownField<T>({
+    required T value,
+    required List<DropdownMenuItem<T>> items,
+    required ValueChanged<T?>? onChanged,
+    required double width,
+  }) {
+    return Container(
+      width: width,
+      height: 30,
+      padding: const EdgeInsets.symmetric(horizontal: 6),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: Colors.black.withValues(alpha: 0.18)),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<T>(
+          isExpanded: true,
+          value: value,
+          icon: const Icon(Icons.arrow_drop_down_rounded, size: 18),
+          style: const TextStyle(
+            color: _text,
+            fontSize: 12,
+            fontWeight: FontWeight.w500,
+          ),
+          items: items,
+          onChanged: onChanged,
+        ),
+      ),
+    );
+  }
+
+  Widget _colorPaletteCell(
+    BuildContext menuContext, {
+    required String colorHex,
+    required bool selected,
+  }) {
+    return InkWell(
+      onTap: () => Navigator.pop(menuContext, colorHex),
+      child: Container(
+        width: 22,
+        height: 22,
+        decoration: BoxDecoration(
+          color: _hexToColor(colorHex, fallback: Colors.white),
+          border: Border.all(
+            color: selected ? _text : Colors.black.withValues(alpha: 0.35),
+            width: selected ? 2 : 1,
+          ),
+        ),
+      ),
+    );
+  }
+
+  List<PopupMenuEntry<String>> _buildColorPopupEntries({
+    required bool forBackground,
+  }) {
+    final current = _normalizeHexColor(
+      forBackground ? _currentBackgroundColorHex() : _currentTextColorHex(),
+    );
+    return [
+      PopupMenuItem<String>(
+        enabled: false,
+        padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+        child: Builder(
+          builder: (menuContext) => SizedBox(
+            width: 250,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Standard Colors',
+                  style: TextStyle(
+                    color: _text,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 12.5,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 4,
+                  runSpacing: 4,
+                  children: _standardColorPalette
+                      .map(
+                        (hex) => _colorPaletteCell(
+                          menuContext,
+                          colorHex: hex,
+                          selected: current == hex,
+                        ),
+                      )
+                      .toList(growable: false),
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 4,
+                  runSpacing: 4,
+                  children: _extendedColorPalette
+                      .map(
+                        (hex) => _colorPaletteCell(
+                          menuContext,
+                          colorHex: hex,
+                          selected: current == hex,
+                        ),
+                      )
+                      .toList(growable: false),
+                ),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.pop(menuContext, 'none'),
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size.fromHeight(28),
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                    ),
+                    child: const Text('No Color'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    ];
+  }
+
+  int? _currentHeaderLevel() {
+    final raw = _selectionAttributeValue('header');
+    return _parseHeaderLevelValue(raw);
+  }
+
+  int? _deleteSelectedImage() {
+    final selection = _editorController.selection;
+    final imageOffset =
+        _activeImageOffset ??
+        (selection.isValid ? _resolveImageOffset(selection.baseOffset) : null);
+    if (imageOffset == null || !_isImageOffset(imageOffset)) return null;
+    try {
+      _editorController.replaceText(
+        imageOffset,
+        1,
+        '',
+        TextSelection.collapsed(offset: imageOffset),
+      );
+      setState(() {
+        _imageInteractionMode = false;
+        _imageCropMode = false;
+        _activeImageOffset = null;
+      });
+      return imageOffset;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  bool _isQuoteActive() => _selectionAttributeValue('blockquote') == true;
+
+  void _setAlignment(String alignment) {
+    if (_hasActiveTableStyleTarget) {
+      final normalized = switch (alignment) {
+        'center' => 'center',
+        'right' => 'right',
+        'justify' => 'justify',
+        _ => 'left',
+      };
+      _applyTableCellStyle(align: normalized);
+      return;
+    }
+    if (!_canEditDocumentActions) return;
+    _editorFocusNode.requestFocus();
+    final normalized = switch (alignment) {
+      'center' => 'center',
+      'right' => 'right',
+      'justify' => 'justify',
+      _ => 'left',
+    };
+    _editorController.formatSelection(
+      quill.Attribute.fromKeyValue(
+        'align',
+        normalized == 'left' ? null : normalized,
+      ),
+    );
+  }
+
+  void _setFontSize(String size) {
+    if (_hasActiveTableStyleTarget) {
+      final points = switch (size) {
+        'small' => 10,
+        'large' => 18,
+        'huge' => 24,
+        _ => 12,
+      };
+      _applyTableCellStyle(fontSizePoint: points);
+      return;
+    }
+    if (!_canEditDocumentActions) return;
+    _editorFocusNode.requestFocus();
+    final normalized = switch (size) {
+      'small' => 'small',
+      'large' => 'large',
+      'huge' => 'huge',
+      _ => 'normal',
+    };
+    _editorController.formatSelection(
+      quill.Attribute.fromKeyValue(
+        'size',
+        normalized == 'normal' ? null : normalized,
+      ),
+    );
+  }
+
+  void _setFontSizePoint(int points) {
+    if (_hasActiveTableStyleTarget) {
+      _applyTableCellStyle(fontSizePoint: points.clamp(10, 32));
+      return;
+    }
+    final value = switch (points) {
+      <= 10 => 'small',
+      >= 24 => 'huge',
+      >= 18 => 'large',
+      _ => 'normal',
+    };
+    _setFontSize(value);
+  }
+
+  void _stepFontSize({required bool increase}) {
+    const options = <int>[10, 12, 14, 18, 24];
+    final current = _currentFontSizePoint();
+    final idx = options.indexOf(current);
+    final safeIndex = idx < 0 ? 1 : idx;
+    final next = increase
+        ? options[math.min(options.length - 1, safeIndex + 1)]
+        : options[math.max(0, safeIndex - 1)];
+    _setFontSizePoint(next);
+  }
+
+  void _setFontFamily(String family) {
+    if (_hasActiveTableStyleTarget) {
+      _applyTableCellStyle(fontFamilyKey: family);
+      return;
+    }
+    if (!_canEditDocumentActions) return;
+    _editorFocusNode.requestFocus();
+    _editorController.formatSelection(
+      quill.Attribute.fromKeyValue('font', family == 'default' ? null : family),
+    );
+  }
+
+  String _toSentenceCase(String input) {
+    if (input.isEmpty) return input;
+    final lower = input.toLowerCase();
+    final sb = StringBuffer();
+    var capitalizeNext = true;
+    for (var i = 0; i < lower.length; i++) {
+      final ch = lower[i];
+      final isLetter = RegExp(r'[a-z]').hasMatch(ch);
+      if (capitalizeNext && isLetter) {
+        sb.write(ch.toUpperCase());
+        capitalizeNext = false;
+      } else {
+        sb.write(ch);
+      }
+      if (ch == '.' || ch == '!' || ch == '?') {
+        capitalizeNext = true;
+      }
+    }
+    return sb.toString();
+  }
+
+  String _toTitleCase(String input) {
+    return input.replaceAllMapped(RegExp(r'[A-Za-z]+'), (match) {
+      final word = match.group(0)!;
+      if (word.isEmpty) return word;
+      return '${word[0].toUpperCase()}${word.substring(1).toLowerCase()}';
+    });
+  }
+
+  String _toggleCase(String input) {
+    final sb = StringBuffer();
+    for (var i = 0; i < input.length; i++) {
+      final ch = input[i];
+      if (RegExp(r'[a-z]').hasMatch(ch)) {
+        sb.write(ch.toUpperCase());
+      } else if (RegExp(r'[A-Z]').hasMatch(ch)) {
+        sb.write(ch.toLowerCase());
+      } else {
+        sb.write(ch);
+      }
+    }
+    return sb.toString();
+  }
+
+  void _applyCaseTransform(_CaseTransform mode) {
+    if (!_canEditDocumentActions) return;
+    final selection = _editorController.selection;
+    if (!selection.isValid || selection.isCollapsed) {
+      _showSnack('Select text first to change case.', isError: true);
+      return;
+    }
+    var start = selection.start;
+    var end = selection.end;
+    if (start > end) {
+      final tmp = start;
+      start = end;
+      end = tmp;
+    }
+    final plain = _editorController.document.toPlainText();
+    if (start < 0 || end > plain.length || start >= end) return;
+    final original = plain.substring(start, end);
+    final transformed = switch (mode) {
+      _CaseTransform.sentence => _toSentenceCase(original),
+      _CaseTransform.lowercase => original.toLowerCase(),
+      _CaseTransform.uppercase => original.toUpperCase(),
+      _CaseTransform.capitalize => _toTitleCase(original),
+      _CaseTransform.toggle => _toggleCase(original),
+    };
+    if (transformed == original) return;
+    _editorController.replaceText(
+      start,
+      end - start,
+      transformed,
+      TextSelection(
+        baseOffset: start,
+        extentOffset: start + transformed.length,
+      ),
+    );
+  }
+
+  void _setTextColor(String value) {
+    if (!_canEditDocumentActions) return;
+    _editorFocusNode.requestFocus();
+    _editorController.formatSelection(
+      quill.Attribute.fromKeyValue('color', value == 'none' ? null : value),
+    );
+  }
+
+  void _setBackgroundColor(String value) {
+    if (!_canEditDocumentActions) return;
+    _editorFocusNode.requestFocus();
+    _editorController.formatSelection(
+      quill.Attribute.fromKeyValue(
+        'background',
+        value == 'none' ? null : value,
+      ),
+    );
+  }
+
+  void _applyStylePreset(String preset) {
+    if (!_canEditDocumentActions) return;
+    _editorFocusNode.requestFocus();
+    switch (preset) {
+      case 'h1':
+        _editorController.formatSelection(
+          quill.Attribute.fromKeyValue('blockquote', null),
+        );
+        _editorController.formatSelection(
+          quill.Attribute.fromKeyValue('header', 1),
+        );
+        break;
+      case 'h2':
+        _editorController.formatSelection(
+          quill.Attribute.fromKeyValue('blockquote', null),
+        );
+        _editorController.formatSelection(
+          quill.Attribute.fromKeyValue('header', 2),
+        );
+        break;
+      case 'quote':
+        final next = _isQuoteActive() ? null : true;
+        _editorController.formatSelection(
+          quill.Attribute.fromKeyValue('header', null),
+        );
+        _editorController.formatSelection(
+          quill.Attribute.fromKeyValue('blockquote', next),
+        );
+        break;
+      default:
+        _editorController.formatSelection(
+          quill.Attribute.fromKeyValue('header', null),
+        );
+        _editorController.formatSelection(
+          quill.Attribute.fromKeyValue('blockquote', null),
+        );
+        break;
+    }
+  }
+
+  void _clearSelectionFormatting() {
+    if (!_canEditDocumentActions) return;
+    _editorFocusNode.requestFocus();
+    _editorController.formatSelection(
+      quill.Attribute.clone(quill.Attribute.bold, null),
+    );
+    _editorController.formatSelection(
+      quill.Attribute.clone(quill.Attribute.italic, null),
+    );
+    _editorController.formatSelection(
+      quill.Attribute.clone(quill.Attribute.underline, null),
+    );
+    _editorController.formatSelection(
+      quill.Attribute.fromKeyValue('size', null),
+    );
+    _editorController.formatSelection(
+      quill.Attribute.fromKeyValue('header', null),
+    );
+    _editorController.formatSelection(
+      quill.Attribute.fromKeyValue('list', null),
+    );
+    _editorController.formatSelection(
+      quill.Attribute.fromKeyValue('indent', null),
+    );
+    _editorController.formatSelection(
+      quill.Attribute.fromKeyValue('align', null),
+    );
+    _editorController.formatSelection(
+      quill.Attribute.fromKeyValue('blockquote', null),
+    );
+    _editorController.formatSelection(
+      quill.Attribute.fromKeyValue('color', null),
+    );
+    _editorController.formatSelection(
+      quill.Attribute.fromKeyValue('background', null),
+    );
+  }
+
+  Widget _groupedToolIconButton({
+    required IconData icon,
+    required String tooltip,
+    required VoidCallback onPressed,
+    required bool active,
+    Key? widgetKey,
+  }) {
+    return Tooltip(
+      message: tooltip,
+      child: SizedBox(
+        key: widgetKey,
+        width: 30,
+        height: 30,
+        child: Material(
+          color: active ? const Color(0xFFE7F1EA) : Colors.white,
+          borderRadius: BorderRadius.circular(4),
+          child: InkWell(
+            onTap: onPressed,
+            mouseCursor: SystemMouseCursors.click,
+            borderRadius: BorderRadius.circular(4),
+            child: Center(child: Icon(icon, size: 16, color: _text)),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _toolbarGroupDivider() => Container(
+    width: 1,
+    height: 64,
+    margin: const EdgeInsets.symmetric(horizontal: 6),
+    color: Colors.black.withValues(alpha: 0.16),
+  );
+
+  List<Widget> _toolbarRowChildren(List<Widget> items) {
+    final out = <Widget>[];
+    for (var i = 0; i < items.length; i++) {
+      if (i > 0) out.add(const SizedBox(width: 2));
+      out.add(items[i]);
+    }
+    return out;
+  }
+
+  Widget _toolbarGroupBlock({
+    required String label,
+    required List<Widget> topRow,
+    List<Widget> bottomRow = const [],
+  }) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(2, 0, 2, 0),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Center(
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: _toolbarRowChildren(topRow),
+            ),
+          ),
+          const SizedBox(height: 2),
+          if (bottomRow.isEmpty)
+            const SizedBox(height: 28)
+          else
+            Center(
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: _toolbarRowChildren(bottomRow),
+              ),
+            ),
+          const SizedBox(height: 2),
+          Center(
+            child: Text(
+              label,
+              style: const TextStyle(
+                color: _text,
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _editorGroupedHomeToolbar() {
+    return ListenableBuilder(
+      listenable: _editorController,
+      builder: (context, child) {
+        final alignment = _currentAlignment();
+        final fontSizePt = _currentFontSizePoint();
+        final fontFamilyKey = _currentFontFamilyKey();
+        final headerLevel = _currentHeaderLevel();
+        final quoteActive = _isQuoteActive();
+        final textColor = _currentTextColorHex();
+        final highlightColor = _currentBackgroundColorHex();
+        final selectedImageOffset = _activeImageOffset;
+        final hasSelectedImage = selectedImageOffset != null;
+        final selectedImageAlignment = hasSelectedImage
+            ? _readImageAlignment(selectedImageOffset)
+            : 'center';
+        final selectedImageDisplayMode = hasSelectedImage
+            ? _readImageDisplayMode(selectedImageOffset)
+            : 'inline';
+        Widget quickRibbonIcon({
+          required IconData icon,
+          required String tooltip,
+          required VoidCallback? onPressed,
+          bool active = false,
+        }) {
+          return Tooltip(
+            message: tooltip,
+            child: SizedBox(
+              width: 30,
+              height: 30,
+              child: Material(
+                color: active
+                    ? const Color(0xFFE7F1EA)
+                    : (onPressed == null
+                          ? const Color(0xFFF6F7F7)
+                          : Colors.white),
+                borderRadius: BorderRadius.circular(4),
+                child: InkWell(
+                  onTap: onPressed,
+                  mouseCursor: SystemMouseCursors.click,
+                  borderRadius: BorderRadius.circular(4),
+                  child: Center(
+                    child: Icon(
+                      icon,
+                      size: 16,
+                      color: onPressed == null ? _muted : _text,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
+        }
+
+        return Container(
+          width: double.infinity,
+          padding: const EdgeInsets.fromLTRB(8, 6, 8, 4),
+          color: Colors.white,
+          child: Stack(
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(right: 34),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Expanded(
+                      child: SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                      _toolbarGroupBlock(
+                        label: 'Quick Access',
+                        topRow: [
+                          quickRibbonIcon(
+                            icon: Icons.undo_rounded,
+                            tooltip: 'Undo',
+                            onPressed:
+                                _canEditDocumentActions &&
+                                    _editorController.hasUndo
+                                ? _undoEditorChange
+                                : null,
+                          ),
+                          quickRibbonIcon(
+                            icon: Icons.redo_rounded,
+                            tooltip: 'Redo',
+                            onPressed:
+                                _canEditDocumentActions &&
+                                    _editorController.hasRedo
+                                ? _redoEditorChange
+                                : null,
+                          ),
+                          quickRibbonIcon(
+                            icon: Icons.save_outlined,
+                            tooltip: 'Save now',
+                            onPressed:
+                                (_isWorkflowReadOnly ||
+                                    !_editingEnabled ||
+                                    !_hasUnsavedChanges)
+                                ? null
+                                : () => _saveNodeNow(source: 'manual'),
+                          ),
+                          quickRibbonIcon(
+                            icon: _autoSaveEnabled
+                                ? Icons.sync_rounded
+                                : Icons.sync_disabled_rounded,
+                            tooltip: _autoSaveEnabled
+                                ? 'Auto Save: On'
+                                : 'Auto Save: Off',
+                            active: _autoSaveEnabled,
+                            onPressed: (_isWorkflowReadOnly || !_editingEnabled)
+                                ? null
+                                : () {
+                                    setState(() {
+                                      _autoSaveEnabled = !_autoSaveEnabled;
+                                    });
+                                    if (!_autoSaveEnabled) {
+                                      _autosaveTimer?.cancel();
+                                    } else {
+                                      _scheduleAutosaveDebounced();
+                                    }
+                                    _publishSaveViewState();
+                                  },
+                          ),
+                        ],
+                      ),
+                      _toolbarGroupDivider(),
+                      _toolbarGroupBlock(
+                        label: 'Font',
+                        topRow: [
+                          _toolbarDropdownField<String>(
+                            value: fontFamilyKey,
+                            width: 146,
+                            items: _fontFamilyOptions
+                                .map(
+                                  (opt) => DropdownMenuItem<String>(
+                                    value: opt.key,
+                                    child: Text(
+                                      opt.value,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                )
+                                .toList(growable: false),
+                            onChanged: !_canEditDocumentActions
+                                ? null
+                                : (value) {
+                                    if (value == null) return;
+                                    _setFontFamily(value);
+                                  },
+                          ),
+                          _toolbarDropdownField<int>(
+                            value: fontSizePt,
+                            width: 54,
+                            items: const [
+                              DropdownMenuItem(value: 10, child: Text('10')),
+                              DropdownMenuItem(value: 12, child: Text('12')),
+                              DropdownMenuItem(value: 14, child: Text('14')),
+                              DropdownMenuItem(value: 18, child: Text('18')),
+                              DropdownMenuItem(value: 24, child: Text('24')),
+                            ],
+                            onChanged: !_canEditDocumentActions
+                                ? null
+                                : (value) {
+                                    if (value == null) return;
+                                    _setFontSizePoint(value);
+                                  },
+                          ),
+                          _groupedToolIconButton(
+                            icon: Icons.text_increase_rounded,
+                            tooltip: 'Increase font size',
+                            onPressed: () => _stepFontSize(increase: true),
+                            active: false,
+                          ),
+                          _groupedToolIconButton(
+                            icon: Icons.text_decrease_rounded,
+                            tooltip: 'Decrease font size',
+                            onPressed: () => _stepFontSize(increase: false),
+                            active: false,
+                          ),
+                          PopupMenuButton<_CaseTransform>(
+                            onSelected: _applyCaseTransform,
+                            tooltip: 'Change case',
+                            itemBuilder: (context) => const [
+                              PopupMenuItem(
+                                value: _CaseTransform.sentence,
+                                child: Text('Sentence case.'),
+                              ),
+                              PopupMenuItem(
+                                value: _CaseTransform.lowercase,
+                                child: Text('lowercase'),
+                              ),
+                              PopupMenuItem(
+                                value: _CaseTransform.uppercase,
+                                child: Text('UPPERCASE'),
+                              ),
+                              PopupMenuItem(
+                                value: _CaseTransform.capitalize,
+                                child: Text('Capitalize Each Word'),
+                              ),
+                              PopupMenuItem(
+                                value: _CaseTransform.toggle,
+                                child: Text('tOGGLE cASE'),
+                              ),
+                            ],
+                            child: _toolPopupIcon(
+                              tooltip: 'Change case',
+                              icon: const Text(
+                                'Aa',
+                                style: TextStyle(
+                                  color: _text,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                          ),
+                          PopupMenuButton<String>(
+                            onSelected: _setTextColor,
+                            itemBuilder: (context) =>
+                                _buildColorPopupEntries(forBackground: false),
+                            tooltip: 'Text color',
+                            child: _toolPopupIcon(
+                              tooltip: 'Text color',
+                              icon: Icon(
+                                Icons.format_color_text_rounded,
+                                size: 16,
+                                color: textColor == null
+                                    ? _text
+                                    : _hexToColor(textColor, fallback: _text),
+                              ),
+                            ),
+                          ),
+                          PopupMenuButton<String>(
+                            onSelected: _setBackgroundColor,
+                            itemBuilder: (context) =>
+                                _buildColorPopupEntries(forBackground: true),
+                            tooltip: 'Highlight color',
+                            child: _toolPopupIcon(
+                              tooltip: 'Highlight color',
+                              icon: Container(
+                                width: 14,
+                                height: 14,
+                                decoration: BoxDecoration(
+                                  color: highlightColor == null
+                                      ? const Color(0xFFEFF3F0)
+                                      : _hexToColor(
+                                          highlightColor,
+                                          fallback: const Color(0xFFEFF3F0),
+                                        ),
+                                  borderRadius: BorderRadius.circular(3),
+                                  border: Border.all(
+                                    color: Colors.black.withValues(alpha: 0.16),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                        bottomRow: [
+                          _groupedToolIconButton(
+                            icon: Icons.format_bold_rounded,
+                            tooltip: 'Bold',
+                            onPressed: () =>
+                                _toggleInlineFormat(_InlineFormatType.bold),
+                            active: _isInlineActive(_InlineFormatType.bold),
+                          ),
+                          _groupedToolIconButton(
+                            icon: Icons.format_italic_rounded,
+                            tooltip: 'Italic',
+                            onPressed: () =>
+                                _toggleInlineFormat(_InlineFormatType.italic),
+                            active: _isInlineActive(_InlineFormatType.italic),
+                          ),
+                          _groupedToolIconButton(
+                            icon: Icons.format_underline_rounded,
+                            tooltip: 'Underline',
+                            onPressed: () => _toggleInlineFormat(
+                              _InlineFormatType.underline,
+                            ),
+                            active: _isInlineActive(
+                              _InlineFormatType.underline,
+                            ),
+                          ),
+                          _groupedToolIconButton(
+                            icon: Icons.format_strikethrough_rounded,
+                            tooltip: 'Strikethrough',
+                            onPressed: () =>
+                                _toggleInlineFormat(_InlineFormatType.strike),
+                            active: _isInlineActive(_InlineFormatType.strike),
+                          ),
+                        ],
+                      ),
+                      _toolbarGroupDivider(),
+                      _toolbarGroupBlock(
+                        label: 'Paragraph',
+                        topRow: [
+                          _groupedToolIconButton(
+                            icon: Icons.format_list_bulleted_rounded,
+                            tooltip: 'Bulleted list',
+                            onPressed: () =>
+                                _toggleListFormat(_ListFormatType.bullet),
+                            active: _isListActive(_ListFormatType.bullet),
+                          ),
+                          _groupedToolIconButton(
+                            icon: Icons.format_list_numbered_rounded,
+                            tooltip: 'Numbered list',
+                            onPressed: () =>
+                                _toggleListFormat(_ListFormatType.numbered),
+                            active: _isListActive(_ListFormatType.numbered),
+                          ),
+                          _groupedToolIconButton(
+                            icon: Icons.checklist_rounded,
+                            tooltip: 'Checklist',
+                            onPressed: () =>
+                                _toggleListFormat(_ListFormatType.check),
+                            active: _isListActive(_ListFormatType.check),
+                          ),
+                          _groupedToolIconButton(
+                            icon: Icons.format_indent_decrease_rounded,
+                            tooltip: 'Outdent',
+                            onPressed: () => _indentSelection(increase: false),
+                            active: false,
+                          ),
+                          _groupedToolIconButton(
+                            icon: Icons.format_indent_increase_rounded,
+                            tooltip: 'Indent',
+                            onPressed: () => _indentSelection(increase: true),
+                            active: false,
+                          ),
+                        ],
+                        bottomRow: [
+                          _groupedToolIconButton(
+                            icon: Icons.format_align_left_rounded,
+                            tooltip: 'Align left',
+                            onPressed: () => _setAlignment('left'),
+                            active: alignment == 'left',
+                          ),
+                          _groupedToolIconButton(
+                            icon: Icons.format_align_center_rounded,
+                            tooltip: 'Align center',
+                            onPressed: () => _setAlignment('center'),
+                            active: alignment == 'center',
+                          ),
+                          _groupedToolIconButton(
+                            icon: Icons.format_align_right_rounded,
+                            tooltip: 'Align right',
+                            onPressed: () => _setAlignment('right'),
+                            active: alignment == 'right',
+                          ),
+                          _groupedToolIconButton(
+                            icon: Icons.format_align_justify_rounded,
+                            tooltip: 'Justify',
+                            onPressed: () => _setAlignment('justify'),
+                            active: alignment == 'justify',
+                          ),
+                        ],
+                      ),
+                      _toolbarGroupDivider(),
+                      _toolbarGroupBlock(
+                        label: 'Styles',
+                        topRow: [
+                          _groupedToolIconButton(
+                            icon: Icons.text_fields_rounded,
+                            tooltip: 'Normal text',
+                            onPressed: () => _applyStylePreset('normal'),
+                            active: headerLevel == null && !quoteActive,
+                          ),
+                          _groupedToolIconButton(
+                            icon: Icons.title_rounded,
+                            tooltip: 'Heading 1',
+                            onPressed: () => _applyStylePreset('h1'),
+                            active: headerLevel == 1,
+                          ),
+                          _groupedToolIconButton(
+                            icon: Icons.subtitles_rounded,
+                            tooltip: 'Heading 2',
+                            onPressed: () => _applyStylePreset('h2'),
+                            active: headerLevel == 2,
+                          ),
+                        ],
+                        bottomRow: [
+                          _groupedToolIconButton(
+                            icon: Icons.format_quote_rounded,
+                            tooltip: 'Quote',
+                            onPressed: () => _applyStylePreset('quote'),
+                            active: quoteActive,
+                          ),
+                          _groupedToolIconButton(
+                            icon: Icons.code_rounded,
+                            tooltip: 'Code block',
+                            onPressed: _toggleCodeBlock,
+                            active: _isCodeBlockActive(),
+                          ),
+                          _groupedToolIconButton(
+                            icon: Icons.format_clear_rounded,
+                            tooltip: 'Clear formatting',
+                            onPressed: _clearSelectionFormatting,
+                            active: false,
+                          ),
+                        ],
+                      ),
+                      _toolbarGroupDivider(),
+                      _toolbarGroupBlock(
+                        label: 'Insert',
+                        topRow: [
+                          _groupedToolIconButton(
+                            icon: Icons.table_rows_rounded,
+                            tooltip: 'Insert table',
+                            onPressed: () => _handleInsertAction('table'),
+                            active: false,
+                          ),
+                          _groupedToolIconButton(
+                            icon: Icons.image_outlined,
+                            tooltip: 'Insert image',
+                            onPressed: () => _handleInsertAction('image'),
+                            active: false,
+                          ),
+                          _groupedToolIconButton(
+                            icon: Icons.attach_file_rounded,
+                            tooltip: 'Insert attachment',
+                            onPressed: () => _handleInsertAction('attachment'),
+                            active: false,
+                          ),
+                          _groupedToolIconButton(
+                            icon: Icons.link_rounded,
+                            tooltip: 'Insert hyperlink',
+                            onPressed: () => _handleInsertAction('link'),
+                            active: false,
+                          ),
+                        ],
+                      ),
+                      if (hasSelectedImage) ...[
+                        _toolbarGroupDivider(),
+                        _toolbarGroupBlock(
+                          label: 'Image',
+                          topRow: [
+                            _groupedToolIconButton(
+                              icon: Icons.photo_size_select_large_rounded,
+                              tooltip: 'Image size',
+                              onPressed: () =>
+                                  _showImageSizeControlDialog(selectedImageOffset),
+                              active: false,
+                              widgetKey: _imageSizeButtonKey,
+                            ),
+                            _groupedToolIconButton(
+                              icon: _imageCropMode
+                                  ? Icons.crop_free_rounded
+                                  : Icons.crop_rounded,
+                              tooltip: _imageCropMode
+                                  ? 'Crop mode on'
+                                  : 'Crop mode off',
+                              onPressed: () {
+                                setState(() {
+                                  _imageCropMode = !_imageCropMode;
+                                });
+                              },
+                              active: _imageCropMode,
+                            ),
+                            _groupedToolIconButton(
+                              icon: Icons.rotate_left_rounded,
+                              tooltip: 'Rotate left',
+                              onPressed: () =>
+                                  _rotateImageLeft(selectedImageOffset),
+                              active: false,
+                            ),
+                            _groupedToolIconButton(
+                              icon: Icons.rotate_right_rounded,
+                              tooltip: 'Rotate right',
+                              onPressed: () =>
+                                  _rotateImageRight(selectedImageOffset),
+                              active: false,
+                            ),
+                          ],
+                          bottomRow: [
+                            _groupedToolIconButton(
+                              icon: Icons.format_align_left_rounded,
+                              tooltip: 'Align left',
+                              onPressed: () =>
+                                  _setImageAlignment(selectedImageOffset, 'left'),
+                              active: selectedImageAlignment == 'left',
+                            ),
+                            _groupedToolIconButton(
+                              icon: Icons.format_align_center_rounded,
+                              tooltip: 'Align center',
+                              onPressed: () => _setImageAlignment(
+                                selectedImageOffset,
+                                'center',
+                              ),
+                              active: selectedImageAlignment == 'center',
+                            ),
+                            _groupedToolIconButton(
+                              icon: Icons.format_align_right_rounded,
+                              tooltip: 'Align right',
+                              onPressed: () => _setImageAlignment(
+                                selectedImageOffset,
+                                'right',
+                              ),
+                              active: selectedImageAlignment == 'right',
+                            ),
+                            _groupedToolIconButton(
+                              icon: Icons.view_agenda_rounded,
+                              tooltip: selectedImageDisplayMode == 'full'
+                                  ? 'Display mode: full width'
+                                  : 'Display mode: inline',
+                              onPressed: () => _setImageDisplayMode(
+                                selectedImageOffset,
+                                selectedImageDisplayMode == 'full'
+                                    ? 'inline'
+                                    : 'full',
+                              ),
+                              active: selectedImageDisplayMode == 'full',
+                            ),
+                          ],
+                        ),
+                      ],
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Positioned(
+                right: 2,
+                bottom: 2,
+                child: _editorViewOptionsMenuButton(),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   Future<void> _createNode({required String parentId}) async {
-    if (_isWorkflowReadOnly) {
+    if (_isEditorReadOnly) {
       _showReadOnlyVersionWarning();
       return;
     }
@@ -2943,21 +5105,36 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
       builder: (context) {
         return StatefulBuilder(
           builder: (context, setDialogState) {
-            return AlertDialog(
-              title: const Text('Create entry'),
-              content: SizedBox(
-                width: 420,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    TextField(
-                      controller: titleCtrl,
-                      decoration: const InputDecoration(
-                        labelText: 'Entry title',
+            return _buildEditorStyledDialog(
+              context: context,
+              icon: Icons.note_add_rounded,
+              title: 'Create Entry',
+              subtitle: 'Add a new handbook entry.',
+              width: 460,
+              body: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: titleCtrl,
+                    decoration: _editorDialogInputDecoration(
+                      label: 'Entry title',
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 2,
+                    ),
+                    decoration: BoxDecoration(
+                      color: _primary.withValues(alpha: 0.06),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: _primary.withValues(alpha: 0.16),
                       ),
                     ),
-                    const SizedBox(height: 10),
-                    SwitchListTile.adaptive(
+                    child: SwitchListTile.adaptive(
                       contentPadding: EdgeInsets.zero,
                       dense: true,
                       value: useSectionNumbering,
@@ -2972,17 +5149,20 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
                         'Turn off for entries like Annex or Table of Contents.',
                       ),
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
               actions: [
                 TextButton(
+                  style: _editorModalSecondaryButtonStyle(),
                   onPressed: () => Navigator.pop(context, false),
                   child: const Text('Cancel'),
                 ),
-                FilledButton(
+                FilledButton.icon(
                   onPressed: () => Navigator.pop(context, true),
-                  child: const Text('Create'),
+                  style: _editorModalPrimaryButtonStyle(),
+                  icon: const Icon(Icons.add_rounded, size: 18),
+                  label: const Text('Create'),
                 ),
               ],
             );
@@ -3031,7 +5211,7 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
   }
 
   Future<void> _deleteNode(String nodeId) async {
-    if (_isWorkflowReadOnly) {
+    if (_isEditorReadOnly) {
       _showReadOnlyVersionWarning();
       return;
     }
@@ -3041,24 +5221,35 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) {
-        return AlertDialog(
-          title: const Text('Delete node'),
-          content: Text(
+        return _buildEditorStyledDialog(
+          context: context,
+          icon: Icons.delete_outline_rounded,
+          title: 'Delete Entry',
+          subtitle: 'This action cannot be undone.',
+          width: 460,
+          body: Text(
             descendants.isEmpty
                 ? 'Delete "${target.title}"?'
-                : 'Delete "${target.title}" and ${descendants.length} nested nodes?',
+                : 'Delete "${target.title}" and ${descendants.length} nested entries?',
+            style: const TextStyle(
+              color: _text,
+              fontWeight: FontWeight.w700,
+              fontSize: 13,
+            ),
           ),
           actions: [
             TextButton(
+              style: _editorModalSecondaryButtonStyle(),
               onPressed: () => Navigator.pop(context, false),
               child: const Text('Cancel'),
             ),
-            FilledButton(
+            FilledButton.icon(
               onPressed: () => Navigator.pop(context, true),
-              style: FilledButton.styleFrom(
+              style: _editorModalPrimaryButtonStyle(
                 backgroundColor: Colors.red.shade700,
               ),
-              child: const Text('Delete'),
+              icon: const Icon(Icons.delete_outline_rounded, size: 18),
+              label: const Text('Delete'),
             ),
           ],
         );
@@ -3069,18 +5260,24 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
     final batch = _db.batch();
     batch.delete(_db.collection(_colHbSection).doc(nodeId));
     batch.delete(_db.collection(_colHbContents).doc(nodeId));
+    _pendingNodeDrafts.remove(nodeId);
     for (final child in descendants) {
       batch.delete(_db.collection(_colHbSection).doc(child.id));
       batch.delete(_db.collection(_colHbContents).doc(child.id));
+      _pendingNodeDrafts.remove(child.id);
     }
     await batch.commit();
 
     if (!mounted) return;
-    if (_selectedNodeId == nodeId) setState(() => _selectedNodeId = null);
+    if (_selectedNodeId == nodeId) {
+      _currentNodeDirty = false;
+      setState(() => _selectedNodeId = null);
+    }
+    _refreshUnsavedIndicator();
   }
 
   Future<void> _reorderRootNodes(int oldIndex, int newIndex) async {
-    if (_isWorkflowReadOnly) {
+    if (_isEditorReadOnly) {
       _showReadOnlyVersionWarning();
       return;
     }
@@ -3127,7 +5324,7 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
       _safeSetState(() {
         _nodes = previousNodes;
       });
-      ScaffoldMessenger.of(
+      AppScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Failed to reorder entries: $e')));
     }
@@ -3159,9 +5356,13 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
       builder: (context) {
         return StatefulBuilder(
           builder: (context, setDialogState) {
-            return AlertDialog(
-              title: const Text('Insert table'),
-              content: Column(
+            return _buildEditorStyledDialog(
+              context: context,
+              icon: Icons.table_rows_rounded,
+              title: 'Insert Table',
+              subtitle: 'Choose the initial rows and columns.',
+              width: 420,
+              body: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   DropdownButtonFormField<int>(
@@ -3177,9 +5378,8 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
                       if (value == null) return;
                       setDialogState(() => columns = value);
                     },
-                    decoration: const InputDecoration(
-                      labelText: 'Columns',
-                      border: OutlineInputBorder(),
+                    decoration: _editorDialogInputDecoration(
+                      label: 'Columns',
                       isDense: true,
                     ),
                   ),
@@ -3197,9 +5397,8 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
                       if (value == null) return;
                       setDialogState(() => rows = value);
                     },
-                    decoration: const InputDecoration(
-                      labelText: 'Rows',
-                      border: OutlineInputBorder(),
+                    decoration: _editorDialogInputDecoration(
+                      label: 'Rows',
                       isDense: true,
                     ),
                   ),
@@ -3207,12 +5406,15 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
               ),
               actions: [
                 TextButton(
+                  style: _editorModalSecondaryButtonStyle(),
                   onPressed: () => Navigator.pop(context, false),
                   child: const Text('Cancel'),
                 ),
-                FilledButton(
+                FilledButton.icon(
                   onPressed: () => Navigator.pop(context, true),
-                  child: const Text('Insert'),
+                  style: _editorModalPrimaryButtonStyle(),
+                  icon: const Icon(Icons.add_box_outlined, size: 18),
+                  label: const Text('Insert'),
                 ),
               ],
             );
@@ -3337,13 +5539,22 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
     _pendingTablePayloadByOffset[offset] = _normalizeTablePayload(
       jsonEncode(payload),
     );
-    _flushPendingTablePayloads(onlyOffsets: {offset});
+    // Keep table commits as draft-only during interaction. Flushing/replacing
+    // the embed is deferred to explicit save/draft stash to avoid web input
+    // target assertions while pointer selection is active.
+    _markDirtyAndSchedule();
   }
 
   void _onTableDeleteRequested(int offset) {
     final resolved = _resolveTableOffset(offset);
     if (resolved == null) return;
     _pendingTablePayloadByOffset.remove(offset);
+    _tableStyleSetters.remove(offset);
+    if (_activeTableOffset == offset) {
+      _activeTableOffset = null;
+      _activeTableSelection = _TableSelectionState.empty;
+      _isTableCellEditing = false;
+    }
     _editorController.replaceText(
       resolved,
       1,
@@ -3353,15 +5564,21 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
     _markDirtyAndSchedule();
   }
 
-  void _onTableEditingStateChanged(bool editing) {
+  void _onTableEditingStateChanged(int offset, bool editing) {
+    if (!mounted) return;
+    if (editing) {
+      _activeTableOffset = offset;
+    } else if (_activeTableOffset == offset) {
+      _activeTableOffset = null;
+      _activeTableSelection = _TableSelectionState.empty;
+    }
     if (_isTableCellEditing == editing) return;
-    setState(() {
+    _safeSetState(() {
       _isTableCellEditing = editing;
     });
     _syncEditorReadOnlyState();
     if (editing) {
       _editorController.skipRequestKeyboard = true;
-      _editorFocusNode.unfocus();
     } else {
       _editorController.skipRequestKeyboard = false;
       _scheduleAutosaveDebounced();
@@ -3384,6 +5601,7 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
   }
 
   void _flushPendingTablePayloads({Set<int>? onlyOffsets}) {
+    if (!mounted) return;
     if (_pendingTablePayloadByOffset.isEmpty) return;
     final offsets = onlyOffsets ?? _pendingTablePayloadByOffset.keys.toSet();
     if (offsets.isEmpty) return;
@@ -3401,36 +5619,55 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
           resolved,
           1,
           quill.BlockEmbed(_tableEmbedType, jsonEncode(payload)),
-          TextSelection.collapsed(offset: resolved + 1),
+          selectionBefore.isValid
+              ? selectionBefore
+              : TextSelection.collapsed(offset: resolved + 1),
         );
         _pendingTablePayloadByOffset.remove(rawOffset);
       }
     } finally {
       _suppressDirty = previousSuppress;
-      if (selectionBefore.isValid) {
-        _editorController.updateSelection(
-          selectionBefore,
-          quill.ChangeSource.local,
-        );
-      }
     }
   }
 
-  quill.OffsetValue<quill.Embed>? _selectedImageEmbed() {
+  bool _isImageOffset(int offset) {
     try {
-      final embedNode = quill.getEmbedNode(
-        _editorController,
-        _editorController.selection.start,
-      );
-      if (embedNode.value.value.type == quill.BlockEmbed.imageType) {
-        return embedNode;
+      final embedNode = quill.getEmbedNode(_editorController, offset);
+      return embedNode.value.value.type == quill.BlockEmbed.imageType;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  void _onTableSelectionStateChanged(int offset, _TableSelectionState state) {
+    if (!mounted) return;
+    if (_activeTableOffset != offset) return;
+    final changed =
+        _activeTableSelection.hasActiveCell != state.hasActiveCell ||
+        _activeTableSelection.bold != state.bold ||
+        _activeTableSelection.italic != state.italic ||
+        _activeTableSelection.align != state.align ||
+        _activeTableSelection.fontFamilyKey != state.fontFamilyKey ||
+        _activeTableSelection.fontSizePoint != state.fontSizePoint;
+    if (!changed) return;
+    _safeSetState(() {
+      _activeTableSelection = state;
+    });
+  }
+
+  void _onTableStyleSetterChanged(int offset, _TableStyleSetter? setter) {
+    if (setter == null) {
+      _tableStyleSetters.remove(offset);
+      if (_activeTableOffset == offset) {
+        _activeTableOffset = null;
+        _activeTableSelection = _TableSelectionState.empty;
       }
-    } catch (_) {}
-    return null;
+      return;
+    }
+    _tableStyleSetters[offset] = setter;
   }
 
   void _onImageOffsetSelected(int imageOffset) {
-    if (_previewMode) return;
     setState(() {
       _activeImageOffset = imageOffset;
       _imageInteractionMode = true;
@@ -3441,18 +5678,44 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
       TextSelection.collapsed(offset: imageOffset),
       quill.ChangeSource.local,
     );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_imageInteractionMode || _activeImageOffset != imageOffset) {
+        return;
+      }
+      _editorFocusNode.unfocus();
+      _editorController.skipRequestKeyboard = true;
+      _editorController.updateSelection(
+        TextSelection.collapsed(offset: imageOffset),
+        quill.ChangeSource.local,
+      );
+    });
   }
 
-  void _setImageInteractionMode(bool enabled) {
+  void _setImageInteractionMode(bool enabled, {int? caretOffset}) {
     if (_imageInteractionMode == enabled) return;
+    final previousImageOffset = _activeImageOffset;
     setState(() {
       _imageInteractionMode = enabled;
       if (!enabled) {
+        _closeImageSizeDropdown();
         _imageCropMode = false;
         _activeImageOffset = null;
       }
     });
     if (!enabled) {
+      final maxOffset = math.max(0, _editorController.document.length - 1);
+      var targetOffset = caretOffset ?? _editorController.selection.baseOffset;
+      if (previousImageOffset != null && targetOffset <= previousImageOffset) {
+        targetOffset = previousImageOffset + 1;
+      }
+      if (_isImageOffset(targetOffset)) {
+        targetOffset += 1;
+      }
+      final safeOffset = targetOffset.clamp(0, maxOffset);
+      _editorController.updateSelection(
+        TextSelection.collapsed(offset: safeOffset),
+        quill.ChangeSource.local,
+      );
       _editorController.skipRequestKeyboard = false;
       _editorFocusNode.requestFocus();
     } else {
@@ -3584,6 +5847,26 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
     });
   }
 
+  Map<String, String> _effectiveImageStyleMap(int offset) {
+    final pendingOffset = _pendingImageStyleOffset;
+    final pendingStyle = _pendingImageStyleMap;
+    if (pendingOffset == null || pendingStyle == null) {
+      return _imageStyleMap(offset);
+    }
+    final resolvedRequested = _resolveImageOffset(offset);
+    final resolvedPending = _resolveImageOffset(pendingOffset);
+    if (resolvedRequested != null &&
+        resolvedPending != null &&
+        resolvedRequested == resolvedPending) {
+      return Map<String, String>.from(pendingStyle);
+    }
+    return _imageStyleMap(offset);
+  }
+
+  bool _isCornerHandle(_ImageHandleKind handle) {
+    return _isHorizontalHandle(handle) && _isVerticalHandle(handle);
+  }
+
   bool _isHorizontalHandle(_ImageHandleKind handle) {
     return handle == _ImageHandleKind.left ||
         handle == _ImageHandleKind.right ||
@@ -3627,7 +5910,7 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
   }
 
   void _onImageHandleDrag(int offset, _ImageHandleKind handle, Offset delta) {
-    if (_previewMode || handle == _ImageHandleKind.rotate) return;
+    if (handle == _ImageHandleKind.rotate) return;
     if (_activeImageOffset != offset || !_imageInteractionMode) {
       setState(() {
         _activeImageOffset = offset;
@@ -3637,10 +5920,17 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
     _editorFocusNode.unfocus();
     _editorController.skipRequestKeyboard = true;
 
-    final currentWidth = (_readImageWidth(offset) ?? 420).clamp(120, 1400);
-    final currentHeight = (_readImageHeight(offset) ?? (currentWidth * 0.62))
-        .clamp(90, 1400);
-    final styleMap = _imageStyleMap(offset);
+    final styleMap = _effectiveImageStyleMap(offset);
+    final currentWidth =
+        (_styleDouble(styleMap, 'width', fallback: _readImageWidth(offset) ?? 420))
+            .clamp(120, 1400);
+    final currentHeight =
+        (_styleDouble(
+              styleMap,
+              'height',
+              fallback: _readImageHeight(offset) ?? (currentWidth * 0.62),
+            ))
+            .clamp(90, 1400);
 
     if (_imageCropMode) {
       var cropLeft = _styleDouble(styleMap, 'cropLeft');
@@ -3692,26 +5982,46 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
       return;
     }
 
+    final ratio = (currentHeight <= 0)
+        ? (420 / 260)
+        : (currentWidth / currentHeight).clamp(0.2, 8.0);
+
     var width = currentWidth.toDouble();
     var height = currentHeight.toDouble();
+    final deltaX = _isRightHandle(handle)
+        ? delta.dx
+        : (_isLeftHandle(handle) ? -delta.dx : 0.0);
+    final deltaY = _isBottomHandle(handle)
+        ? delta.dy
+        : (_isTopHandle(handle) ? -delta.dy : 0.0);
 
-    if (_isHorizontalHandle(handle)) {
-      if (_isRightHandle(handle)) width += delta.dx;
-      if (_isLeftHandle(handle)) width -= delta.dx;
-    }
-    if (_isVerticalHandle(handle)) {
-      if (_isBottomHandle(handle)) height += delta.dy;
-      if (_isTopHandle(handle)) height -= delta.dy;
+    if (_isCornerHandle(handle)) {
+      final widthFromHorizontal = width + deltaX;
+      final widthFromVertical = width + (deltaY * ratio);
+      width = (widthFromHorizontal - width).abs() >=
+              (widthFromVertical - width).abs()
+          ? widthFromHorizontal
+          : widthFromVertical;
+      width = width.clamp(120.0, 1400.0);
+      height = (width / ratio).clamp(90.0, 1400.0);
+      width = (height * ratio).clamp(120.0, 1400.0);
+    } else if (_isHorizontalHandle(handle)) {
+      width = (width + deltaX).clamp(120.0, 1400.0);
+      height = (width / ratio).clamp(90.0, 1400.0);
+      width = (height * ratio).clamp(120.0, 1400.0);
+    } else if (_isVerticalHandle(handle)) {
+      height = (height + deltaY).clamp(90.0, 1400.0);
+      width = (height * ratio).clamp(120.0, 1400.0);
+      height = (width / ratio).clamp(90.0, 1400.0);
     }
 
-    final updatedStyle = _imageStyleMap(offset);
-    updatedStyle['width'] = width.clamp(120, 1400).toStringAsFixed(0);
-    updatedStyle['height'] = height.clamp(90, 1400).toStringAsFixed(0);
+    final updatedStyle = _effectiveImageStyleMap(offset);
+    updatedStyle['width'] = width.toStringAsFixed(0);
+    updatedStyle['height'] = height.toStringAsFixed(0);
     _setImageStyleMapThrottled(offset, updatedStyle);
   }
 
   void _onImageRotateDrag(int offset, double degreeDelta) {
-    if (_previewMode) return;
     if (_activeImageOffset != offset || !_imageInteractionMode) {
       setState(() {
         _activeImageOffset = offset;
@@ -3745,439 +6055,118 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
     _onImageRotateDrag(offset, 90);
   }
 
-  void _openImageCropEditor(int offset) {
-    final styleMap = _imageStyleMap(offset);
-    var cropLeft = _styleDouble(styleMap, 'cropLeft').clamp(0.0, 0.45);
-    var cropTop = _styleDouble(styleMap, 'cropTop').clamp(0.0, 0.45);
-    var cropRight = _styleDouble(styleMap, 'cropRight').clamp(0.0, 0.45);
-    var cropBottom = _styleDouble(styleMap, 'cropBottom').clamp(0.0, 0.45);
-
-    final imageSource = _imageSourceAtOffset(offset);
-    showDialog<void>(
-      context: context,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setDialogState) {
-            void normalizeCrop() {
-              final horizontalTotal = cropLeft + cropRight;
-              if (horizontalTotal > 0.85) {
-                final scale = 0.85 / horizontalTotal;
-                cropLeft *= scale;
-                cropRight *= scale;
-              }
-              final verticalTotal = cropTop + cropBottom;
-              if (verticalTotal > 0.85) {
-                final scale = 0.85 / verticalTotal;
-                cropTop *= scale;
-                cropBottom *= scale;
-              }
-            }
-
-            void updateCropValues() {
-              normalizeCrop();
-              final updatedStyle = _imageStyleMap(offset);
-              updatedStyle['cropLeft'] = cropLeft.toStringAsFixed(3);
-              updatedStyle['cropTop'] = cropTop.toStringAsFixed(3);
-              updatedStyle['cropRight'] = cropRight.toStringAsFixed(3);
-              updatedStyle['cropBottom'] = cropBottom.toStringAsFixed(3);
-              _setImageStyleMap(offset, updatedStyle);
-            }
-
-            return AlertDialog(
-              title: const Text('Crop image'),
-              content: SizedBox(
-                width: 520,
-                child: SingleChildScrollView(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      if (imageSource.isNotEmpty)
-                        Container(
-                          height: 190,
-                          width: double.infinity,
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFF2F4F3),
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(
-                              color: Colors.black.withValues(alpha: 0.08),
-                            ),
-                          ),
-                          padding: const EdgeInsets.all(8),
-                          child: _ImageCropPreview(
-                            imageSource: imageSource,
-                            cropLeft: cropLeft,
-                            cropTop: cropTop,
-                            cropRight: cropRight,
-                            cropBottom: cropBottom,
-                          ),
-                        ),
-                      const SizedBox(height: 10),
-                      _cropSlider(
-                        label: 'Left',
-                        value: cropLeft,
-                        onChanged: (value) {
-                          setDialogState(() {
-                            cropLeft = value;
-                            normalizeCrop();
-                          });
-                          updateCropValues();
-                        },
-                      ),
-                      _cropSlider(
-                        label: 'Top',
-                        value: cropTop,
-                        onChanged: (value) {
-                          setDialogState(() {
-                            cropTop = value;
-                            normalizeCrop();
-                          });
-                          updateCropValues();
-                        },
-                      ),
-                      _cropSlider(
-                        label: 'Right',
-                        value: cropRight,
-                        onChanged: (value) {
-                          setDialogState(() {
-                            cropRight = value;
-                            normalizeCrop();
-                          });
-                          updateCropValues();
-                        },
-                      ),
-                      _cropSlider(
-                        label: 'Bottom',
-                        value: cropBottom,
-                        onChanged: (value) {
-                          setDialogState(() {
-                            cropBottom = value;
-                            normalizeCrop();
-                          });
-                          updateCropValues();
-                        },
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () {
-                    final resetStyle = _imageStyleMap(offset);
-                    resetStyle.remove('cropLeft');
-                    resetStyle.remove('cropTop');
-                    resetStyle.remove('cropRight');
-                    resetStyle.remove('cropBottom');
-                    _setImageStyleMap(offset, resetStyle);
-                    Navigator.pop(context);
-                  },
-                  child: const Text('Reset'),
-                ),
-                FilledButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text('Done'),
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
-  }
-
-  String _imageSourceAtOffset(int offset) {
-    final resolvedOffset = _resolveImageOffset(offset) ?? offset;
-    final ops = _editorController.document.toDelta().toList();
-    var cursor = 0;
-    for (final op in ops) {
-      final data = op.data;
-      if (data is String) {
-        cursor += data.length;
-        continue;
-      }
-      if (data is Map) {
-        if (cursor == resolvedOffset) {
-          final source = data[quill.BlockEmbed.imageType];
-          if (source != null) return source.toString();
-        }
-        cursor += 1;
-      }
-    }
-    return '';
-  }
-
-  Widget _cropSlider({
-    required String label,
-    required double value,
-    required ValueChanged<double> onChanged,
-  }) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          '$label ${(value * 100).round()}%',
-          style: const TextStyle(color: _muted, fontWeight: FontWeight.w700),
-        ),
-        Slider(
-          value: value,
-          min: 0,
-          max: 0.45,
-          divisions: 45,
-          onChanged: onChanged,
-        ),
-      ],
-    );
-  }
-
-  void _showImageLayoutTools() {
-    final fallbackOffset = _activeImageOffset ?? _selectedImageEmbed()?.offset;
-    if (fallbackOffset != null) {
-      _onImageOffsetSelected(fallbackOffset);
-    }
-    _showImageLayoutSheet(forcedImageOffset: fallbackOffset);
-  }
-
-  void _showImageLayoutSheet({int? forcedImageOffset}) {
-    final imageOffset =
-        forcedImageOffset ??
-        _activeImageOffset ??
-        _selectedImageEmbed()?.offset;
-    if (imageOffset == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Select an image in the editor first.')),
-      );
+  void _showImageSizeControlDialog(int imageOffset) {
+    _onImageOffsetSelected(imageOffset);
+    final anchorContext = _imageSizeButtonKey.currentContext;
+    final overlayState = Overlay.of(context);
+    if (anchorContext == null) {
       return;
     }
-    _onImageOffsetSelected(imageOffset);
-    var previewWidth = _readImageWidth(imageOffset) ?? 360;
-    var currentAlignment = _readImageAlignment(imageOffset);
-    var currentDisplayMode = _readImageDisplayMode(imageOffset);
-    final captionCtrl = TextEditingController(
-      text: _readImageCaption(imageOffset),
-    );
+    final anchorBox = anchorContext.findRenderObject() as RenderBox?;
+    final overlayBox = overlayState.context.findRenderObject() as RenderBox?;
+    if (anchorBox == null || overlayBox == null) return;
 
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
+    var previewWidth = (_readImageWidth(imageOffset) ?? 360).clamp(
+      120.0,
+      960.0,
+    );
+    const panelWidth = 260.0;
+    const panelHeight = 98.0;
+    const margin = 10.0;
+
+    final anchorTopLeft = anchorBox.localToGlobal(
+      Offset.zero,
+      ancestor: overlayBox,
+    );
+    final anchorBottomLeft = anchorBox.localToGlobal(
+      Offset(0, anchorBox.size.height),
+      ancestor: overlayBox,
+    );
+    final rightAlignedLeft = anchorBottomLeft.dx + anchorBox.size.width - panelWidth;
+    final left = rightAlignedLeft.clamp(
+      margin,
+      math.max(margin, overlayBox.size.width - panelWidth - margin),
+    );
+    var top = anchorBottomLeft.dy + 6;
+    final maxBottom = overlayBox.size.height - margin;
+    if (top + panelHeight > maxBottom) {
+      top = anchorTopLeft.dy - panelHeight - 6;
+    }
+    if (top < margin) top = margin;
+
+    _closeImageSizeDropdown();
+    _imageSizeOverlay = OverlayEntry(
       builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setSheetState) {
-            return Padding(
-              padding: EdgeInsets.fromLTRB(
-                16,
-                14,
-                16,
-                20 + MediaQuery.of(context).viewInsets.bottom,
+        return Stack(
+          children: [
+            Positioned.fill(
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onTap: _closeImageSizeDropdown,
               ),
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Image options',
-                      style: TextStyle(
-                        fontWeight: FontWeight.w800,
-                        fontSize: 16,
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    Row(
-                      children: [
-                        const Text(
-                          'Width',
-                          style: TextStyle(
-                            color: _muted,
-                            fontWeight: FontWeight.w700,
+            ),
+            Positioned(
+              left: left.toDouble(),
+              top: top.toDouble(),
+              width: panelWidth,
+              child: Material(
+                color: Colors.white,
+                elevation: 10,
+                borderRadius: BorderRadius.circular(10),
+                child: StatefulBuilder(
+                  builder: (context, setSheetState) {
+                    return Padding(
+                      padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Slider(
+                            value: previewWidth.toDouble(),
+                            min: 120,
+                            max: 960,
+                            divisions: 84,
+                            onChanged: (value) =>
+                                setSheetState(() => previewWidth = value),
+                            onChangeEnd: (value) => _setImageWidth(
+                              imageOffset,
+                              value,
+                            ),
                           ),
-                        ),
-                        const SizedBox(width: 10),
-                        Text(
-                          '${previewWidth.round()} px',
-                          style: const TextStyle(
-                            color: _text,
-                            fontWeight: FontWeight.w800,
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.end,
+                            children: [
+                              IconButton(
+                                tooltip: 'Reset size',
+                                onPressed: () {
+                                  _clearImageWidth(imageOffset);
+                                  setSheetState(() => previewWidth = 360);
+                                },
+                                icon: const Icon(Icons.restart_alt_rounded),
+                              ),
+                              IconButton(
+                                tooltip: 'Close',
+                                onPressed: _closeImageSizeDropdown,
+                                icon: const Icon(Icons.close_rounded),
+                              ),
+                            ],
                           ),
-                        ),
-                      ],
-                    ),
-                    Slider(
-                      value: previewWidth.clamp(120, 960).toDouble(),
-                      min: 120,
-                      max: 960,
-                      divisions: 84,
-                      label: '${previewWidth.round()}',
-                      onChanged: (value) =>
-                          setSheetState(() => previewWidth = value),
-                      onChangeEnd: (value) {
-                        _setImageWidth(imageOffset, value);
-                      },
-                    ),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: [
-                        ActionChip(
-                          label: const Text('Small'),
-                          onPressed: () {
-                            _setImageWidth(imageOffset, 220);
-                            setSheetState(() => previewWidth = 220);
-                          },
-                        ),
-                        ActionChip(
-                          label: const Text('Medium'),
-                          onPressed: () {
-                            _setImageWidth(imageOffset, 360);
-                            setSheetState(() => previewWidth = 360);
-                          },
-                        ),
-                        ActionChip(
-                          label: const Text('Large'),
-                          onPressed: () {
-                            _setImageWidth(imageOffset, 520);
-                            setSheetState(() => previewWidth = 520);
-                          },
-                        ),
-                        ActionChip(
-                          label: const Text('Reset'),
-                          onPressed: () {
-                            _clearImageWidth(imageOffset);
-                            setSheetState(() => previewWidth = 360);
-                          },
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    const Text(
-                      'Alignment',
-                      style: TextStyle(
-                        color: _muted,
-                        fontWeight: FontWeight.w700,
+                        ],
                       ),
-                    ),
-                    const SizedBox(height: 6),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: [
-                        ChoiceChip(
-                          label: const Text('Left'),
-                          selected: currentAlignment == 'left',
-                          onSelected: (_) {
-                            _setImageAlignment(imageOffset, 'left');
-                            setSheetState(() => currentAlignment = 'left');
-                          },
-                        ),
-                        ChoiceChip(
-                          label: const Text('Center'),
-                          selected: currentAlignment == 'center',
-                          onSelected: (_) {
-                            _setImageAlignment(imageOffset, 'center');
-                            setSheetState(() => currentAlignment = 'center');
-                          },
-                        ),
-                        ChoiceChip(
-                          label: const Text('Right'),
-                          selected: currentAlignment == 'right',
-                          onSelected: (_) {
-                            _setImageAlignment(imageOffset, 'right');
-                            setSheetState(() => currentAlignment = 'right');
-                          },
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    const Text(
-                      'Display mode',
-                      style: TextStyle(
-                        color: _muted,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: [
-                        ChoiceChip(
-                          label: const Text('Inline'),
-                          selected: currentDisplayMode == 'inline',
-                          onSelected: (_) {
-                            _setImageDisplayMode(imageOffset, 'inline');
-                            setSheetState(() => currentDisplayMode = 'inline');
-                          },
-                        ),
-                        ChoiceChip(
-                          label: const Text('Full Width'),
-                          selected: currentDisplayMode == 'full',
-                          onSelected: (_) {
-                            _setImageDisplayMode(imageOffset, 'full');
-                            setSheetState(() => currentDisplayMode = 'full');
-                          },
-                        ),
-                        ChoiceChip(
-                          label: const Text('Side Image'),
-                          selected: currentDisplayMode == 'side',
-                          onSelected: (_) {
-                            _setImageDisplayMode(imageOffset, 'side');
-                            setSheetState(() => currentDisplayMode = 'side');
-                          },
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: [
-                        OutlinedButton.icon(
-                          onPressed: () => _rotateImageLeft(imageOffset),
-                          icon: const Icon(Icons.rotate_left_rounded),
-                          label: const Text('Rotate Left'),
-                        ),
-                        OutlinedButton.icon(
-                          onPressed: () => _rotateImageRight(imageOffset),
-                          icon: const Icon(Icons.rotate_right_rounded),
-                          label: const Text('Rotate Right'),
-                        ),
-                        OutlinedButton.icon(
-                          onPressed: () => _openImageCropEditor(imageOffset),
-                          icon: const Icon(Icons.crop_rounded),
-                          label: const Text('Crop Editor'),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: captionCtrl,
-                      maxLines: 2,
-                      decoration: const InputDecoration(
-                        labelText: 'Caption',
-                        hintText: 'Add image caption',
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
-                      onSubmitted: (value) =>
-                          _setImageCaption(imageOffset, value),
-                    ),
-                    const SizedBox(height: 8),
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: FilledButton(
-                        onPressed: () =>
-                            _setImageCaption(imageOffset, captionCtrl.text),
-                        child: const Text('Apply Caption'),
-                      ),
-                    ),
-                  ],
+                    );
+                  },
                 ),
               ),
-            );
-          },
+            ),
+          ],
         );
       },
-    ).whenComplete(captionCtrl.dispose);
+    );
+    overlayState.insert(_imageSizeOverlay!);
+  }
+
+  void _closeImageSizeDropdown() {
+    _imageSizeOverlay?.remove();
+    _imageSizeOverlay = null;
   }
 
   double? _readImageWidth(int offset) {
@@ -4196,8 +6185,25 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
   }
 
   void _setImageWidth(int offset, double width) {
-    final styleMap = _imageStyleMap(offset);
-    styleMap['width'] = width.toStringAsFixed(0);
+    final styleMap = _effectiveImageStyleMap(offset);
+    final currentWidth =
+        (_styleDouble(styleMap, 'width', fallback: _readImageWidth(offset) ?? 420))
+            .clamp(120.0, 1400.0);
+    final currentHeight =
+        (_styleDouble(
+              styleMap,
+              'height',
+              fallback: _readImageHeight(offset) ?? (currentWidth * 0.62),
+            ))
+            .clamp(90.0, 1400.0);
+    final ratio = (currentHeight <= 0)
+        ? (420 / 260)
+        : (currentWidth / currentHeight).clamp(0.2, 8.0);
+
+    final nextWidth = width.clamp(120.0, 1400.0);
+    final nextHeight = (nextWidth / ratio).clamp(90.0, 1400.0);
+    styleMap['width'] = nextWidth.toStringAsFixed(0);
+    styleMap['height'] = nextHeight.toStringAsFixed(0);
     _setImageStyleMap(offset, styleMap);
     _markDirtyAndSchedule();
   }
@@ -4205,6 +6211,7 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
   void _clearImageWidth(int offset) {
     final styleMap = _imageStyleMap(offset);
     styleMap.remove('width');
+    styleMap.remove('height');
     _setImageStyleMap(offset, styleMap);
     _markDirtyAndSchedule();
   }
@@ -4262,17 +6269,6 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
     return _normalizeImageDisplayMode(styleMap['displayMode'] ?? 'inline');
   }
 
-  String _readImageCaption(int offset) {
-    final styleMap = _imageStyleMap(offset);
-    final raw = (styleMap['caption'] ?? '').trim();
-    if (raw.isEmpty) return '';
-    try {
-      return Uri.decodeComponent(raw);
-    } catch (_) {
-      return raw;
-    }
-  }
-
   void _setImageDisplayMode(int offset, String mode) {
     final currentStyle = _imageStyleStringAt(offset);
     final updatedStyle = _upsertCssStyle(
@@ -4282,36 +6278,6 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
     );
     _safeFormatImage(offset, quill.StyleAttribute(updatedStyle));
     _markDirtyAndSchedule();
-  }
-
-  void _setImageCaption(int offset, String caption) {
-    final currentStyle = _imageStyleStringAt(offset);
-    final encoded = caption.trim().isEmpty
-        ? ''
-        : Uri.encodeComponent(caption.trim());
-    final updatedStyle = encoded.isEmpty
-        ? _removeCssStyleKey(currentStyle, 'caption')
-        : _upsertCssStyle(currentStyle, 'caption', encoded);
-    _safeFormatImage(offset, quill.StyleAttribute(updatedStyle));
-    _markDirtyAndSchedule();
-  }
-
-  String _removeCssStyleKey(String style, String key) {
-    final values = <String, String>{};
-    for (final segment in style.split(';')) {
-      final trimmed = segment.trim();
-      if (trimmed.isEmpty) continue;
-      final parts = trimmed.split(':');
-      if (parts.length < 2) continue;
-      final name = parts.first.trim();
-      final val = parts.sublist(1).join(':').trim();
-      if (name.isNotEmpty && val.isNotEmpty && name != key) {
-        values[name] = val;
-      }
-    }
-    return values.entries
-        .map((entry) => '${entry.key}: ${entry.value}')
-        .join('; ');
   }
 
   bool _isImageFileName(String fileName) {
@@ -4384,27 +6350,29 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) {
-        return AlertDialog(
-          title: const Text('Insert link'),
-          content: Column(
+        return _buildEditorStyledDialog(
+          context: context,
+          icon: Icons.link_rounded,
+          title: 'Insert Link',
+          subtitle: 'Add a URL to selected text or insert a new linked label.',
+          width: 460,
+          body: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               if (!hasSelection)
                 TextField(
                   controller: textCtrl,
-                  decoration: const InputDecoration(
-                    labelText: 'Display text',
-                    border: OutlineInputBorder(),
+                  decoration: _editorDialogInputDecoration(
+                    label: 'Display text',
                     isDense: true,
                   ),
                 ),
               if (!hasSelection) const SizedBox(height: 10),
               TextField(
                 controller: urlCtrl,
-                decoration: const InputDecoration(
-                  labelText: 'URL',
+                decoration: _editorDialogInputDecoration(
+                  label: 'URL',
                   hintText: 'https://...',
-                  border: OutlineInputBorder(),
                   isDense: true,
                 ),
               ),
@@ -4412,12 +6380,15 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
           ),
           actions: [
             TextButton(
+              style: _editorModalSecondaryButtonStyle(),
               onPressed: () => Navigator.pop(context, false),
               child: const Text('Cancel'),
             ),
-            FilledButton(
+            FilledButton.icon(
               onPressed: () => Navigator.pop(context, true),
-              child: const Text('Insert'),
+              style: _editorModalPrimaryButtonStyle(),
+              icon: const Icon(Icons.link_rounded, size: 18),
+              label: const Text('Insert'),
             ),
           ],
         );
@@ -4460,8 +6431,12 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
   void _resetEditorState() {
     final old = _editorController;
     _pendingTablePayloadByOffset.clear();
+    _tableStyleSetters.clear();
+    _activeTableOffset = null;
+    _activeTableSelection = _TableSelectionState.empty;
     _isTableCellEditing = false;
-    _previewMode = false;
+    _pendingNodeDrafts.clear();
+    _currentNodeDirty = false;
     _editorController = quill.QuillController.basic();
     _syncEditorReadOnlyState();
     _bindEditorDocChanges();
@@ -4483,7 +6458,16 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
   }
 
   Future<void> _handleBackPressed() async {
-    await _saveNodeNow();
+    if (_hasAnyUnsavedDrafts) {
+      final action = await _askUnsavedChangesAction(leavingPage: true);
+      if (action == _UnsavedExitAction.cancel) return;
+      if (action == _UnsavedExitAction.save) {
+        final saved = await _saveAllPendingDrafts(source: 'back');
+        if (!saved) return;
+      } else if (action == _UnsavedExitAction.discard) {
+        await _discardCurrentDrafts();
+      }
+    }
     if (!mounted) return;
     final onBack = widget.onBack;
     if (onBack != null) {
@@ -4514,108 +6498,123 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
       );
     }
 
-    return Scaffold(
-      backgroundColor: _bg,
-      body: SafeArea(
-        child: Column(
-          children: [
-            _headerBar(),
-            const Divider(height: 1),
-            Expanded(
-              child: _previewMode
-                  ? Builder(
-                      builder: (context) {
-                        final versionId = (_handbookId ?? '').trim();
-                        if (versionId.isEmpty) {
-                          return const Center(
-                            child: Text(
-                              'No version selected for preview.',
-                              style: TextStyle(
-                                color: _muted,
-                                fontWeight: FontWeight.w800,
+    return Theme(
+      data: _uniformUiTheme(context),
+      child: Scaffold(
+        backgroundColor: _bg,
+        body: SafeArea(
+          child: Column(
+            children: [
+              _headerBar(),
+              const Divider(height: 1),
+              Expanded(
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final wide = constraints.maxWidth >= 1280;
+                    final tablet = constraints.maxWidth >= 980 && !wide;
+
+                    if (wide) {
+                      return Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            if (!_entriesPanelCollapsed) ...[
+                              SizedBox(
+                                width: 330,
+                                child: RepaintBoundary(
+                                  child: _leftTreePanel(),
+                                ),
                               ),
+                              const SizedBox(width: 12),
+                            ],
+                            Expanded(
+                              child: RepaintBoundary(child: _editorPanel()),
                             ),
-                          );
-                        }
-                        return Padding(
-                          padding: const EdgeInsets.all(12),
-                          child: HbHandbookPage(
-                            useSidebarDesktop: false,
-                            forcedVersionId: versionId,
-                            forcedVersionLabel: _handbookVersion,
-                            showAiFab: false,
-                            hideTopHeader: true,
-                          ),
-                        );
-                      },
-                    )
-                  : LayoutBuilder(
-                      builder: (context, constraints) {
-                        final wide = constraints.maxWidth >= 1280;
-                        final tablet = constraints.maxWidth >= 980 && !wide;
-
-                        if (wide) {
-                          return Padding(
-                            padding: const EdgeInsets.all(12),
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                SizedBox(
-                                  width: 330,
-                                  child: RepaintBoundary(
-                                    child: _leftTreePanel(),
-                                  ),
+                            if (!_outlinePanelCollapsed) ...[
+                              const SizedBox(width: 12),
+                              SizedBox(
+                                width: 280,
+                                child: RepaintBoundary(
+                                  child: _outlineSidePanel(),
                                 ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: RepaintBoundary(child: _editorPanel()),
-                                ),
-                              ],
-                            ),
-                          );
-                        }
-
-                        if (tablet) {
-                          return Padding(
-                            padding: const EdgeInsets.all(12),
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                SizedBox(
-                                  width: 300,
-                                  child: RepaintBoundary(
-                                    child: _leftTreePanel(),
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: RepaintBoundary(child: _editorPanel()),
-                                ),
-                              ],
-                            ),
-                          );
-                        }
-
-                        return Padding(
-                          padding: const EdgeInsets.all(12),
-                          child: Column(
-                            children: [
-                              Expanded(
-                                flex: 6,
-                                child: RepaintBoundary(child: _leftTreePanel()),
-                              ),
-                              const SizedBox(height: 10),
-                              Expanded(
-                                flex: 8,
-                                child: RepaintBoundary(child: _editorPanel()),
                               ),
                             ],
-                          ),
-                        );
-                      },
-                    ),
-            ),
-          ],
+                          ],
+                        ),
+                      );
+                    }
+
+                    if (tablet) {
+                      return Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            if (!_entriesPanelCollapsed) ...[
+                              SizedBox(
+                                width: 300,
+                                child: RepaintBoundary(
+                                  child: _leftTreePanel(),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                            ],
+                            Expanded(
+                              child: RepaintBoundary(child: _editorPanel()),
+                            ),
+                            if (!_outlinePanelCollapsed) ...[
+                              const SizedBox(width: 12),
+                              SizedBox(
+                                width: 240,
+                                child: RepaintBoundary(
+                                  child: _outlineSidePanel(),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      );
+                    }
+
+                    return Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: (_entriesPanelCollapsed && _outlinePanelCollapsed)
+                          ? RepaintBoundary(child: _editorPanel())
+                          : Column(
+                              children: [
+                                if (!_entriesPanelCollapsed) ...[
+                                  Expanded(
+                                    flex: 6,
+                                    child: RepaintBoundary(
+                                      child: _leftTreePanel(),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 10),
+                                ],
+                                Expanded(
+                                  flex: 8,
+                                  child: RepaintBoundary(
+                                    child: _editorPanel(),
+                                  ),
+                                ),
+                                if (!_outlinePanelCollapsed) ...[
+                                  const SizedBox(height: 10),
+                                  Expanded(
+                                    flex: 5,
+                                    child: RepaintBoundary(
+                                      child: _outlineSidePanel(),
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -4627,48 +6626,45 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 10),
       child: ValueListenableBuilder<_EditorSaveViewState>(
         valueListenable: _saveViewState,
-        builder: (context, saveState, child) {
-          final editingStatusLabel = _workflowStatusLabel(
-            _editingVersionStatus,
-          );
+        builder: (context, _, child) {
+          final canUseWorkflowActions = !_isWorkflowReadOnly;
+          final canSaveOrDiscard =
+              canUseWorkflowActions && _hasAnyUnsavedDrafts && !_isSaving;
           final actionWidgets = <Widget>[
-            _statusChip('Version Name', _handbookVersion),
-            _statusChip('Status', editingStatusLabel),
-            _statusChip(
-              'Save',
-              saveState.autoSaveEnabled
-                  ? 'Auto | ${saveState.message}'
-                  : saveState.message,
-            ),
-            OutlinedButton.icon(
-              onPressed: _isWorkflowReadOnly
-                  ? null
-                  : () {
-                      _autoSaveEnabled = !_autoSaveEnabled;
-                      if (!_autoSaveEnabled) {
-                        _autosaveTimer?.cancel();
-                      } else {
-                        _scheduleAutosaveDebounced();
+            if (!_editingEnabled)
+              FilledButton.icon(
+                onPressed: canUseWorkflowActions
+                    ? () => _setEditingEnabled(true)
+                    : null,
+                style: FilledButton.styleFrom(backgroundColor: _primary),
+                icon: const Icon(Icons.edit_rounded),
+                label: const Text('Edit'),
+              ),
+            if (_editingEnabled)
+              OutlinedButton.icon(
+                onPressed: canSaveOrDiscard ? _confirmAndDiscardDraft : null,
+                icon: const Icon(Icons.undo_rounded),
+                label: const Text('Discard'),
+              ),
+            if (_editingEnabled)
+              FilledButton.icon(
+                onPressed: canSaveOrDiscard
+                    ? () async {
+                        await _saveAllPendingDrafts(source: 'manual');
                       }
-                      _publishSaveViewState();
-                    },
-              icon: Icon(
-                saveState.autoSaveEnabled
-                    ? Icons.sync_rounded
-                    : Icons.sync_disabled_rounded,
+                    : null,
+                style: FilledButton.styleFrom(backgroundColor: _primary),
+                icon: const Icon(Icons.save_rounded),
+                label: const Text('Save'),
               ),
-              label: Text(saveState.autoSaveEnabled ? 'Auto On' : 'Auto Off'),
-            ),
-            FilledButton.icon(
-              onPressed: (_handbookId == null || _handbookId!.trim().isEmpty)
-                  ? null
-                  : _togglePreviewMode,
-              style: FilledButton.styleFrom(backgroundColor: _primary),
-              icon: Icon(
-                _previewMode ? Icons.edit_rounded : Icons.visibility_rounded,
+            if (_editingEnabled)
+              OutlinedButton.icon(
+                onPressed: canUseWorkflowActions
+                    ? () => _setEditingEnabled(false)
+                    : null,
+                icon: const Icon(Icons.close_rounded),
+                label: const Text('Cancel'),
               ),
-              label: Text(_previewMode ? 'Edit' : 'Preview'),
-            ),
           ];
 
           return LayoutBuilder(
@@ -4691,10 +6687,12 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
                         const SizedBox(width: 2),
                         const Icon(Icons.description_rounded, color: _primary),
                         const SizedBox(width: 8),
-                        const Expanded(
+                        Expanded(
                           child: Text(
-                            'Manage Handbook',
-                            style: TextStyle(
+                            _handbookVersion,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
                               color: _text,
                               fontWeight: FontWeight.w900,
                               fontSize: 20,
@@ -4712,24 +6710,24 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
                 children: [
                   IconButton(
                     onPressed: _handleBackPressed,
-                    icon: const Icon(
-                      Icons.arrow_back_rounded,
-                      color: _primary,
-                    ),
+                    icon: const Icon(Icons.arrow_back_rounded, color: _primary),
                     tooltip: 'Back to Manage Handbook',
                   ),
                   const Icon(Icons.description_rounded, color: _primary),
                   const SizedBox(width: 8),
-                  const Expanded(
+                  Expanded(
                     child: Text(
-                      'Manage Handbook',
-                      style: TextStyle(
+                      _handbookVersion,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
                         color: _text,
                         fontWeight: FontWeight.w900,
                         fontSize: 20,
                       ),
                     ),
                   ),
+                  const SizedBox(width: 8),
                   ...List<Widget>.generate(actionWidgets.length * 2 - 1, (
                     index,
                   ) {
@@ -4745,25 +6743,6 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
     );
   }
 
-  Widget _statusChip(String label, String value) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-      decoration: BoxDecoration(
-        color: _primary.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: _primary.withValues(alpha: 0.15)),
-      ),
-      child: Text(
-        '$label: $value',
-        style: const TextStyle(
-          color: _text,
-          fontWeight: FontWeight.w800,
-          fontSize: 12,
-        ),
-      ),
-    );
-  }
-
   Widget _surface({required Widget child}) {
     return Container(
       decoration: BoxDecoration(
@@ -4775,11 +6754,378 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
     );
   }
 
+  ThemeData _uniformUiTheme(BuildContext context) {
+    final base = Theme.of(context);
+    return base.copyWith(
+      dialogTheme: base.dialogTheme.copyWith(
+        backgroundColor: Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        titleTextStyle: const TextStyle(
+          color: _primary,
+          fontWeight: FontWeight.w900,
+          fontSize: 20,
+        ),
+        contentTextStyle: const TextStyle(
+          color: _text,
+          fontWeight: FontWeight.w700,
+          fontSize: 14,
+        ),
+      ),
+      popupMenuTheme: base.popupMenuTheme.copyWith(
+        color: Colors.white,
+        elevation: 8,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: BorderSide(color: Colors.black.withValues(alpha: 0.08)),
+        ),
+        textStyle: const TextStyle(
+          color: _text,
+          fontWeight: FontWeight.w700,
+          fontSize: 13,
+        ),
+      ),
+      inputDecorationTheme: base.inputDecorationTheme.copyWith(
+        filled: true,
+        fillColor: Colors.white,
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: Colors.black.withValues(alpha: 0.12)),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: Colors.black.withValues(alpha: 0.12)),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: _primary, width: 1.6),
+        ),
+      ),
+    );
+  }
+
+  InputDecoration _editorDialogInputDecoration({
+    required String label,
+    String? hintText,
+    String? helperText,
+    String? errorText,
+    bool alignLabelWithHint = false,
+    bool isDense = false,
+  }) {
+    return InputDecoration(
+      labelText: label,
+      hintText: hintText,
+      helperText: helperText,
+      errorText: errorText,
+      alignLabelWithHint: alignLabelWithHint,
+      isDense: isDense,
+      filled: true,
+      fillColor: Colors.white,
+      labelStyle: const TextStyle(color: _muted, fontWeight: FontWeight.w700),
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: BorderSide(color: Colors.black.withValues(alpha: 0.15)),
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: BorderSide(color: Colors.black.withValues(alpha: 0.15)),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: const BorderSide(color: _primary, width: 1.35),
+      ),
+    );
+  }
+
+  ButtonStyle _editorModalPrimaryButtonStyle({Color? backgroundColor}) {
+    return FilledButton.styleFrom(
+      backgroundColor: backgroundColor ?? _primary,
+      foregroundColor: Colors.white,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+      textStyle: const TextStyle(fontWeight: FontWeight.w900),
+    );
+  }
+
+  ButtonStyle _editorModalSecondaryButtonStyle() {
+    return TextButton.styleFrom(
+      foregroundColor: _muted,
+      textStyle: const TextStyle(fontWeight: FontWeight.w900),
+      minimumSize: const Size(0, 44),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+    );
+  }
+
+  Widget _buildEditorStyledDialog({
+    required BuildContext context,
+    required IconData icon,
+    required String title,
+    String? subtitle,
+    required Widget body,
+    required List<Widget> actions,
+    double width = 500,
+  }) {
+    return AlertDialog(
+      backgroundColor: Colors.white,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      titlePadding: const EdgeInsets.fromLTRB(24, 12, 12, 0),
+      contentPadding: const EdgeInsets.fromLTRB(24, 8, 24, 0),
+      actionsPadding: const EdgeInsets.fromLTRB(18, 10, 18, 18),
+      actionsAlignment: MainAxisAlignment.end,
+      title: Row(
+        children: [
+          const Expanded(child: SizedBox.shrink()),
+          IconButton(
+            onPressed: () => Navigator.pop(context),
+            tooltip: 'Close',
+            icon: const Icon(Icons.close_rounded, color: _muted),
+            style: IconButton.styleFrom(
+              backgroundColor: Colors.black.withValues(alpha: 0.06),
+            ),
+          ),
+        ],
+      ),
+      content: SizedBox(
+        width: width,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 34,
+                  height: 34,
+                  decoration: BoxDecoration(
+                    color: _primary.withValues(alpha: 0.10),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Icon(icon, color: _primary, size: 18),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: const TextStyle(
+                          color: _primary,
+                          fontWeight: FontWeight.w900,
+                          fontSize: 20,
+                        ),
+                      ),
+                      if ((subtitle ?? '').trim().isNotEmpty) ...[
+                        const SizedBox(height: 4),
+                        Text(
+                          subtitle!,
+                          style: const TextStyle(
+                            color: _muted,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 12.5,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            body,
+          ],
+        ),
+      ),
+      actions: actions,
+    );
+  }
+
+  Widget _editorViewOptionsMenuButton() {
+    final canToggleOutline = _selectedNode != null;
+    return Tooltip(
+      message: 'View options',
+      child: PopupMenuButton<_EditorViewToggleAction>(
+        onSelected: (action) {
+          setState(() {
+            switch (action) {
+              case _EditorViewToggleAction.ribbon:
+                _showRibbon = !_showRibbon;
+                break;
+              case _EditorViewToggleAction.entries:
+                _entriesPanelCollapsed = !_entriesPanelCollapsed;
+                break;
+              case _EditorViewToggleAction.outline:
+                if (!canToggleOutline) return;
+                _outlinePanelCollapsed = !_outlinePanelCollapsed;
+                break;
+            }
+          });
+        },
+        itemBuilder: (context) => [
+          CheckedPopupMenuItem<_EditorViewToggleAction>(
+            value: _EditorViewToggleAction.ribbon,
+            checked: _showRibbon,
+            child: const Text('Show ribbon'),
+          ),
+          CheckedPopupMenuItem<_EditorViewToggleAction>(
+            value: _EditorViewToggleAction.entries,
+            checked: !_entriesPanelCollapsed,
+            child: const Text('Show entries'),
+          ),
+          CheckedPopupMenuItem<_EditorViewToggleAction>(
+            value: _EditorViewToggleAction.outline,
+            enabled: canToggleOutline,
+            checked: canToggleOutline && !_outlinePanelCollapsed,
+            child: const Text('Show page outline'),
+          ),
+        ],
+        tooltip: 'View options',
+        padding: EdgeInsets.zero,
+        icon: const Icon(
+          Icons.keyboard_arrow_down_rounded,
+          size: 22,
+          color: _primary,
+        ),
+      ),
+    );
+  }
+
+  Widget _editorCollapsedRibbonStrip() {
+    return Container(
+      width: double.infinity,
+      height: 26,
+      padding: const EdgeInsets.only(right: 8),
+      color: Colors.white,
+      alignment: Alignment.centerRight,
+      child: _editorViewOptionsMenuButton(),
+    );
+  }
+
+  void _setPaperZoom(double nextValue) {
+    final normalized = nextValue.clamp(0.8, 1.6).toDouble();
+    if ((_paperZoom - normalized).abs() < 0.001) return;
+    setState(() => _paperZoom = normalized);
+  }
+
+  void _stepPaperZoom({required bool increase}) {
+    _setPaperZoom(_paperZoom + (increase ? 0.1 : -0.1));
+  }
+
+  Widget _paperZoomControl({bool compact = false}) {
+    final label = '${(_paperZoom * 100).round()}%';
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Tooltip(
+          message: 'Zoom out',
+          child: IconButton(
+            onPressed: () => _stepPaperZoom(increase: false),
+            icon: const Icon(Icons.remove_rounded, size: 16),
+            constraints: const BoxConstraints.tightFor(width: 28, height: 28),
+            padding: EdgeInsets.zero,
+            splashRadius: 16,
+          ),
+        ),
+        SizedBox(
+          width: compact ? 44 : 50,
+          child: Text(
+            label,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              color: _muted,
+              fontSize: 12,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ),
+        Tooltip(
+          message: 'Zoom in',
+          child: IconButton(
+            onPressed: () => _stepPaperZoom(increase: true),
+            icon: const Icon(Icons.add_rounded, size: 16),
+            constraints: const BoxConstraints.tightFor(width: 28, height: 28),
+            padding: EdgeInsets.zero,
+            splashRadius: 16,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _showShortcutsDialog() async {
+    const shortcuts = <String>[
+      'Ctrl/Cmd + S  Save',
+      'Ctrl/Cmd + B  Bold',
+      'Ctrl/Cmd + I  Italic',
+      'Ctrl/Cmd + U  Underline',
+      'Ctrl/Cmd + K  Insert link',
+      'Shift + 7/8  Numbered/Bullet list',
+      'Tab / Shift + Tab  Indent / Outdent',
+    ];
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return _buildEditorStyledDialog(
+          context: dialogContext,
+          icon: Icons.info_outline_rounded,
+          title: 'Editor Shortcuts',
+          subtitle: 'Keyboard shortcuts available while editing.',
+          width: 440,
+          body: SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: shortcuts
+                  .map(
+                    (item) => Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Text(
+                        item,
+                        style: const TextStyle(
+                          color: _text,
+                          fontSize: 13.2,
+                          fontWeight: FontWeight.w700,
+                          height: 1.32,
+                        ),
+                      ),
+                    ),
+                  )
+                  .toList(growable: false),
+            ),
+          ),
+          actions: [
+            TextButton(
+              style: _editorModalSecondaryButtonStyle(),
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _shortcutsInfoButton() {
+    return Tooltip(
+      message: 'View editor shortcuts',
+      child: IconButton(
+        onPressed: _showShortcutsDialog,
+        icon: const Icon(Icons.info_outline_rounded, size: 18),
+        color: _primary,
+        constraints: const BoxConstraints.tightFor(width: 28, height: 28),
+        padding: EdgeInsets.zero,
+        splashRadius: 16,
+      ),
+    );
+  }
+
   Widget _leftTreePanel() {
     final roots = _rootNodes();
     final filteredRoots = roots.where(_matchesNodeOrDescendant).toList();
     final sectionNumbers = _buildRootSectionNumberMap();
-    final canReorder = _query.trim().isEmpty && !_isWorkflowReadOnly;
+    final canReorder = _query.trim().isEmpty && !_isEditorReadOnly;
     return _surface(
       child: Column(
         children: [
@@ -4797,13 +7143,12 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
                     ),
                   ),
                 ),
-                IconButton(
-                  onPressed: _isWorkflowReadOnly
-                      ? null
-                      : () => _createNode(parentId: ''),
-                  icon: const Icon(Icons.add_circle_rounded, color: _primary),
-                  tooltip: 'Add entry',
-                ),
+                if (!_isEditorReadOnly)
+                  IconButton(
+                    onPressed: () => _createNode(parentId: ''),
+                    icon: const Icon(Icons.add_circle_rounded, color: _primary),
+                    tooltip: 'Add entry',
+                  ),
               ],
             ),
           ),
@@ -4872,6 +7217,201 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
     );
   }
 
+  Widget _outlineSidePanel() {
+    return _surface(
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+            child: Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    'Page Outline',
+                    style: TextStyle(
+                      color: _text,
+                      fontWeight: FontWeight.w900,
+                      fontSize: 16,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: ListenableBuilder(
+              listenable: _editorController,
+              builder: (context, child) {
+                final headings = _buildEntryOutlineHeadings();
+                if (headings.isEmpty) {
+                  return const Padding(
+                    padding: EdgeInsets.fromLTRB(14, 6, 14, 14),
+                    child: Align(
+                      alignment: Alignment.topLeft,
+                      child: Text(
+                        'Add Heading 2 and Heading 1 in the editor to build the outline.',
+                        style: TextStyle(
+                          color: _muted,
+                          fontWeight: FontWeight.w700,
+                          height: 1.35,
+                        ),
+                      ),
+                    ),
+                  );
+                }
+                return Padding(
+                  padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+                  child: _entryOutlinePanel(headings),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _entryOutlinePanel(List<_EntryOutlineHeading> headings) {
+    final activeOffset = _activeOutlineOffset(headings);
+    return ListView.separated(
+      itemCount: headings.length,
+      separatorBuilder: (context, index) => const SizedBox(height: 6),
+      itemBuilder: (context, index) {
+        final heading = headings[index];
+        final selected = heading.offset == activeOffset;
+        return AnimatedContainer(
+          duration: const Duration(milliseconds: 140),
+          decoration: BoxDecoration(
+            color: selected ? _primary.withValues(alpha: 0.10) : Colors.white,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: selected
+                  ? _primary.withValues(alpha: 0.32)
+                  : Colors.black.withValues(alpha: 0.08),
+            ),
+          ),
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(10),
+              mouseCursor: SystemMouseCursors.click,
+              onTap: () => _jumpToHeadingOffset(heading.offset),
+              child: Padding(
+                padding: EdgeInsets.fromLTRB(8 + (heading.depth * 14), 9, 8, 9),
+                child: Text(
+                  heading.text,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: selected ? _text : _primary,
+                    fontSize: 12.5,
+                    fontWeight: selected ? FontWeight.w800 : FontWeight.w700,
+                    decoration: selected
+                        ? TextDecoration.none
+                        : TextDecoration.underline,
+                    decorationColor: _primary.withValues(alpha: 0.65),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  int _activeOutlineOffset(List<_EntryOutlineHeading> headings) {
+    if (headings.isEmpty) return -1;
+    final caret = _editorController.selection.baseOffset;
+    if (caret <= 0) return headings.first.offset;
+    var best = headings.first.offset;
+    for (final heading in headings) {
+      if (heading.offset <= caret) {
+        best = heading.offset;
+      } else {
+        break;
+      }
+    }
+    return best;
+  }
+
+  List<_EntryOutlineHeading> _buildEntryOutlineHeadings() {
+    final ops = _editorController.document.toDelta().toJson();
+    if (ops.isEmpty) return const [];
+    final headings = <_EntryOutlineHeading>[];
+    final lineText = StringBuffer();
+    var lineStartOffset = 0;
+    var offset = 0;
+    var hasSeenH2 = false;
+
+    for (final raw in ops) {
+      final op = Map<String, dynamic>.from(raw as Map);
+      final insert = op['insert'];
+      final attrs = op['attributes'] is Map
+          ? Map<String, dynamic>.from(op['attributes'] as Map)
+          : null;
+      final headerLevel = _extractHeadingLevel(attrs);
+
+      if (insert is String) {
+        for (var i = 0; i < insert.length; i++) {
+          final ch = insert[i];
+          if (ch == '\n') {
+            final headingText = lineText.toString().trim();
+            if (headingText.isNotEmpty &&
+                (headerLevel == 1 || headerLevel == 2)) {
+              final depth = headerLevel == 2 ? 0 : (hasSeenH2 ? 1 : 0);
+              headings.add(
+                _EntryOutlineHeading(
+                  text: headingText,
+                  offset: lineStartOffset,
+                  depth: depth,
+                ),
+              );
+              if (headerLevel == 2) {
+                hasSeenH2 = true;
+              }
+            }
+            lineText.clear();
+            offset += 1;
+            lineStartOffset = offset;
+            continue;
+          }
+          lineText.write(ch);
+          offset += 1;
+        }
+        continue;
+      }
+
+      if (insert is Map) {
+        offset += 1;
+      }
+    }
+    return headings;
+  }
+
+  int? _extractHeadingLevel(Map<String, dynamic>? attrs) {
+    if (attrs == null) return null;
+    final raw = attrs['header'];
+    if (raw is int) return raw;
+    if (raw is num) return raw.toInt();
+    return int.tryParse(raw?.toString() ?? '');
+  }
+
+  void _jumpToHeadingOffset(int offset) {
+    final docLength = _editorController.document.length;
+    if (docLength <= 0) return;
+    final target = offset.clamp(0, docLength - 1);
+    _editorController.updateSelection(
+      TextSelection.collapsed(offset: target),
+      quill.ChangeSource.local,
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _editorController.skipRequestKeyboard = _isEditorReadOnly;
+      _editorFocusNode.requestFocus();
+    });
+  }
+
   Widget _treeNodeTile({
     required HandbookNodeDoc node,
     required int index,
@@ -4897,6 +7437,7 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
         ),
         child: InkWell(
           borderRadius: BorderRadius.circular(10),
+          mouseCursor: SystemMouseCursors.click,
           onTap: () {
             if (!_canHandleSectionTap()) return;
             _switchToNode(node.id);
@@ -4944,7 +7485,7 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
                   ),
                 ),
                 PopupMenuButton<String>(
-                  enabled: !_isWorkflowReadOnly,
+                  enabled: !_isEditorReadOnly,
                   onSelected: (value) {
                     if (value == 'delete') {
                       _deleteNode(node.id);
@@ -4984,9 +7525,20 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
       );
     }
 
-    final currentImageOffset =
-        _activeImageOffset ?? _selectedImageEmbed()?.offset;
-    final hasSelectedImage = currentImageOffset != null;
+    final selectedNode = _selectedNode!;
+    final sectionNumbers = _buildRootSectionNumberMap();
+    final selectedSectionNumber = selectedNode.parentId.trim().isEmpty
+        ? (sectionNumbers[selectedNode.id] ?? '')
+        : '';
+    final showTitleSectionNumber = selectedSectionNumber.trim().isNotEmpty;
+
+    final paperMaxWidth = (920 * _paperZoom).clamp(700.0, 1280.0).toDouble();
+    final editorPadding = EdgeInsets.fromLTRB(
+      (36 * _paperZoom).clamp(24.0, 56.0),
+      (28 * _paperZoom).clamp(18.0, 46.0),
+      (36 * _paperZoom).clamp(24.0, 56.0),
+      (64 * _paperZoom).clamp(44.0, 100.0),
+    );
 
     final editorWidget = quill.QuillEditor.basic(
       controller: _editorController,
@@ -4997,15 +7549,28 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
         autoFocus: false,
         expands: false,
         enableAlwaysIndentOnTab: false,
+        enableInteractiveSelection:
+            !_isEditorReadOnly && !_isTableCellEditing,
         onKeyPressed: (event, node) => _handleEditorKeyPress(event),
-        showCursor: !_imageInteractionMode && !_isTableCellEditing,
+        showCursor:
+            !_isEditorReadOnly && !_isTableCellEditing && !_imageInteractionMode,
         onTapDown: (details, getPositionForOffset) {
-          if (_imageInteractionMode) {
-            return true;
+          if (!_imageInteractionMode) return false;
+          final localOffset = details.localPosition;
+          final textPosition = getPositionForOffset(localOffset);
+          final tappedOffset = textPosition.offset;
+          final activeImageOffset = _activeImageOffset;
+          final resolvedTappedImage = _resolveImageOffset(tappedOffset);
+          final onActiveImage = activeImageOffset != null &&
+              resolvedTappedImage != null &&
+              resolvedTappedImage == activeImageOffset &&
+              _isImageOffset(activeImageOffset);
+          if (!onActiveImage) {
+            _setImageInteractionMode(false, caretOffset: tappedOffset);
           }
           return false;
         },
-        padding: const EdgeInsets.fromLTRB(36, 28, 36, 64),
+        padding: editorPadding,
         embedBuilders: _embedBuilders,
         unknownEmbedBuilder: const _UnknownEmbedBuilder(),
       ),
@@ -5075,7 +7640,7 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
         actions: {
           _EditorSaveIntent: CallbackAction<_EditorSaveIntent>(
             onInvoke: (intent) {
-              _saveNodeNow();
+              _saveNodeNow(source: 'manual');
               return null;
             },
           ),
@@ -5130,363 +7695,312 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
           ),
         },
         child: _surface(
-          child: LayoutBuilder(
+          child: TapRegion(
+            groupId: _editorInteractionTapGroup,
+            child: LayoutBuilder(
             builder: (context, constraints) {
               final compactHeight = constraints.maxHeight < 520;
               final minimalHeight = constraints.maxHeight < 320;
-              return Column(
+              final showRibbon =
+                  !_isEditorReadOnly && !minimalHeight && _showRibbon;
+              return Stack(
                 children: [
-                  if (!minimalHeight)
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(14, 12, 14, 8),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            crossAxisAlignment: CrossAxisAlignment.center,
-                            children: [
-                              Expanded(
-                                child: TextField(
-                                  controller: _titleCtrl,
-                                  readOnly: _isWorkflowReadOnly,
-                                  style: const TextStyle(
-                                    color: _text,
-                                    fontWeight: FontWeight.w900,
-                                    fontSize: 24,
-                                  ),
-                                  decoration: const InputDecoration(
-                                    border: InputBorder.none,
-                                    hintText: 'Node title',
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 10),
-                              Tooltip(
-                                message: 'Section Numbering',
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(
-                                      Icons.format_list_numbered_rounded,
-                                      size: 18,
-                                      color: _muted.withValues(alpha: 0.9),
-                                    ),
-                                    const SizedBox(width: 4),
-                                    Switch.adaptive(
-                                      value: _useSectionNumbering,
-                                      onChanged: _isWorkflowReadOnly
-                                          ? null
-                                          : (value) {
-                                              if (_useSectionNumbering ==
-                                                  value) {
-                                                return;
-                                              }
-                                              setState(() {
-                                                _useSectionNumbering = value;
-                                              });
-                                              _markDirtyAndSchedule();
-                                            },
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ],
+                  Column(
+                    children: [
+                      if (showRibbon) _editorGroupedHomeToolbar(),
+                      if (!showRibbon &&
+                          !_isEditorReadOnly &&
+                          !minimalHeight &&
+                          _showRibbon == false)
+                        _editorCollapsedRibbonStrip(),
+                      if (_isEditorReadOnly && !compactHeight)
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+                          color: _primary.withValues(alpha: 0.05),
+                          child: Text(
+                            _editorReadOnlyMessage,
+                            style: TextStyle(
+                              color: _primary,
+                              fontWeight: FontWeight.w800,
+                              fontSize: 12,
+                            ),
                           ),
-                        ],
-                      ),
-                    ),
-                  if (!minimalHeight) const Divider(height: 1),
-                  if (!_isEditorReadOnly && !compactHeight)
-                    quill.QuillSimpleToolbar(
-                      controller: _editorController,
-                      config: quill.QuillSimpleToolbarConfig(
-                        showBoldButton: true,
-                        showItalicButton: true,
-                        showUnderLineButton: true,
-                        showStrikeThrough: true,
-                        showHeaderStyle: true,
-                        showListBullets: true,
-                        showListNumbers: true,
-                        showListCheck: true,
-                        showIndent: true,
-                        showQuote: true,
-                        showLink: true,
-                        showCodeBlock: true,
-                        showInlineCode: false,
-                        showClearFormat: true,
-                        showLineHeightButton: true,
-                        showAlignmentButtons: true,
-                        showLeftAlignment: true,
-                        showCenterAlignment: true,
-                        showRightAlignment: true,
-                        showJustifyAlignment: true,
-                        showSearchButton: false,
-                        showDirection: false,
-                        showSubscript: false,
-                        showSuperscript: false,
-                        showFontFamily: false,
-                        showFontSize: true,
-                        showClipboardCut: true,
-                        showClipboardCopy: true,
-                        showClipboardPaste: true,
-                        showUndo: true,
-                        showRedo: true,
-                        multiRowsDisplay: false,
-                      ),
-                    ),
-                  if (_isEditorReadOnly && !compactHeight)
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
-                      color: _primary.withValues(alpha: 0.05),
-                      child: Text(
-                        _editorReadOnlyMessage,
-                        style: TextStyle(
-                          color: _primary,
-                          fontWeight: FontWeight.w800,
-                          fontSize: 12,
                         ),
-                      ),
-                    ),
-                  Padding(
-                    padding: EdgeInsets.fromLTRB(
-                      10,
-                      compactHeight ? 4 : 6,
-                      10,
-                      compactHeight ? 4 : 8,
-                    ),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: SingleChildScrollView(
-                            scrollDirection: Axis.horizontal,
-                            child: Row(
+                      Expanded(
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.translucent,
+                          onTap: () {
+                            if (_isEditorReadOnly ||
+                                _isTableCellEditing ||
+                                _selectedNode == null) {
+                              return;
+                            }
+                            if (_imageInteractionMode) {
+                              // Let Quill onTapDown decide whether to keep or exit image mode.
+                              // Avoid competing focus changes here.
+                              return;
+                            }
+                            _editorController.skipRequestKeyboard = false;
+                            _editorFocusNode.requestFocus();
+                          },
+                          child: Container(
+                            margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFF4F6F5),
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(
+                                color: Colors.black.withValues(alpha: 0.08),
+                              ),
+                            ),
+                            child: Column(
                               children: [
-                                PopupMenuButton<String>(
-                                  enabled: !_isEditorReadOnly,
-                                  onSelected: _handleInsertAction,
-                                  itemBuilder: (context) => [
-                                    const PopupMenuItem(
-                                      value: 'table',
-                                      child: Text('Table'),
-                                    ),
-                                    const PopupMenuItem(
-                                      value: 'link',
-                                      child: Text('Hyperlink'),
-                                    ),
-                                    const PopupMenuItem(
-                                      value: 'attachment',
-                                      child: Text('Attachment'),
-                                    ),
-                                  ],
-                                  child: IgnorePointer(
-                                    child: OutlinedButton.icon(
-                                      onPressed: () {},
-                                      icon: const Icon(
-                                        Icons.add_box_outlined,
-                                        size: 18,
+                                Expanded(
+                                  child: Center(
+                                    child: Container(
+                                      constraints: BoxConstraints(
+                                        maxWidth: paperMaxWidth,
                                       ),
-                                      label: const Text('Insert'),
+                                      margin: const EdgeInsets.fromLTRB(
+                                        18,
+                                        14,
+                                        18,
+                                        14,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: Colors.white,
+                                        borderRadius: BorderRadius.circular(8),
+                                        border: Border.all(
+                                          color: Colors.black.withValues(
+                                            alpha: 0.08,
+                                          ),
+                                        ),
+                                        boxShadow: const [
+                                          BoxShadow(
+                                            color: Color(0x12000000),
+                                            blurRadius: 16,
+                                            offset: Offset(0, 4),
+                                          ),
+                                        ],
+                                      ),
+                                      child: Column(
+                                        children: [
+                                          if (!_isEditorReadOnly) ...[
+                                            Padding(
+                                              padding:
+                                                  const EdgeInsets.fromLTRB(
+                                                    22,
+                                                    10,
+                                                    22,
+                                                    6,
+                                                  ),
+                                              child: LayoutBuilder(
+                                                builder: (
+                                                  context,
+                                                  titleConstraints,
+                                                ) {
+                                                  final compactTitleRow =
+                                                      titleConstraints
+                                                              .maxWidth <
+                                                          860;
+                                                  final titleField = Row(
+                                                    children: [
+                                                      if (showTitleSectionNumber) ...[
+                                                        Text(
+                                                          '$selectedSectionNumber. ',
+                                                          style: const TextStyle(
+                                                            color: _text,
+                                                            fontWeight:
+                                                                FontWeight.w900,
+                                                            fontSize: 22,
+                                                          ),
+                                                        ),
+                                                      ],
+                                                      Expanded(
+                                                        child: TextField(
+                                                          controller:
+                                                              _titleCtrl,
+                                                          readOnly:
+                                                              _isEditorReadOnly,
+                                                          style:
+                                                              const TextStyle(
+                                                                color: _text,
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .w900,
+                                                                fontSize: 22,
+                                                              ),
+                                                          decoration:
+                                                              const InputDecoration(
+                                                                border:
+                                                                    InputBorder
+                                                                        .none,
+                                                                enabledBorder:
+                                                                    InputBorder
+                                                                        .none,
+                                                                focusedBorder:
+                                                                    InputBorder
+                                                                        .none,
+                                                                disabledBorder:
+                                                                    InputBorder
+                                                                        .none,
+                                                                filled: false,
+                                                                isDense: true,
+                                                                contentPadding:
+                                                                    EdgeInsets
+                                                                        .zero,
+                                                                hintText:
+                                                                    'Node title',
+                                                              ),
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  );
+                                                  final toggle = Row(
+                                                    mainAxisSize:
+                                                        MainAxisSize.min,
+                                                    children: [
+                                                      const Text(
+                                                        'Section',
+                                                        style: TextStyle(
+                                                          color: _muted,
+                                                          fontWeight:
+                                                              FontWeight.w800,
+                                                          fontSize: 12,
+                                                        ),
+                                                      ),
+                                                      const SizedBox(width: 6),
+                                                      Switch.adaptive(
+                                                        value:
+                                                            _useSectionNumbering,
+                                                        onChanged:
+                                                            _isEditorReadOnly
+                                                            ? null
+                                                            : (value) {
+                                                                setState(() {
+                                                                  _useSectionNumbering =
+                                                                      value;
+                                                                });
+                                                              },
+                                                      ),
+                                                    ],
+                                                  );
+
+                                                  if (compactTitleRow) {
+                                                    return Column(
+                                                      crossAxisAlignment:
+                                                          CrossAxisAlignment
+                                                              .start,
+                                                      children: [
+                                                        titleField,
+                                                        const SizedBox(
+                                                          height: 2,
+                                                        ),
+                                                        Align(
+                                                          alignment: Alignment
+                                                              .centerRight,
+                                                          child: toggle,
+                                                        ),
+                                                      ],
+                                                    );
+                                                  }
+                                                  return Row(
+                                                    children: [
+                                                      Expanded(
+                                                        child: titleField,
+                                                      ),
+                                                      const SizedBox(
+                                                        width: 8,
+                                                      ),
+                                                      toggle,
+                                                    ],
+                                                  );
+                                                },
+                                              ),
+                                            ),
+                                            Divider(
+                                              height: 1,
+                                              color: Colors.black.withValues(
+                                                alpha: 0.08,
+                                              ),
+                                            ),
+                                          ],
+                                          Expanded(
+                                            child: ListenableBuilder(
+                                              listenable: _editorController,
+                                              child: MediaQuery(
+                                                data: MediaQuery.of(
+                                                  context,
+                                                ).copyWith(
+                                                  textScaler: TextScaler.linear(
+                                                    _paperZoom,
+                                                  ),
+                                                ),
+                                                child: editorWidget,
+                                              ),
+                                              builder: (context, child) {
+                                                final plain = _editorController
+                                                    .document
+                                                    .toPlainText()
+                                                    .replaceAll('\n', '')
+                                                    .trim();
+                                                final showEmptyHint =
+                                                    plain.isEmpty &&
+                                                    !_isEditorReadOnly;
+                                                return Stack(
+                                                  children: [
+                                                    Positioned.fill(
+                                                      child: child!,
+                                                    ),
+                                                    if (showEmptyHint)
+                                                      const IgnorePointer(
+                                                        child: Padding(
+                                                          padding:
+                                                              EdgeInsets.fromLTRB(
+                                                                38,
+                                                                30,
+                                                                38,
+                                                                24,
+                                                              ),
+                                                          child: Align(
+                                                            alignment: Alignment
+                                                                .topLeft,
+                                                            child: Text(
+                                                              'Start writing this handbook section...',
+                                                              style: TextStyle(
+                                                                color: _muted,
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .w600,
+                                                                fontSize: 15,
+                                                              ),
+                                                            ),
+                                                          ),
+                                                        ),
+                                                      ),
+                                                  ],
+                                                );
+                                              },
+                                            ),
+                                          ),
+                                        ],
+                                      ),
                                     ),
                                   ),
                                 ),
-                                if (_enableImageBehavior) ...[
-                                  const SizedBox(width: 8),
-                                  OutlinedButton.icon(
-                                    onPressed: _isEditorReadOnly
-                                        ? null
-                                        : _showImageLayoutTools,
-                                    icon: const Icon(
-                                      Icons.photo_size_select_large,
-                                      size: 18,
-                                    ),
-                                    label: const Text('Image Layout'),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  OutlinedButton.icon(
-                                    onPressed:
-                                        (!_isEditorReadOnly && hasSelectedImage)
-                                        ? () => _rotateImageLeft(
-                                            currentImageOffset,
-                                          )
-                                        : null,
-                                    icon: const Icon(
-                                      Icons.rotate_left_rounded,
-                                      size: 18,
-                                    ),
-                                    label: const Text('Rotate L'),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  OutlinedButton.icon(
-                                    onPressed:
-                                        (!_isEditorReadOnly && hasSelectedImage)
-                                        ? () => _rotateImageRight(
-                                            currentImageOffset,
-                                          )
-                                        : null,
-                                    icon: const Icon(
-                                      Icons.rotate_right_rounded,
-                                      size: 18,
-                                    ),
-                                    label: const Text('Rotate R'),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  OutlinedButton.icon(
-                                    onPressed:
-                                        (!_isEditorReadOnly && hasSelectedImage)
-                                        ? () {
-                                            setState(() {
-                                              _imageCropMode = !_imageCropMode;
-                                            });
-                                          }
-                                        : null,
-                                    icon: Icon(
-                                      _imageCropMode
-                                          ? Icons.crop_free_rounded
-                                          : Icons.crop_rounded,
-                                      size: 18,
-                                    ),
-                                    label: Text(
-                                      _imageCropMode ? 'Crop On' : 'Crop Off',
-                                    ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  OutlinedButton.icon(
-                                    onPressed:
-                                        (!_isEditorReadOnly && hasSelectedImage)
-                                        ? () {
-                                            final styleMap = _imageStyleMap(
-                                              currentImageOffset,
-                                            );
-                                            styleMap.remove('cropLeft');
-                                            styleMap.remove('cropTop');
-                                            styleMap.remove('cropRight');
-                                            styleMap.remove('cropBottom');
-                                            _setImageStyleMap(
-                                              currentImageOffset,
-                                              styleMap,
-                                            );
-                                            setState(
-                                              () => _imageCropMode = false,
-                                            );
-                                          }
-                                        : null,
-                                    icon: const Icon(
-                                      Icons.filter_none_rounded,
-                                      size: 18,
-                                    ),
-                                    label: const Text('Clear Crop'),
-                                  ),
-                                ],
                               ],
                             ),
                           ),
                         ),
-                        if (_enableImageBehavior) ...[
-                          const SizedBox(width: 8),
-                          OutlinedButton.icon(
-                            onPressed: !_isEditorReadOnly && hasSelectedImage
-                                ? () => _setImageInteractionMode(
-                                    !_imageInteractionMode,
-                                  )
-                                : null,
-                            icon: Icon(
-                              _imageInteractionMode
-                                  ? Icons.keyboard_rounded
-                                  : Icons.photo_rounded,
-                              size: 18,
-                            ),
-                            label: Text(
-                              _imageInteractionMode
-                                  ? 'Type Mode'
-                                  : 'Image Mode',
-                            ),
-                          ),
-                        ],
-                        const SizedBox(width: 8),
-                        OutlinedButton.icon(
-                          onPressed: _isWorkflowReadOnly ? null : _saveNodeNow,
-                          icon: const Icon(Icons.save_outlined, size: 18),
-                          label: const Text('Save now'),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Expanded(
-                    child: Container(
-                      margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF4F6F5),
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(
-                          color: Colors.black.withValues(alpha: 0.08),
-                        ),
                       ),
-                      child: Center(
-                        child: Container(
-                          constraints: const BoxConstraints(maxWidth: 920),
-                          margin: const EdgeInsets.fromLTRB(18, 14, 18, 14),
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(
-                              color: Colors.black.withValues(alpha: 0.08),
-                            ),
-                            boxShadow: const [
-                              BoxShadow(
-                                color: Color(0x12000000),
-                                blurRadius: 16,
-                                offset: Offset(0, 4),
-                              ),
-                            ],
-                          ),
-                          child: ListenableBuilder(
-                            listenable: _editorController,
-                            child: editorWidget,
-                            builder: (context, child) {
-                              final plain = _editorController.document
-                                  .toPlainText()
-                                  .replaceAll('\n', '')
-                                  .trim();
-                              final showEmptyHint =
-                                  plain.isEmpty && !_isEditorReadOnly;
-                              return Stack(
-                                children: [
-                                  Positioned.fill(child: child!),
-                                  if (showEmptyHint)
-                                    const IgnorePointer(
-                                      child: Padding(
-                                        padding: EdgeInsets.fromLTRB(
-                                          38,
-                                          30,
-                                          38,
-                                          24,
-                                        ),
-                                        child: Align(
-                                          alignment: Alignment.topLeft,
-                                          child: Text(
-                                            'Start writing this handbook section...',
-                                            style: TextStyle(
-                                              color: _muted,
-                                              fontWeight: FontWeight.w600,
-                                              fontSize: 15,
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                ],
-                              );
-                            },
-                          ),
-                        ),
-                      ),
-                    ),
+                      if (!compactHeight && !_isEditorReadOnly)
+                        _editorStatusBar(),
+                    ],
                   ),
-                  if (!compactHeight) _editorStatusBar(),
                 ],
               );
             },
+            ),
           ),
         ),
       ),
@@ -5510,8 +8024,6 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
             fontSize: 12,
             fontWeight: FontWeight.w700,
           );
-          const shortcutsText =
-              'Ctrl/Cmd + S | B/I/U | K link | Shift+7/8 lists | Tab/Shift+Tab';
           return LayoutBuilder(
             builder: (context, constraints) {
               final compact = constraints.maxWidth < 980;
@@ -5524,7 +8036,17 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
                       spacing: 10,
                       runSpacing: 4,
                       children: [
-                        const Text('Editing entry content', style: baseStyle),
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            _shortcutsInfoButton(),
+                            const SizedBox(width: 6),
+                            const Text(
+                              'Editing entry content',
+                              style: baseStyle,
+                            ),
+                          ],
+                        ),
                         Text(
                           saveState.autoSaveEnabled
                               ? 'Autosave on'
@@ -5542,14 +8064,40 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
                       ],
                     ),
                     const SizedBox(height: 4),
-                    Text(shortcutsText, style: baseStyle),
+                    Row(
+                      children: [
+                        const Text(
+                          'Paper zoom',
+                          style: TextStyle(
+                            color: _muted,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        _paperZoomControl(compact: true),
+                      ],
+                    ),
                   ],
                 );
               }
               return Row(
                 children: [
+                  _shortcutsInfoButton(),
+                  const SizedBox(width: 6),
                   const Text('Editing entry content', style: baseStyle),
                   const Spacer(),
+                  const Text(
+                    'Paper zoom',
+                    style: TextStyle(
+                      color: _muted,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  _paperZoomControl(),
+                  const SizedBox(width: 12),
                   Text(
                     saveState.autoSaveEnabled ? 'Autosave on' : 'Autosave off',
                     style: baseStyle,
@@ -5561,16 +8109,6 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
                       color: saveState.isSaving ? _primary : _muted,
                       fontSize: 12,
                       fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  const Flexible(
-                    child: Text(
-                      shortcutsText,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      textAlign: TextAlign.right,
-                      style: baseStyle,
                     ),
                   ),
                 ],

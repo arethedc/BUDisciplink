@@ -10,20 +10,53 @@ import 'package:intl/intl.dart';
 
 import '../shared/widgets/modern_table_layout.dart';
 import '../shared/widgets/app_layout_tokens.dart';
+import '../shared/widgets/app_inline_notice.dart';
+import 'meeting_schedule_page.dart';
 import '../../services/osa_meeting_schedule_service.dart';
 import '../../services/violation_case_service.dart';
 import '../../services/violation_types_service.dart';
-import 'osa_violation_ai_assistant_sheet.dart';
+import '../../services/academic_settings_service.dart';
 
-// âœ… YOUR COLORS (applied everywhere)
-const bg = Color(0xFFF6FAF6);
+// Ã¢Å“â€¦ YOUR COLORS (applied everywhere)
+const bg = Colors.white;
 const primaryColor = Color(0xFF1B5E20);
 
 const textDark = Color(0xFF1F2A1F);
 const hintColor = Color(0xFF6D7F62);
 
-/// âœ… Enhanced OSA Review Inbox
-enum _CaseTab { review, needsBooking, scheduled, unresolved, resolved }
+enum _InlineNoticeTone { primary, success, danger, warning, neutral }
+
+void _showInlineNotice(
+  BuildContext context, {
+  required String message,
+  _InlineNoticeTone tone = _InlineNoticeTone.primary,
+  Duration duration = const Duration(seconds: 4),
+}) {
+  final bgColor = switch (tone) {
+    _InlineNoticeTone.danger => const Color(0xFFC53030),
+    _InlineNoticeTone.warning => const Color(0xFFB7791F),
+    _InlineNoticeTone.success => const Color(0xFF2F855A),
+    _InlineNoticeTone.neutral => const Color(0xFF4A5568),
+    _InlineNoticeTone.primary => const Color(0xFF2B6CB0),
+  };
+  AppScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Text(message),
+      backgroundColor: bgColor,
+      duration: duration,
+    ),
+  );
+}
+
+/// Ã¢Å“â€¦ Enhanced OSA Review Inbox
+enum _CaseTab {
+  review,
+  needsBooking,
+  scheduled,
+  unresolved,
+  resolved,
+  cancelled,
+}
 
 class _CaseTabConfig {
   final _CaseTab tab;
@@ -39,8 +72,33 @@ class _CaseTabConfig {
   });
 }
 
+enum _ReviewMoreAction {
+  viewCaseLogs,
+  correctCase,
+  cancelCase,
+  completeMeeting,
+}
+
+enum _MonitorMoreAction {
+  viewCaseLogs,
+  correctCase,
+  cancelCase,
+  completeMeeting,
+}
+
 class OsaViolationReviewPage extends StatefulWidget {
-  const OsaViolationReviewPage({super.key});
+  final String? initialSelectedCaseId;
+  final bool forceReviewInboxOnOpen;
+  final VoidCallback? onOpenReportViolation;
+  final VoidCallback? onOpenCounselingReferral;
+
+  const OsaViolationReviewPage({
+    super.key,
+    this.initialSelectedCaseId,
+    this.forceReviewInboxOnOpen = false,
+    this.onOpenReportViolation,
+    this.onOpenCounselingReferral,
+  });
 
   @override
   State<OsaViolationReviewPage> createState() => _OsaViolationReviewPageState();
@@ -65,26 +123,22 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
       label: 'Resolved',
       showSeverityColumn: true,
     ),
+    _CaseTabConfig(tab: _CaseTab.cancelled, label: 'Cancelled'),
   ];
 
   final _svc = ViolationCaseService();
   final _meetingScheduleSvc = OsaMeetingScheduleService();
 
   // UI state
-  final _searchCtrl = TextEditingController();
   _CaseTab _tab = _CaseTab.review;
 
-  String _concernFilter = 'All';
+  String _concernFilter = '';
   String _actionFilter = 'All';
   String _meetingFilter = 'All';
-  String _dateFilter = 'All';
+  String _scheduledDateFilter = 'Today';
+  final String _dateFilter = 'All';
 
   String? _selectedCaseId;
-  final ValueNotifier<List<QueryDocumentSnapshot<Map<String, dynamic>>>>
-  _visibleCaseDocs =
-      ValueNotifier<List<QueryDocumentSnapshot<Map<String, dynamic>>>>(
-        const [],
-      );
   final ValueNotifier<Map<_CaseTab, int>> _tabCounts =
       ValueNotifier<Map<_CaseTab, int>>({
         _CaseTab.review: 0,
@@ -92,9 +146,14 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
         _CaseTab.scheduled: 0,
         _CaseTab.unresolved: 0,
         _CaseTab.resolved: 0,
+        _CaseTab.cancelled: 0,
       });
 
   bool _bookingSweepRunning = false;
+  bool _isRefreshingTable = false;
+  final _searchCtrl = TextEditingController();
+  Timer? _searchDebounce;
+  String _searchQuery = '';
   String? _departmentScopeCollegeId;
   Set<String>? _departmentStudentUids;
   bool _loadingDepartmentScope = false;
@@ -102,13 +161,101 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _tabCountsSub;
   List<QueryDocumentSnapshot<Map<String, dynamic>>> _latestRawCaseDocs =
       const <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+  String? _pendingExternalCaseId;
 
   @override
   void initState() {
     super.initState();
+    if (widget.forceReviewInboxOnOpen) {
+      _resetToReviewInbox(clearSelectedCase: true);
+    }
+    _queueExternalCaseSelection(
+      widget.initialSelectedCaseId,
+      clearFilters: true,
+    );
     _runBookingExpirySweep();
     _initDepartmentScope();
     _bindTabCountsStream();
+  }
+
+  @override
+  void didUpdateWidget(covariant OsaViolationReviewPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final forceReviewInboxChanged =
+        oldWidget.forceReviewInboxOnOpen != widget.forceReviewInboxOnOpen;
+    if (forceReviewInboxChanged && widget.forceReviewInboxOnOpen) {
+      setState(() {
+        _resetToReviewInbox(clearSelectedCase: true);
+      });
+    }
+    final nextCaseId = (widget.initialSelectedCaseId ?? '').trim();
+    if (oldWidget.initialSelectedCaseId != widget.initialSelectedCaseId &&
+        nextCaseId.isNotEmpty) {
+      setState(() {
+        _queueExternalCaseSelection(
+          widget.initialSelectedCaseId,
+          clearFilters: true,
+        );
+      });
+    }
+  }
+
+  void _queueExternalCaseSelection(
+    String? rawCaseId, {
+    bool clearFilters = false,
+  }) {
+    final caseId = (rawCaseId ?? '').trim();
+    if (caseId.isEmpty) return;
+    _pendingExternalCaseId = caseId;
+    _tab = _CaseTab.review;
+    if (clearFilters) {
+      _resetToReviewInbox(clearSelectedCase: false);
+    }
+  }
+
+  void _resetToReviewInbox({required bool clearSelectedCase}) {
+    _tab = _CaseTab.review;
+    if (clearSelectedCase) _selectedCaseId = null;
+    _searchDebounce?.cancel();
+    _searchCtrl.clear();
+    _searchQuery = '';
+    _concernFilter = '';
+    _actionFilter = 'All';
+    _meetingFilter = 'All';
+    _scheduledDateFilter = 'Today';
+  }
+
+  void _tryApplyPendingExternalSelection(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+    BuildContext context, {
+    required bool mobile,
+  }) {
+    final pending = _pendingExternalCaseId;
+    if (pending == null || pending.isEmpty) return;
+
+    QueryDocumentSnapshot<Map<String, dynamic>>? found;
+    for (final doc in docs) {
+      final data = doc.data();
+      if (doc.id == pending ||
+          _safeStr(data['caseId']) == pending ||
+          _safeStr(data['caseCode']) == pending) {
+        found = doc;
+        break;
+      }
+    }
+    if (found == null) return;
+
+    _pendingExternalCaseId = null;
+    final nextDoc = found;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (_selectedCaseId != nextDoc.id) {
+        setState(() => _selectedCaseId = nextDoc.id);
+      }
+      if (mobile) {
+        _openDetailsPage(context, nextDoc);
+      }
+    });
   }
 
   Future<void> _initDepartmentScope() async {
@@ -204,6 +351,7 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
     _tabCountsSub = _svc.streamAllCases().listen((snapshot) {
       _latestRawCaseDocs = snapshot.docs;
       _recomputeTabCounts();
+      if (mounted) setState(() {});
     });
   }
 
@@ -217,6 +365,7 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
       _CaseTab.scheduled: 0,
       _CaseTab.unresolved: 0,
       _CaseTab.resolved: 0,
+      _CaseTab.cancelled: 0,
     };
 
     for (final doc in _latestRawCaseDocs) {
@@ -236,13 +385,70 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
     _tabCounts.value = next;
   }
 
+  void _onSearchInputChanged(String value) {
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 220), () {
+      if (!mounted) return;
+      final next = value.trim().toLowerCase();
+      if (_searchQuery == next) return;
+      setState(() => _searchQuery = next);
+    });
+  }
+
+  void _clearSearchQuery() {
+    _searchDebounce?.cancel();
+    _searchCtrl.clear();
+    if (!mounted) return;
+    if (_searchQuery.isNotEmpty) {
+      setState(() => _searchQuery = '');
+    }
+  }
+
+  Future<void> _refreshCurrentTable() async {
+    if (_isRefreshingTable || !mounted) return;
+    setState(() => _isRefreshingTable = true);
+    _bindTabCountsStream();
+    await _runBookingExpirySweep();
+    await Future<void>.delayed(const Duration(milliseconds: 350));
+    if (!mounted) return;
+    setState(() => _isRefreshingTable = false);
+  }
+
+  bool _matchesSearch(Map<String, dynamic> d) {
+    final q = _searchQuery.trim();
+    if (q.isEmpty) return true;
+    final date =
+        _globalTsToDate(d['createdAt']) ?? _globalTsToDate(d['incidentAt']);
+    final dateText = date == null
+        ? ''
+        : '${DateFormat('MMM d, yyyy').format(date)} '
+              '${DateFormat('MMMM d, yyyy').format(date)} '
+              '${DateFormat('yyyy-MM-dd').format(date)}';
+    final fields = [
+      _safeStr(d['caseCode']),
+      _safeStr(d['studentName']),
+      _safeStr(d['studentNo']),
+      _safeStr(d['status']),
+      _safeStr(d['concern']),
+      _safeStr(
+        d['violationTypeLabel'] ??
+            d['violationNameSnapshot'] ??
+            d['violationName'],
+      ),
+      _safeStr(d['categoryNameSnapshot'] ?? d['categoryName']),
+      _safeStr(d['reportedByName']),
+      dateText,
+    ];
+    return fields.any((f) => f.toLowerCase().contains(q));
+  }
+
   @override
   void dispose() {
+    _searchDebounce?.cancel();
+    _searchCtrl.dispose();
     _tabCountsSub?.cancel();
     _deptStudentsSub?.cancel();
     _tabCounts.dispose();
-    _searchCtrl.dispose();
-    _visibleCaseDocs.dispose();
     super.dispose();
   }
 
@@ -280,29 +486,6 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
   // -----------------------------
   // Filters
   // -----------------------------
-  bool _matchesSearch(Map<String, dynamic> d, String q) {
-    if (q.isEmpty) return true;
-    final needle = q.toLowerCase().trim();
-
-    final studentName = _safeStr(d['studentName']).toLowerCase();
-    final studentNo = _safeStr(d['studentNo']).toLowerCase();
-    final caseCode = _safeStr(d['caseCode']).toLowerCase();
-    final violation = _safeStr(
-      d['violationTypeLabel'] ??
-          d['violationNameSnapshot'] ??
-          d['violationName'],
-    ).toLowerCase();
-    final category = _categoryLabelFromCaseGlobal(d).toLowerCase();
-    final reporter = _safeStr(d['reportedByName']).toLowerCase();
-
-    return studentName.contains(needle) ||
-        studentNo.contains(needle) ||
-        caseCode.contains(needle) ||
-        violation.contains(needle) ||
-        category.contains(needle) ||
-        reporter.contains(needle);
-  }
-
   bool _matchesTabFor(Map<String, dynamic> d, _CaseTab tab) {
     final key = _statusKey(_safeStr(d['status']));
     if (tab == _CaseTab.review) {
@@ -316,19 +499,43 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
       return flow == 'scheduled';
     }
     if (tab == _CaseTab.unresolved) {
-      return key == 'unresolved';
+      if (key == 'unresolved') return true;
+      if (key == 'action set' && _meetingRequired(d)) {
+        final flow = _effectiveMeetingStatusKey(d);
+        return flow == 'booking_missed';
+      }
+      return false;
     }
-    return key == 'resolved';
+    if (tab == _CaseTab.resolved) {
+      return key == 'resolved';
+    }
+    return key == 'cancelled';
   }
 
   bool _matchesTab(Map<String, dynamic> d) => _matchesTabFor(d, _tab);
 
+  String _normalizeConcernKey(String raw) {
+    final value = raw.toLowerCase().trim();
+    if (value.isEmpty) return '';
+    if (value.contains('serious') ||
+        value.contains('major') ||
+        value.contains('grave')) {
+      return 'serious';
+    }
+    if (value.contains('basic') ||
+        value.contains('minor') ||
+        value.contains('moderate')) {
+      return 'basic';
+    }
+    return value;
+  }
+
   bool _matchesConcern(Map<String, dynamic> d) {
-    if (_concernFilter == 'All') return true;
-    final raw = _safeStr(
-      d['concern'] ?? d['concernType'] ?? d['reportedConcernType'],
-    ).toLowerCase().trim();
-    final want = _concernFilter.toLowerCase();
+    if (_concernFilter.isEmpty) return true;
+    final raw = _normalizeConcernKey(
+      _safeStr(d['concern'] ?? d['concernType'] ?? d['reportedConcernType']),
+    );
+    final want = _normalizeConcernKey(_concernFilter);
     return raw == want;
   }
 
@@ -378,16 +585,23 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
     final now = DateTime.now();
     final today = _dayOnly(now);
     final yesterday = today.subtract(const Duration(days: 1));
+    final tomorrow = today.add(const Duration(days: 1));
     final day = _dayOnly(dt);
 
     if (dateFilter == 'Today') return day == today;
     if (dateFilter == 'Yesterday') return day == yesterday;
+    if (dateFilter == 'Tomorrow') return day == tomorrow;
 
     if (dateFilter == 'This Week') {
       final weekday = today.weekday; // 1..7
       final weekStart = today.subtract(Duration(days: weekday - 1));
       final weekEnd = weekStart.add(const Duration(days: 7));
       return !day.isBefore(weekStart) && day.isBefore(weekEnd);
+    }
+
+    if (dateFilter == 'Next 7 Days') {
+      final end = today.add(const Duration(days: 7));
+      return !day.isBefore(today) && day.isBefore(end);
     }
 
     if (dateFilter == 'This Month') {
@@ -412,8 +626,7 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
   }
 
   List<QueryDocumentSnapshot<Map<String, dynamic>>> _filterDocs(
-    List<QueryDocumentSnapshot<Map<String, dynamic>>> raw,
-    String q, {
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> raw, {
     bool includeDateFilter = true,
     String? dateFilterOverride,
     Set<String>? allowedStudentUids,
@@ -427,17 +640,19 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
         }
       }
       if (!_matchesTab(d)) return false;
-      if (!_matchesSearch(d, q)) return false;
       if (_tab == _CaseTab.review && !_matchesConcern(d)) {
         return false;
       }
-      if (_tab == _CaseTab.unresolved || _tab == _CaseTab.resolved) {
+      if (_tab == _CaseTab.unresolved ||
+          _tab == _CaseTab.resolved ||
+          _tab == _CaseTab.cancelled) {
         if (!_matchesAction(d) || !_matchesMeeting(d)) return false;
       }
       if (includeDateFilter &&
           !_matchesDate(d, dateFilterOverride: dateFilterOverride)) {
         return false;
       }
+      if (!_matchesSearch(d)) return false;
       return true;
     }).toList();
 
@@ -453,19 +668,443 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
     return docs;
   }
 
-  void _clearFilters() {
-    _searchCtrl.clear();
-    _concernFilter = 'All';
-    _actionFilter = 'All';
-    _meetingFilter = 'All';
-    _dateFilter = 'All';
+  Widget _buildReviewConcernFilterBar() {
+    final allCount = _reviewInboxCount();
+    final basicCount = _reviewConcernCount('basic');
+    final seriousCount = _reviewConcernCount('serious');
+    const filterRadius = AppRadii.md;
+
+    Widget concernTab({required String value, required String label}) {
+      final selected = _concernFilter == value;
+      return InkWell(
+        borderRadius: BorderRadius.circular(filterRadius),
+        onTap: () {
+          if (_concernFilter == value) return;
+          setState(() {
+            _concernFilter = value;
+          });
+        },
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 160),
+          curve: Curves.easeOut,
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+          decoration: BoxDecoration(
+            color: selected
+                ? primaryColor.withValues(alpha: 0.12)
+                : Colors.white,
+            borderRadius: BorderRadius.circular(filterRadius),
+            border: Border.all(
+              color: selected
+                  ? primaryColor.withValues(alpha: 0.36)
+                  : Colors.black.withValues(alpha: 0.10),
+            ),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: selected ? primaryColor : textDark,
+              fontWeight: selected ? FontWeight.w900 : FontWeight.w700,
+              fontSize: 13,
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            concernTab(value: '', label: 'All ($allCount)'),
+            const SizedBox(width: 8),
+            concernTab(value: 'Basic', label: 'Basic ($basicCount)'),
+            const SizedBox(width: 8),
+            concernTab(value: 'Serious', label: 'Serious ($seriousCount)'),
+          ],
+        ),
+      ),
+    );
   }
 
-  bool _hasActiveFilters() {
-    return _searchCtrl.text.trim().isNotEmpty ||
-        _concernFilter != 'All' ||
-        _actionFilter != 'All' ||
-        _meetingFilter != 'All';
+  Widget _buildScheduledDateFilterBar() {
+    const options = <String>[
+      'Today',
+      'Tomorrow',
+      'This Week',
+      'Next 7 Days',
+      'All',
+    ];
+    const filterRadius = AppRadii.md;
+
+    Widget dateTab(String label) {
+      final selected = _scheduledDateFilter == label;
+      return InkWell(
+        borderRadius: BorderRadius.circular(filterRadius),
+        onTap: () {
+          if (_scheduledDateFilter == label) return;
+          setState(() => _scheduledDateFilter = label);
+        },
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 160),
+          curve: Curves.easeOut,
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+          decoration: BoxDecoration(
+            color: selected
+                ? primaryColor.withValues(alpha: 0.12)
+                : Colors.white,
+            borderRadius: BorderRadius.circular(filterRadius),
+            border: Border.all(
+              color: selected
+                  ? primaryColor.withValues(alpha: 0.36)
+                  : Colors.black.withValues(alpha: 0.10),
+            ),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: selected ? primaryColor : textDark,
+              fontWeight: selected ? FontWeight.w900 : FontWeight.w700,
+              fontSize: 13,
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (var i = 0; i < options.length; i++) ...[
+              dateTab(options[i]),
+              if (i != options.length - 1) const SizedBox(width: 8),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  int _reviewInboxCount() {
+    final allowedStudentUids = _departmentScopeCollegeId == null
+        ? null
+        : (_departmentStudentUids ?? <String>{});
+
+    var count = 0;
+    for (final doc in _latestRawCaseDocs) {
+      final data = doc.data();
+      if (allowedStudentUids != null) {
+        final studentUid = _safeStr(data['studentUid']);
+        if (studentUid.isEmpty || !allowedStudentUids.contains(studentUid)) {
+          continue;
+        }
+      }
+      if (_matchesTabFor(data, _CaseTab.review)) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  int _reviewConcernCount(String concernKey) {
+    final target = _normalizeConcernKey(concernKey);
+    final allowedStudentUids = _departmentScopeCollegeId == null
+        ? null
+        : (_departmentStudentUids ?? <String>{});
+
+    var count = 0;
+    for (final doc in _latestRawCaseDocs) {
+      final data = doc.data();
+      if (allowedStudentUids != null) {
+        final studentUid = _safeStr(data['studentUid']);
+        if (studentUid.isEmpty || !allowedStudentUids.contains(studentUid)) {
+          continue;
+        }
+      }
+      if (!_matchesTabFor(data, _CaseTab.review)) continue;
+      final concern = _normalizeConcernKey(
+        _safeStr(
+          data['concern'] ?? data['concernType'] ?? data['reportedConcernType'],
+        ),
+      );
+      if (concern == target) count++;
+    }
+    return count;
+  }
+
+  Widget _buildHandbookStyleSearchBar({Widget? compactTrailingAction}) {
+    final width = MediaQuery.sizeOf(context).width;
+    final isDesktop = width >= 1000;
+    final shouldConstrainWidth = width >= 900;
+    final constrainedWidth = width >= 1600
+        ? 640.0
+        : width >= 1300
+        ? 580.0
+        : 520.0;
+    final height = isDesktop ? 56.0 : 48.0;
+    final borderRadius = isDesktop ? 16.0 : 18.0;
+    final iconSize = isDesktop ? 24.0 : 22.0;
+    final fontSize = isDesktop ? 15.0 : 13.5;
+
+    final searchField = ValueListenableBuilder<TextEditingValue>(
+      valueListenable: _searchCtrl,
+      builder: (context, value, _) {
+        final hasText = value.text.trim().isNotEmpty;
+
+        return Container(
+          height: height,
+          padding: EdgeInsets.symmetric(horizontal: isDesktop ? 20 : 12),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.75),
+            borderRadius: BorderRadius.circular(borderRadius),
+            border: Border.all(color: Colors.black12),
+            boxShadow: isDesktop
+                ? [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.05),
+                      blurRadius: 10,
+                      offset: const Offset(0, 2),
+                    ),
+                  ]
+                : null,
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.search_rounded, color: hintColor, size: iconSize),
+              SizedBox(width: isDesktop ? 12 : 8),
+              Expanded(
+                child: TextField(
+                  controller: _searchCtrl,
+                  onChanged: _onSearchInputChanged,
+                  style: TextStyle(
+                    fontSize: fontSize,
+                    fontWeight: FontWeight.w600,
+                    color: textDark,
+                  ),
+                  decoration: InputDecoration(
+                    hintText: 'Search case, student, violation, date...',
+                    border: InputBorder.none,
+                    enabledBorder: InputBorder.none,
+                    focusedBorder: InputBorder.none,
+                    disabledBorder: InputBorder.none,
+                    filled: false,
+                    isDense: true,
+                    contentPadding: EdgeInsets.zero,
+                    hintStyle: TextStyle(
+                      color: hintColor,
+                      fontWeight: FontWeight.w600,
+                      fontSize: fontSize,
+                    ),
+                  ),
+                ),
+              ),
+              if (hasText)
+                IconButton(
+                  tooltip: 'Clear search',
+                  onPressed: _clearSearchQuery,
+                  icon: Icon(
+                    Icons.close_rounded,
+                    color: hintColor.withValues(alpha: 0.85),
+                    size: isDesktop ? 20 : 18,
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+
+    final refreshButton = Tooltip(
+      message: 'Refresh table',
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: _isRefreshingTable ? null : _refreshCurrentTable,
+        child: Container(
+          width: height,
+          height: height,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: Colors.white.withValues(alpha: 0.75),
+            border: Border.all(color: Colors.black12),
+            boxShadow: isDesktop
+                ? [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.05),
+                      blurRadius: 10,
+                      offset: const Offset(0, 2),
+                    ),
+                  ]
+                : null,
+          ),
+          child: _isRefreshingTable
+              ? SizedBox(
+                  width: isDesktop ? 18 : 16,
+                  height: isDesktop ? 18 : 16,
+                  child: const CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: hintColor,
+                  ),
+                )
+              : Icon(
+                  Icons.refresh_rounded,
+                  color: hintColor.withValues(alpha: 0.9),
+                  size: isDesktop ? 20 : 18,
+                ),
+        ),
+      ),
+    );
+
+    Widget searchWithRefresh() {
+      return Row(
+        children: [
+          Expanded(child: searchField),
+          const SizedBox(width: 8),
+          refreshButton,
+          if (!isDesktop && compactTrailingAction != null) ...[
+            const SizedBox(width: 8),
+            compactTrailingAction,
+          ],
+        ],
+      );
+    }
+
+    if (!shouldConstrainWidth) return searchWithRefresh();
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: SizedBox(width: constrainedWidth, child: searchWithRefresh()),
+    );
+  }
+
+  Widget? _buildFullHeaderActions({
+    required bool useCompactHeaderActions,
+  }) {
+    if (useCompactHeaderActions) return null;
+    if (widget.onOpenReportViolation == null &&
+        widget.onOpenCounselingReferral == null) {
+      return null;
+    }
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (widget.onOpenReportViolation != null) ...[
+          OutlinedButton.icon(
+            onPressed: widget.onOpenReportViolation,
+            style: OutlinedButton.styleFrom(
+              foregroundColor: primaryColor,
+              side: BorderSide(color: primaryColor.withValues(alpha: 0.35)),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+            ),
+            icon: const Icon(Icons.report_rounded, size: 20),
+            label: const Text(
+              'Report Violation',
+              style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14),
+            ),
+          ),
+          const SizedBox(width: 10),
+        ],
+        if (widget.onOpenCounselingReferral != null)
+          FilledButton.icon(
+            onPressed: widget.onOpenCounselingReferral,
+            style: FilledButton.styleFrom(
+              backgroundColor: primaryColor,
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+              elevation: 2,
+            ),
+            icon: const Icon(Icons.support_agent_rounded, size: 20),
+            label: const Text(
+              'Counselling Referral',
+              style: TextStyle(fontWeight: FontWeight.w900, fontSize: 15),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget? _buildCompactHeaderOptionsButton({
+    required bool useCompactHeaderActions,
+  }) {
+    if (!useCompactHeaderActions) return null;
+    if (widget.onOpenReportViolation == null &&
+        widget.onOpenCounselingReferral == null) {
+      return null;
+    }
+
+    return Tooltip(
+      message: 'More options',
+      child: Container(
+        width: 48,
+        height: 48,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: Colors.white.withValues(alpha: 0.75),
+          border: Border.all(color: Colors.black12),
+        ),
+        child: PopupMenuButton<String>(
+          tooltip: 'More options',
+          padding: EdgeInsets.zero,
+          icon: const Icon(
+            Icons.more_horiz_rounded,
+            color: hintColor,
+            size: 20,
+          ),
+          onSelected: (action) {
+            if (action == 'report_violation') {
+              widget.onOpenReportViolation?.call();
+              return;
+            }
+            if (action == 'counseling_referral') {
+              widget.onOpenCounselingReferral?.call();
+            }
+          },
+          itemBuilder: (context) {
+            final items = <PopupMenuEntry<String>>[];
+            if (widget.onOpenReportViolation != null) {
+              items.add(
+                const PopupMenuItem<String>(
+                  value: 'report_violation',
+                  child: Row(
+                    children: [
+                      Icon(Icons.report_rounded, size: 18),
+                      SizedBox(width: 10),
+                      Text('Report Violation'),
+                    ],
+                  ),
+                ),
+              );
+            }
+            if (widget.onOpenCounselingReferral != null) {
+              items.add(
+                const PopupMenuItem<String>(
+                  value: 'counseling_referral',
+                  child: Row(
+                    children: [
+                      Icon(Icons.support_agent_rounded, size: 18),
+                      SizedBox(width: 10),
+                      Text('Counselling Referral'),
+                    ],
+                  ),
+                ),
+              );
+            }
+            return items;
+          },
+        ),
+      ),
+    );
   }
 
   // -----------------------------
@@ -476,47 +1115,27 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final bool desktopWide = constraints.maxWidth >= 1100;
+        final bool useCompactHeaderActions = constraints.maxWidth < 760;
         final detailsPaneWidth = (constraints.maxWidth * 0.33)
             .clamp(320.0, 420.0)
             .toDouble();
-        final aiDesktopInset = desktopWide && _selectedCaseId != null
-            ? detailsPaneWidth + 16
-            : 0.0;
+        final compactHeaderOptions = _buildCompactHeaderOptionsButton(
+          useCompactHeaderActions: useCompactHeaderActions,
+        );
 
         return Scaffold(
           backgroundColor: bg,
-          floatingActionButton: Padding(
-            padding: EdgeInsets.only(right: aiDesktopInset),
-            child: FloatingActionButton(
-              heroTag: 'osa_violation_ai_fab',
-              onPressed: () => showOsaViolationAiAssistantSheet(context),
-              backgroundColor: primaryColor,
-              foregroundColor: Colors.white,
-              tooltip: 'Open OSA AI',
-              child: const Icon(Icons.analytics_rounded),
-            ),
-          ),
-          floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
           body: ModernTableLayout(
             detailsWidth: detailsPaneWidth,
-            detailsIncludeHeader: true,
             header: ModernTableHeader(
-              title: 'Violation Reviews',
-              subtitle: 'Monitor and review student conduct',
-              searchBar: TextField(
-                controller: _searchCtrl,
-                onChanged: (_) => setState(() {}),
-                decoration: InputDecoration(
-                  hintText: 'Search cases...',
-                  prefixIcon: const Icon(Icons.search, color: primaryColor),
-                  filled: true,
-                  fillColor: bg,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(AppRadii.md),
-                    borderSide: BorderSide.none,
-                  ),
-                  contentPadding: EdgeInsets.zero,
-                ),
+              showTitleSection: false,
+              showTopControlsWhenTitleHidden: true,
+              showSearchBar: true,
+              searchBar: _buildHandbookStyleSearchBar(
+                compactTrailingAction: compactHeaderOptions,
+              ),
+              action: _buildFullHeaderActions(
+                useCompactHeaderActions: useCompactHeaderActions,
               ),
               tabs: DefaultTabController(
                 length: _tabConfigs.length,
@@ -538,7 +1157,7 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
                               setState(() {
                                 _tab = newTab;
                                 _selectedCaseId = null;
-                                _concernFilter = 'All';
+                                _concernFilter = '';
                                 _actionFilter = 'All';
                                 _meetingFilter = 'All';
                               });
@@ -558,105 +1177,148 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
                   },
                 ),
               ),
-              filters: [
-                if (_hasActiveFilters()) ...[
-                  const SizedBox(width: 12),
-                  TextButton.icon(
-                    onPressed: () => setState(() => _clearFilters()),
-                    icon: const Icon(Icons.filter_list_off, size: 16),
-                    label: const Text('Clear Filters'),
-                  ),
-                ],
-              ],
+              filters: const [],
             ),
-            body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              stream: _svc.streamAllCases(),
-              builder: (context, snap) {
-                if (snap.hasError) {
-                  return Center(child: Text('Error: ${snap.error}'));
-                }
-                if (!snap.hasData) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-                if (_departmentScopeCollegeId != null &&
-                    _loadingDepartmentScope) {
-                  return const Center(child: CircularProgressIndicator());
-                }
+            body: Column(
+              children: [
+                if (_tab == _CaseTab.review)
+                  Container(
+                    width: double.infinity,
+                    color: bg,
+                    padding: const EdgeInsets.fromLTRB(20, 8, 20, 10),
+                    child: _buildReviewConcernFilterBar(),
+                  ),
+                if (_tab == _CaseTab.scheduled)
+                  Container(
+                    width: double.infinity,
+                    color: bg,
+                    padding: const EdgeInsets.fromLTRB(20, 8, 20, 10),
+                    child: _buildScheduledDateFilterBar(),
+                  ),
+                Expanded(
+                  child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                    stream: _svc.streamAllCases(),
+                    builder: (context, snap) {
+                      if (snap.hasError) {
+                        return Center(child: Text('Error: ${snap.error}'));
+                      }
+                      if (!snap.hasData) {
+                        return const Center(child: CircularProgressIndicator());
+                      }
+                      if (_departmentScopeCollegeId != null &&
+                          _loadingDepartmentScope) {
+                        return const Center(child: CircularProgressIndicator());
+                      }
 
-                final raw = snap.data!.docs;
-                final q = _searchCtrl.text;
-                final allowedStudentUids = _departmentScopeCollegeId == null
-                    ? null
-                    : (_departmentStudentUids ?? <String>{});
-                final docs = _filterDocs(
-                  raw,
-                  q,
-                  allowedStudentUids: allowedStudentUids,
-                );
-                _visibleCaseDocs.value = docs;
+                      final raw = snap.data!.docs;
+                      final allowedStudentUids =
+                          _departmentScopeCollegeId == null
+                          ? null
+                          : (_departmentStudentUids ?? <String>{});
+                      final docs = _filterDocs(
+                        raw,
+                        dateFilterOverride: _tab == _CaseTab.scheduled
+                            ? _scheduledDateFilter
+                            : 'All',
+                        allowedStudentUids: allowedStudentUids,
+                      );
+                      _tryApplyPendingExternalSelection(
+                        docs,
+                        context,
+                        mobile: constraints.maxWidth < 900,
+                      );
 
-                if (docs.isEmpty) {
-                  return Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(
-                          Icons.inbox_outlined,
-                          size: 64,
-                          color: Colors.grey[300],
-                        ),
-                        const SizedBox(height: 16),
-                        const Text(
-                          'No cases found',
-                          style: TextStyle(
-                            color: hintColor,
-                            fontWeight: FontWeight.bold,
+                      if (docs.isEmpty) {
+                        return Center(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                Icons.inbox_outlined,
+                                size: 64,
+                                color: Colors.grey[300],
+                              ),
+                              const SizedBox(height: 16),
+                              const Text(
+                                'No cases found',
+                                style: TextStyle(
+                                  color: hintColor,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
                           ),
-                        ),
-                      ],
-                    ),
-                  );
-                }
+                        );
+                      }
 
-                if (constraints.maxWidth >= 900) {
-                  return _buildDesktopTable(docs, config: _activeTabConfig);
-                }
+                      if (constraints.maxWidth >= 900) {
+                        return _buildDesktopTable(
+                          docs,
+                          config: _activeTabConfig,
+                        );
+                      }
 
-                return ListView.builder(
-                  padding: const EdgeInsets.all(14),
-                  itemCount: docs.length,
-                  itemBuilder: (context, i) {
-                    final doc = docs[i];
-                    final isSelected = _selectedCaseId == doc.id;
-                    return _buildCaseCard(
-                      doc.id,
-                      doc.data(),
-                      isSelected,
-                      desktopWide,
-                      () {
-                        if (desktopWide) {
-                          setState(() {
-                            _selectedCaseId = isSelected ? null : doc.id;
-                          });
-                        } else {
-                          _openDetailsPage(context, doc);
-                        }
-                      },
-                      'All',
-                    );
-                  },
-                );
-              },
+                      return ListView.builder(
+                        padding: const EdgeInsets.all(14),
+                        itemCount: docs.length,
+                        itemBuilder: (context, i) {
+                          final doc = docs[i];
+                          final isSelected = _selectedCaseId == doc.id;
+                          return _buildCaseCard(
+                            doc.id,
+                            doc.data(),
+                            isSelected,
+                            desktopWide,
+                            () {
+                              if (desktopWide) {
+                                setState(() {
+                                  _selectedCaseId = isSelected ? null : doc.id;
+                                });
+                              } else {
+                                setState(() {
+                                  _selectedCaseId = doc.id;
+                                });
+                                WidgetsBinding.instance.addPostFrameCallback((
+                                  _,
+                                ) {
+                                  if (!mounted) return;
+                                  _openDetailsPage(context, doc);
+                                });
+                              }
+                            },
+                            'All',
+                          );
+                        },
+                      );
+                    },
+                  ),
+                ),
+              ],
             ),
             showDetails: _selectedCaseId != null,
             details: _selectedCaseId != null
-                ? ValueListenableBuilder<
-                    List<QueryDocumentSnapshot<Map<String, dynamic>>>
-                  >(
-                    valueListenable: _visibleCaseDocs,
-                    builder: (context, docs, _) {
+                ? StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                    stream: _svc.streamAllCases(),
+                    builder: (context, snap) {
+                      if (snap.hasError || !snap.hasData) {
+                        return const SizedBox();
+                      }
+                      final allowedStudentUids =
+                          _departmentScopeCollegeId == null
+                          ? null
+                          : (_departmentStudentUids ?? <String>{});
+                      final scopedDocs = snap.data!.docs
+                          .where((doc) {
+                            if (allowedStudentUids == null) return true;
+                            final studentUid = _safeStr(
+                              doc.data()['studentUid'],
+                            );
+                            return studentUid.isNotEmpty &&
+                                allowedStudentUids.contains(studentUid);
+                          })
+                          .toList(growable: false);
                       QueryDocumentSnapshot<Map<String, dynamic>>? selectedDoc;
-                      for (final doc in docs) {
+                      for (final doc in scopedDocs) {
                         if (doc.id == _selectedCaseId) {
                           selectedDoc = doc;
                           break;
@@ -669,6 +1331,10 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
                         doc: selectedDoc,
                         bestDate: _bestDate,
                         onClose: () => setState(() => _selectedCaseId = null),
+                        onOpenCase: (nextDoc) {
+                          if (_selectedCaseId == nextDoc.id) return;
+                          setState(() => _selectedCaseId = nextDoc.id);
+                        },
                       );
                     },
                   )
@@ -688,18 +1354,29 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
     final isNeedsBooking = config.tab == _CaseTab.needsBooking;
     final rowHeight = isNeedsBooking ? 60.0 : 56.0;
     return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+      padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
       child: Container(
         width: double.infinity,
         decoration: BoxDecoration(
           color: Colors.white,
           borderRadius: BorderRadius.circular(AppRadii.xl),
+        ),
+        foregroundDecoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(AppRadii.xl),
           border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
         ),
+        clipBehavior: Clip.antiAlias,
         child: LayoutBuilder(
           builder: (context, constraints) {
             final tableWidth = constraints.maxWidth;
-            final tableColumnSpacing = isNeedsBooking ? 28.0 : 20.0;
+            final detailsOpen = _selectedCaseId != null;
+            final compactTable = detailsOpen || tableWidth < 1120;
+            final tableHorizontalMargin = compactTable ? 8.0 : 12.0;
+            final tableColumnSpacing = compactTable
+                ? 12.0
+                : (isNeedsBooking ? 24.0 : 18.0);
+            final columnCount =
+                5 + (showSeverityColumn ? 1 : 0) + (showMeetingColumn ? 1 : 0);
             final meetingWeight = config.tab == _CaseTab.scheduled ? 2.0 : 1.8;
             final totalWeight =
                 1.15 +
@@ -709,23 +1386,43 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
                 1.20 +
                 (showSeverityColumn ? 1.25 : 0.0) +
                 (showMeetingColumn ? meetingWeight : 0.0);
-            double colWidth(double weight, double minWidth) {
-              final value = tableWidth * (weight / totalWeight);
-              return value < minWidth ? minWidth : value;
+            final usableWidth =
+                (tableWidth -
+                        (tableHorizontalMargin * 2) -
+                        (tableColumnSpacing * (columnCount - 1)))
+                    .clamp(420.0, double.infinity)
+                    .toDouble();
+            double colWidth(
+              double weight,
+              double minWidth, {
+              double? compactMinWidth,
+            }) {
+              final value = usableWidth * (weight / totalWeight);
+              final effectiveMin = compactTable
+                  ? (compactMinWidth ?? minWidth)
+                  : minWidth;
+              return value < effectiveMin ? effectiveMin : value;
             }
 
-            final codeCellWidth = colWidth(1.15, 100);
-            final studentCellWidth = colWidth(2.35, 210);
-            final concernCellWidth = colWidth(1.55, 138);
-            final violationCellWidth = colWidth(2.35, 220);
-            final dateCellWidth = colWidth(1.20, 112);
+            final codeCellWidth = colWidth(1.15, 100, compactMinWidth: 82);
+            final studentCellWidth = colWidth(2.35, 210, compactMinWidth: 170);
+            final concernCellWidth = colWidth(1.55, 138, compactMinWidth: 100);
+            final violationCellWidth = colWidth(
+              2.35,
+              220,
+              compactMinWidth: 160,
+            );
+            final dateCellWidth = colWidth(1.20, 112, compactMinWidth: 92);
             final severityCellWidth = showSeverityColumn
-                ? colWidth(1.25, 120)
+                ? colWidth(1.25, 120, compactMinWidth: 100)
                 : 0.0;
             final meetingCellWidth = showMeetingColumn
                 ? colWidth(
                     meetingWeight,
                     config.tab == _CaseTab.scheduled ? 172 : 150,
+                    compactMinWidth: config.tab == _CaseTab.scheduled
+                        ? 126
+                        : 120,
                   )
                 : 0.0;
 
@@ -736,6 +1433,7 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
                 child: DataTable(
                   showCheckboxColumn: false,
                   headingRowColor: WidgetStateProperty.all(bg),
+                  horizontalMargin: tableHorizontalMargin,
                   columnSpacing: tableColumnSpacing,
                   dataRowMinHeight: rowHeight,
                   dataRowMaxHeight: rowHeight,
@@ -1005,17 +1703,37 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
 
   Widget _buildConcernPill(String concern) {
     final label = concern.isEmpty ? 'General' : _titleCase(concern);
+    final normalized = concern.trim().toLowerCase();
+    final isSerious = normalized.contains('serious');
+    final isBasic = normalized.contains('basic');
+
+    final fill = isSerious
+        ? Colors.orange.withValues(alpha: 0.10)
+        : isBasic
+        ? primaryColor.withValues(alpha: 0.10)
+        : Colors.black.withValues(alpha: 0.04);
+    final border = isSerious
+        ? Colors.orange.withValues(alpha: 0.30)
+        : isBasic
+        ? primaryColor.withValues(alpha: 0.25)
+        : Colors.black.withValues(alpha: 0.12);
+    final textColor = isSerious
+        ? Colors.orange.shade900
+        : isBasic
+        ? primaryColor
+        : hintColor;
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(
-        color: primaryColor.withValues(alpha: 0.10),
+        color: fill,
         borderRadius: BorderRadius.circular(AppRadii.xxl),
-        border: Border.all(color: primaryColor.withValues(alpha: 0.25)),
+        border: Border.all(color: border),
       ),
       child: Text(
         label,
-        style: const TextStyle(
-          color: primaryColor,
+        style: TextStyle(
+          color: textColor,
           fontSize: 10,
           fontWeight: FontWeight.w900,
           letterSpacing: 0.5,
@@ -1127,7 +1845,6 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
                 data['violationNameSnapshot'] ??
                 'Violation')
             .toString();
-    final status = (data['status'] ?? 'Submitted').toString();
     final date = _bestDate(data);
 
     return GestureDetector(
@@ -1162,15 +1879,23 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
                 children: [
                   Row(
                     children: [
-                      Text(
-                        caseCode,
-                        style: const TextStyle(
-                          fontWeight: FontWeight.w900,
-                          color: primaryColor,
+                      Expanded(
+                        child: Text(
+                          caseCode,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w900,
+                            color: primaryColor,
+                          ),
                         ),
                       ),
-                      const SizedBox(width: 8),
-                      _buildStatusBadge(status),
+                      if (date != null)
+                        Text(
+                          _TableRow._dynamicDateTextGlobal(date, dateFilter),
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: hintColor,
+                          ),
+                        ),
                     ],
                   ),
                   const SizedBox(height: 8),
@@ -1190,14 +1915,7 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
             ),
             Column(
               crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                if (date != null)
-                  Text(
-                    _TableRow._dynamicDateTextGlobal(date, dateFilter),
-                    style: const TextStyle(fontSize: 12, color: hintColor),
-                  ),
-                const Icon(Icons.chevron_right, color: Colors.grey),
-              ],
+              children: [const Icon(Icons.chevron_right, color: Colors.grey)],
             ),
           ],
         ),
@@ -1205,42 +1923,11 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
     );
   }
 
-  Widget _buildStatusBadge(String status) {
-    Color color = Colors.grey;
-    final s = status.toLowerCase();
-    if (s.contains('submitted')) {
-      color = Colors.blue;
-    } else if (s.contains('review')) {
-      color = Colors.orange;
-    } else if (s.contains('action')) {
-      color = Colors.purple;
-    } else if (s.contains('resolved')) {
-      color = Colors.green;
-    }
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(AppRadii.md),
-      ),
-      child: Text(
-        status.toUpperCase(),
-        style: TextStyle(
-          color: color,
-          fontSize: 10,
-          fontWeight: FontWeight.bold,
-          letterSpacing: 0.5,
-        ),
-      ),
-    );
-  }
-
-  void _openDetailsPage(
+  Future<void> _openDetailsPage(
     BuildContext context,
     QueryDocumentSnapshot<Map<String, dynamic>> doc,
-  ) {
-    showModalBottomSheet<void>(
+  ) async {
+    await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
@@ -1248,15 +1935,41 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(AppRadii.xxl)),
       ),
-      builder: (_) => SizedBox(
-        height: MediaQuery.of(context).size.height * 0.92,
-        child: _DetailsPanel(
-          doc: doc,
-          bestDate: _bestDate,
-          onClose: () => Navigator.of(context).pop(),
-        ),
-      ),
+      builder: (sheetContext) {
+        final media = MediaQuery.of(sheetContext);
+        final reservedTop = media.padding.top + kToolbarHeight + 8;
+        final modalHeight = (media.size.height - reservedTop)
+            .clamp(420.0, media.size.height * 0.92)
+            .toDouble();
+        return SafeArea(
+          top: false,
+          child: SizedBox(
+            height: modalHeight,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+              child: _DetailsPanel(
+                doc: doc,
+                bestDate: _bestDate,
+                onClose: () => Navigator.of(context).pop(),
+                onOpenCase: (nextDoc) {
+                  if (nextDoc.id == doc.id) return;
+                  Navigator.of(context).pop();
+                  Future<void>.microtask(() {
+                    if (!mounted) return;
+                    setState(() => _selectedCaseId = nextDoc.id);
+                    _openDetailsPage(this.context, nextDoc);
+                  });
+                },
+              ),
+            ),
+          ),
+        );
+      },
     );
+    if (!mounted) return;
+    if (_selectedCaseId == doc.id) {
+      setState(() => _selectedCaseId = null);
+    }
   }
 }
 
@@ -1322,14 +2035,22 @@ class _TableRow extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
             decoration: BoxDecoration(
               color: selected
-                  ? primaryColor.withValues(alpha: 0.10)
+                  ? primaryColor.withValues(alpha: 0.05)
                   : Colors.white,
               borderRadius: BorderRadius.circular(AppRadii.lg),
               border: Border.all(
                 color: selected
-                    ? primaryColor.withValues(alpha: 0.35)
-                    : Colors.black.withValues(alpha: 0.10),
+                    ? primaryColor
+                    : Colors.black.withValues(alpha: 0.05),
+                width: selected ? 2 : 1,
               ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.02),
+                  blurRadius: 10,
+                  offset: const Offset(0, 4),
+                ),
+              ],
             ),
             child: Row(
               children: [
@@ -1450,11 +2171,13 @@ class _DetailsPanel extends StatelessWidget {
   final QueryDocumentSnapshot<Map<String, dynamic>> doc;
   final DateTime? Function(Map<String, dynamic> d) bestDate;
   final VoidCallback? onClose;
+  final ValueChanged<QueryDocumentSnapshot<Map<String, dynamic>>>? onOpenCase;
 
   const _DetailsPanel({
     required this.doc,
     required this.bestDate,
     this.onClose,
+    this.onOpenCase,
   });
 
   @override
@@ -1469,6 +2192,7 @@ class _DetailsPanel extends StatelessWidget {
         ? '--'
         : _safeStr(d['studentNo']);
     final studentProgramFuture = _resolveStudentProgramLabel(d, studentUid);
+    final studentPhotoFuture = _resolveStudentPhotoUrl(studentUid);
     final caseCode = _safeStr(d['caseCode']).isEmpty
         ? 'No Code'
         : _safeStr(d['caseCode']);
@@ -1481,8 +2205,22 @@ class _DetailsPanel extends StatelessWidget {
           d['violationName'],
     );
     final category = _categoryLabelFromCaseGlobal(d);
+    final offenseFuture = _resolveOffenseIndicator(
+      studentUid: studentUid,
+      currentCaseId: doc.id,
+      currentCategory: category,
+    );
 
     final statusKey = _statusKey(_safeStr(d['status']));
+    final canCorrectCase = _canCorrectCaseStatusKey(statusKey);
+    final isCancelled = statusKey == 'cancelled';
+    final cancelledFromStatusKey = _statusKey(
+      _safeStr(d['cancelledFromStatus']),
+    );
+    final wasResolvedBeforeCancellation =
+        isCancelled &&
+        (cancelledFromStatusKey == 'resolved' ||
+            _globalTsToDate(d['resolvedAt']) != null);
     final isMonitor =
         statusKey == 'action set' ||
         statusKey == 'unresolved' ||
@@ -1494,6 +2232,14 @@ class _DetailsPanel extends StatelessWidget {
         meetingRequired &&
         (statusKey == 'action set' || statusKey == 'unresolved') &&
         effectiveMeetingStatus != 'completed';
+    final canCompleteMeetingFromMenu =
+        meetingRequired &&
+        effectiveMeetingStatus != 'completed' &&
+        statusKey != 'resolved';
+    final canCompleteMeetingInReviewMenu =
+        canCompleteMeetingFromMenu ||
+        statusKey == 'submitted' ||
+        statusKey == 'under review';
     final canRescheduleMeeting =
         meetingRequired &&
         (effectiveMeetingStatus == 'booking_missed' ||
@@ -1503,80 +2249,180 @@ class _DetailsPanel extends StatelessWidget {
         : 'Reopen booking window for this missed meeting attendance?';
 
     final dt = bestDate(d);
-    final dateText = _formatReportedAtSmartGlobal(dt);
+    final reportedAt =
+        _globalTsToDate(d['createdAt']) ??
+        _globalTsToDate(d['reportedAt']) ??
+        dt;
+    final incidentAt =
+        _globalTsToDate(d['incidentAt']) ??
+        _globalTsToDate(d['incidentDate']) ??
+        _globalTsToDate(d['dateOfIncident']);
+    final dateReportedText = _formatReportedAtSmartGlobal(reportedAt);
+    final dateOfIncidentText = incidentAt == null
+        ? '--'
+        : _formatReportedAtSmartGlobal(incidentAt);
 
     final reportedBy = _reportedByDisplay(d);
-    final reportedType = _safeStr(
-      d['reportedTypeNameSnapshot'] ?? d['violationNameSnapshot'],
-    );
-    final reportedCategory = _safeStr(
-      d['reportedCategoryNameSnapshot'] ?? d['categoryNameSnapshot'],
-    );
     final wasCorrectedByOsa = d['wasCorrectedByOsa'] == true;
-    final correctionReason = _safeStr(
-      (d['correction'] as Map<String, dynamic>?)?['latestReason'],
-    );
     final narrative = _safeStr(d['narrative'] ?? d['description']).isEmpty
         ? '--'
         : _safeStr(d['narrative'] ?? d['description']);
+    final evidenceUrls = _evidenceUrls(d);
+    final evidenceCount = evidenceUrls.length;
 
     final svc = ViolationCaseService();
 
     return Container(
-      color: const Color(0xFFF9FBF9),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(AppRadii.xl),
+        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.02),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
       child: Column(
         children: [
           Container(
-            padding: const EdgeInsets.fromLTRB(14, 14, 10, 10),
+            padding: const EdgeInsets.fromLTRB(14, 14, 10, 8),
             child: Row(
               children: [
                 const Expanded(
-                  child: Text(
-                    'Case Details',
-                    style: TextStyle(
-                      color: textDark,
-                      fontWeight: FontWeight.w900,
-                    ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.assignment_outlined,
+                        color: primaryColor,
+                        size: 20,
+                      ),
+                      SizedBox(width: 8),
+                      Text(
+                        'Case Details',
+                        style: TextStyle(
+                          color: primaryColor,
+                          fontWeight: FontWeight.w900,
+                          fontSize: 17,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
                 if (onClose != null)
                   IconButton(
                     onPressed: onClose,
-                    icon: const Icon(Icons.close_rounded),
+                    icon: const Icon(Icons.close_rounded, color: hintColor),
                   ),
               ],
             ),
           ),
+          const SizedBox(height: 8),
           const Divider(height: 1),
 
           Expanded(
             child: SingleChildScrollView(
-              padding: const EdgeInsets.all(14),
+              padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
               child: Column(
                 children: [
                   _DetailCard(
                     title: 'Student Information',
                     child: Row(
                       children: [
-                        Container(
-                          width: 46,
-                          height: 46,
-                          decoration: BoxDecoration(
-                            color: const Color(
-                              0xFF1B5E20,
-                            ).withValues(alpha: 0.12),
-                            borderRadius: BorderRadius.circular(AppRadii.md),
-                            border: Border.all(
-                              color: const Color(
-                                0xFF1B5E20,
-                              ).withValues(alpha: 0.25),
-                            ),
-                          ),
-                          child: const Icon(
-                            Icons.person_rounded,
-                            color: Color(0xFF1B5E20),
-                            size: 24,
-                          ),
+                        FutureBuilder<String>(
+                          future: studentPhotoFuture,
+                          initialData: '',
+                          builder: (context, snapshot) {
+                            final photoUrl = _safeStr(snapshot.data);
+                            return MouseRegion(
+                              cursor: photoUrl.isEmpty
+                                  ? SystemMouseCursors.basic
+                                  : SystemMouseCursors.click,
+                              child: GestureDetector(
+                                onTap: photoUrl.isEmpty
+                                    ? null
+                                    : () => _openProfilePhotoViewer(
+                                        context,
+                                        sourceUrl: photoUrl,
+                                        studentName: studentName,
+                                      ),
+                                child: Stack(
+                                  clipBehavior: Clip.none,
+                                  children: [
+                                    Container(
+                                      width: 46,
+                                      height: 46,
+                                      decoration: BoxDecoration(
+                                        color: const Color(
+                                          0xFF1B5E20,
+                                        ).withValues(alpha: 0.12),
+                                        borderRadius: BorderRadius.circular(
+                                          AppRadii.md,
+                                        ),
+                                        border: Border.all(
+                                          color: const Color(
+                                            0xFF1B5E20,
+                                          ).withValues(alpha: 0.25),
+                                        ),
+                                      ),
+                                      child: photoUrl.isEmpty
+                                          ? const Icon(
+                                              Icons.person_rounded,
+                                              color: Color(0xFF1B5E20),
+                                              size: 24,
+                                            )
+                                          : ClipRRect(
+                                              borderRadius:
+                                                  BorderRadius.circular(
+                                                    AppRadii.md - 1,
+                                                  ),
+                                              child: Image.network(
+                                                photoUrl,
+                                                fit: BoxFit.cover,
+                                                errorBuilder:
+                                                    (
+                                                      context,
+                                                      error,
+                                                      stackTrace,
+                                                    ) => const Icon(
+                                                      Icons.person_rounded,
+                                                      color: Color(0xFF1B5E20),
+                                                      size: 24,
+                                                    ),
+                                              ),
+                                            ),
+                                    ),
+                                    if (photoUrl.isNotEmpty)
+                                      Positioned(
+                                        right: -4,
+                                        bottom: -4,
+                                        child: Container(
+                                          width: 17,
+                                          height: 17,
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xFF1B5E20),
+                                            borderRadius: BorderRadius.circular(
+                                              AppRadii.pill,
+                                            ),
+                                            border: Border.all(
+                                              color: Colors.white,
+                                              width: 1.3,
+                                            ),
+                                          ),
+                                          child: const Icon(
+                                            Icons.open_in_full_rounded,
+                                            color: Colors.white,
+                                            size: 10,
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
                         ),
                         const SizedBox(width: 12),
                         Expanded(
@@ -1626,6 +2472,55 @@ class _DetailsPanel extends StatelessWidget {
                   const SizedBox(height: 12),
                   _DetailCard(
                     title: 'Incident Summary',
+                    titleTrailing: isCancelled
+                        ? null
+                        : FutureBuilder<_OffenseIndicator>(
+                            future: offenseFuture,
+                            initialData: const _OffenseIndicator(
+                              label: '--',
+                              subtitle: '',
+                              offenseNumber: 0,
+                            ),
+                            builder: (context, snapshot) {
+                              final indicator =
+                                  snapshot.data ??
+                                  const _OffenseIndicator(
+                                    label: '--',
+                                    subtitle: '',
+                                    offenseNumber: 0,
+                                  );
+                              final isRepeat = indicator.offenseNumber >= 2;
+                              return Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 4,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: isRepeat
+                                      ? Colors.orange.withValues(alpha: 0.12)
+                                      : primaryColor.withValues(alpha: 0.10),
+                                  borderRadius: BorderRadius.circular(
+                                    AppRadii.pill,
+                                  ),
+                                  border: Border.all(
+                                    color: isRepeat
+                                        ? Colors.orange.withValues(alpha: 0.35)
+                                        : primaryColor.withValues(alpha: 0.28),
+                                  ),
+                                ),
+                                child: Text(
+                                  indicator.label,
+                                  style: TextStyle(
+                                    color: isRepeat
+                                        ? Colors.orange.shade800
+                                        : primaryColor,
+                                    fontWeight: FontWeight.w900,
+                                    fontSize: 11.5,
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
                     child: Column(
                       children: [
                         _kv(
@@ -1640,38 +2535,23 @@ class _DetailsPanel extends StatelessWidget {
                           violation.isEmpty ? '--' : violation,
                         ),
                         const SizedBox(height: 8),
-                        _kv('Date Reported', dateText),
+                        _kv('Date Reported', dateReportedText),
+                        const SizedBox(height: 8),
+                        _kv('Date of Incident', dateOfIncidentText),
                         const SizedBox(height: 8),
                         _kv('Reported By', reportedBy),
                         const SizedBox(height: 8),
                         _kv('Case Code', caseCode),
+                        if (wasCorrectedByOsa) ...[
+                          const SizedBox(height: 8),
+                          _kv(
+                            'OSA Correction',
+                            'Corrected by OSA (see Case Logs).',
+                          ),
+                        ],
                       ],
                     ),
                   ),
-                  if (wasCorrectedByOsa) ...[
-                    const SizedBox(height: 12),
-                    _DetailCard(
-                      title: 'OSA Correction',
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          _kv(
-                            'Original',
-                            '${reportedCategory.isEmpty ? '--' : reportedCategory} / ${reportedType.isEmpty ? '--' : reportedType}',
-                          ),
-                          const SizedBox(height: 8),
-                          _kv(
-                            'Current',
-                            '${category.isEmpty ? '--' : category} / ${violation.isEmpty ? '--' : violation}',
-                          ),
-                          if (correctionReason.isNotEmpty) ...[
-                            const SizedBox(height: 8),
-                            _kv('Reason', correctionReason),
-                          ],
-                        ],
-                      ),
-                    ),
-                  ],
                   const SizedBox(height: 12),
                   _DetailCard(
                     title: 'Incident Description',
@@ -1698,8 +2578,8 @@ class _DetailsPanel extends StatelessWidget {
                   ),
                   const SizedBox(height: 12),
                   _DetailCard(
-                    title: 'Evidence',
-                    child: _EvidencePlaceholders(urls: _evidenceUrls(d)),
+                    title: 'Evidence ($evidenceCount)',
+                    child: _EvidencePlaceholders(urls: evidenceUrls),
                   ),
                   if (_safeStr(d['finalSeverity']).isNotEmpty &&
                       !hideSeverityForNeedsBooking) ...[
@@ -1736,11 +2616,53 @@ class _DetailsPanel extends StatelessWidget {
 
                   const SizedBox(height: 12),
                   _DetailCard(
-                    title: 'Student Case History',
-                    child: _StudentHistorySection(
-                      studentUid: studentUid,
-                      currentCaseId: doc.id,
-                      currentViolationType: violation,
+                    title: isCancelled
+                        ? 'Active Case History'
+                        : 'Student Case History',
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Padding(
+                          padding: EdgeInsets.only(bottom: 10),
+                          child: Text(
+                            'Offense history is grouped by category and excludes cancelled cases.',
+                            style: TextStyle(
+                              color: hintColor,
+                              fontWeight: FontWeight.w700,
+                              fontSize: 11.8,
+                            ),
+                          ),
+                        ),
+                        if (isCancelled)
+                          Container(
+                            width: double.infinity,
+                            margin: const EdgeInsets.only(bottom: 10),
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              color: primaryColor.withValues(alpha: 0.08),
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(
+                                color: primaryColor.withValues(alpha: 0.18),
+                              ),
+                            ),
+                            child: const Text(
+                              'This case is cancelled and excluded from offense progression.',
+                              style: TextStyle(
+                                color: primaryColor,
+                                fontWeight: FontWeight.w800,
+                                fontSize: 12.4,
+                              ),
+                            ),
+                          ),
+                        _StudentHistorySection(
+                          studentUid: studentUid,
+                          currentCaseId: doc.id,
+                          currentViolationType: violation,
+                          currentCategory: category,
+                          onOpenCase: onOpenCase,
+                          showCurrentOffenseSummary: !isCancelled,
+                        ),
+                      ],
                     ),
                   ),
                   const SizedBox(height: 72),
@@ -1750,17 +2672,13 @@ class _DetailsPanel extends StatelessWidget {
           ),
 
           Container(
-            padding: const EdgeInsets.all(14),
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
             decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: const BorderRadius.vertical(
-                bottom: Radius.circular(18),
-              ),
               border: Border(
                 top: BorderSide(color: Colors.black.withValues(alpha: 0.08)),
               ),
             ),
-            child: !isMonitor
+            child: (!isMonitor && !isCancelled)
                 ? Row(
                     children: [
                       Expanded(
@@ -1781,91 +2699,571 @@ class _DetailsPanel extends StatelessWidget {
                                 svc: svc,
                               ),
                             );
-                            if (changed == true && onClose != null) {
-                              // stream handles refresh
+                            if (changed == true) {
+                              _showInlineNotice(
+                                context,
+                                message: 'Action set successfully.',
+                                tone: _InlineNoticeTone.success,
+                              );
+                              onClose?.call();
                             }
                           },
                         ),
                       ),
                       const SizedBox(width: 10),
-                      Expanded(
-                        child: _ActionBtn(
-                          label: 'Correct Report',
-                          fill: Colors.white,
-                          textColor: primaryColor,
-                          borderColor: primaryColor.withValues(alpha: 0.30),
-                          onTap: () async {
+                      PopupMenuButton<_ReviewMoreAction>(
+                        tooltip: 'More actions',
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(AppRadii.md),
+                        ),
+                        color: Colors.white,
+                        onSelected: (action) async {
+                          if (action == _ReviewMoreAction.viewCaseLogs) {
+                            showDialog<void>(
+                              context: context,
+                              builder: (_) =>
+                                  _CaseLogsDialog(caseId: doc.id, caseData: d),
+                            );
+                            return;
+                          }
+                          if (action == _ReviewMoreAction.correctCase) {
+                            if (!canCorrectCase) {
+                              _showInlineNotice(
+                                context,
+                                message:
+                                    'Correction is not allowed for this case status.',
+                                tone: _InlineNoticeTone.warning,
+                              );
+                              return;
+                            }
                             final changed = await showDialog<bool>(
                               context: context,
                               builder: (c) =>
                                   _CorrectViolationDialog(doc: doc, svc: svc),
                             );
-                            if (changed == true && onClose != null) {
-                              // stream handles refresh
+                            if (changed == true) {
+                              _showInlineNotice(
+                                context,
+                                message: 'Case corrected successfully.',
+                                tone: _InlineNoticeTone.success,
+                              );
+                              if (onClose != null) {
+                                // stream handles refresh
+                              }
+                            }
+                            return;
+                          }
+                          if (action == _ReviewMoreAction.completeMeeting) {
+                            final saved = await showDialog<bool>(
+                              context: context,
+                              builder: (c) => _CompleteMeetingDialog(
+                                caseId: doc.id,
+                                svc: svc,
+                              ),
+                            );
+                            if (saved == true) {
+                              _showInlineNotice(
+                                context,
+                                message: 'Meeting completed.',
+                                tone: _InlineNoticeTone.success,
+                              );
+                              onClose?.call();
+                            }
+                            return;
+                          }
+                          final changed = await showDialog<bool>(
+                            context: context,
+                            builder: (c) => _CancelViolationDialog(
+                              doc: doc,
+                              svc: svc,
+                              asCaseCancellation: true,
+                            ),
+                          );
+                          if (changed == true) {
+                            _showInlineNotice(
+                              context,
+                              message: 'Case cancelled.',
+                              tone: _InlineNoticeTone.success,
+                            );
+                            onClose?.call();
+                          }
+                        },
+                        itemBuilder: (_) => [
+                          const PopupMenuItem<_ReviewMoreAction>(
+                            value: _ReviewMoreAction.viewCaseLogs,
+                            child: ListTile(
+                              dense: true,
+                              contentPadding: EdgeInsets.zero,
+                              leading: Icon(
+                                Icons.history_rounded,
+                                color: primaryColor,
+                              ),
+                              title: Text('Case Logs'),
+                            ),
+                          ),
+                          if (canCorrectCase)
+                            const PopupMenuItem<_ReviewMoreAction>(
+                              value: _ReviewMoreAction.correctCase,
+                              child: ListTile(
+                                dense: true,
+                                contentPadding: EdgeInsets.zero,
+                                leading: Icon(
+                                  Icons.edit_note_rounded,
+                                  color: primaryColor,
+                                ),
+                                title: Text('Correct Case'),
+                              ),
+                            ),
+                          const PopupMenuItem<_ReviewMoreAction>(
+                            value: _ReviewMoreAction.cancelCase,
+                            child: ListTile(
+                              dense: true,
+                              contentPadding: EdgeInsets.zero,
+                              leading: Icon(
+                                Icons.cancel_outlined,
+                                color: Colors.redAccent,
+                              ),
+                              title: Text('Cancel Case'),
+                            ),
+                          ),
+                          if (canCompleteMeetingInReviewMenu)
+                            const PopupMenuItem<_ReviewMoreAction>(
+                              value: _ReviewMoreAction.completeMeeting,
+                              child: ListTile(
+                                dense: true,
+                                contentPadding: EdgeInsets.zero,
+                                leading: Icon(
+                                  Icons.task_alt_rounded,
+                                  color: primaryColor,
+                                ),
+                                title: Text('Complete Meeting'),
+                              ),
+                            ),
+                        ],
+                        child: Container(
+                          height: 44,
+                          width: 44,
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(AppRadii.md),
+                            border: Border.all(
+                              color: primaryColor.withValues(alpha: 0.30),
+                            ),
+                          ),
+                          child: const Icon(
+                            Icons.more_vert_rounded,
+                            color: primaryColor,
+                          ),
+                        ),
+                      ),
+                    ],
+                  )
+                : isCancelled
+                ? Row(
+                    children: [
+                      Expanded(
+                        child: _ActionBtn(
+                          label: wasResolvedBeforeCancellation
+                              ? 'Reopen'
+                              : 'Reopen + Set Action',
+                          fill: primaryColor,
+                          textColor: Colors.white,
+                          borderColor: primaryColor,
+                          onTap: () async {
+                            final changed = await showDialog<bool>(
+                              context: context,
+                              builder: (c) => wasResolvedBeforeCancellation
+                                  ? _ReopenCancelledCaseDialog(
+                                      doc: doc,
+                                      svc: svc,
+                                    )
+                                  : _AssignActionDialog(
+                                      doc: doc,
+                                      currentSeverity: _safeStr(
+                                        d['finalSeverity'] ?? d['concern'],
+                                      ),
+                                      currentAction: _actionKey(d),
+                                      svc: svc,
+                                    ),
+                            );
+                            if (changed == true) {
+                              _showInlineNotice(
+                                context,
+                                message: wasResolvedBeforeCancellation
+                                    ? 'Case reopened and returned to Resolved.'
+                                    : 'Case reopened and action applied.',
+                                tone: _InlineNoticeTone.success,
+                              );
+                              if (onClose != null) {
+                                onClose!();
+                              }
                             }
                           },
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      PopupMenuButton<_MonitorMoreAction>(
+                        tooltip: 'Options',
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(AppRadii.md),
+                        ),
+                        color: Colors.white,
+                        onSelected: (action) async {
+                          if (action == _MonitorMoreAction.viewCaseLogs) {
+                            showDialog<void>(
+                              context: context,
+                              builder: (_) =>
+                                  _CaseLogsDialog(caseId: doc.id, caseData: d),
+                            );
+                            return;
+                          }
+                          if (action == _MonitorMoreAction.correctCase) {
+                            if (!canCorrectCase) {
+                              _showInlineNotice(
+                                context,
+                                message:
+                                    'Correction is not allowed for this case status.',
+                                tone: _InlineNoticeTone.warning,
+                              );
+                              return;
+                            }
+                            final changed = await showDialog<bool>(
+                              context: context,
+                              builder: (c) =>
+                                  _CorrectViolationDialog(doc: doc, svc: svc),
+                            );
+                            if (changed == true) {
+                              _showInlineNotice(
+                                context,
+                                message: 'Case corrected successfully.',
+                                tone: _InlineNoticeTone.success,
+                              );
+                              if (onClose != null) {
+                                // stream handles refresh
+                              }
+                            }
+                            return;
+                          }
+                          if (action == _MonitorMoreAction.completeMeeting) {
+                            final saved = await showDialog<bool>(
+                              context: context,
+                              builder: (c) => _CompleteMeetingDialog(
+                                caseId: doc.id,
+                                svc: svc,
+                              ),
+                            );
+                            if (saved == true) {
+                              _showInlineNotice(
+                                context,
+                                message: 'Meeting completed.',
+                                tone: _InlineNoticeTone.success,
+                              );
+                              onClose?.call();
+                            }
+                            return;
+                          }
+                          if (action == _MonitorMoreAction.cancelCase) {
+                            final changed = await showDialog<bool>(
+                              context: context,
+                              builder: (c) => _CancelViolationDialog(
+                                doc: doc,
+                                svc: svc,
+                                asCaseCancellation: true,
+                              ),
+                            );
+                            if (changed == true) {
+                              _showInlineNotice(
+                                context,
+                                message: 'Case cancelled.',
+                                tone: _InlineNoticeTone.success,
+                              );
+                              onClose?.call();
+                            }
+                          }
+                        },
+                        itemBuilder: (_) => [
+                          const PopupMenuItem<_MonitorMoreAction>(
+                            value: _MonitorMoreAction.viewCaseLogs,
+                            child: ListTile(
+                              dense: true,
+                              contentPadding: EdgeInsets.zero,
+                              leading: Icon(
+                                Icons.history_rounded,
+                                color: primaryColor,
+                              ),
+                              title: Text('Case Logs'),
+                            ),
+                          ),
+                          if (canCorrectCase)
+                            const PopupMenuItem<_MonitorMoreAction>(
+                              value: _MonitorMoreAction.correctCase,
+                              child: ListTile(
+                                dense: true,
+                                contentPadding: EdgeInsets.zero,
+                                leading: Icon(
+                                  Icons.edit_note_rounded,
+                                  color: primaryColor,
+                                ),
+                                title: Text('Correct Case'),
+                              ),
+                            ),
+                          if (canCompleteMeetingFromMenu)
+                            const PopupMenuItem<_MonitorMoreAction>(
+                              value: _MonitorMoreAction.completeMeeting,
+                              child: ListTile(
+                                dense: true,
+                                contentPadding: EdgeInsets.zero,
+                                leading: Icon(
+                                  Icons.task_alt_rounded,
+                                  color: primaryColor,
+                                ),
+                                title: Text('Complete Meeting'),
+                              ),
+                            ),
+                          if (statusKey == 'resolved')
+                            const PopupMenuItem<_MonitorMoreAction>(
+                              value: _MonitorMoreAction.cancelCase,
+                              child: ListTile(
+                                dense: true,
+                                contentPadding: EdgeInsets.zero,
+                                leading: Icon(
+                                  Icons.cancel_outlined,
+                                  color: Colors.redAccent,
+                                ),
+                                title: Text('Cancel Case'),
+                              ),
+                            ),
+                        ],
+                        child: Container(
+                          height: 44,
+                          width: 44,
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(AppRadii.md),
+                            border: Border.all(
+                              color: primaryColor.withValues(alpha: 0.30),
+                            ),
+                          ),
+                          child: const Icon(
+                            Icons.more_vert_rounded,
+                            color: primaryColor,
+                          ),
                         ),
                       ),
                     ],
                   )
                 : Row(
                     children: [
-                      if (canCompleteMeeting)
+                      if (statusKey == 'resolved') ...[
                         Expanded(
                           child: _ActionBtn(
-                            label: 'Complete Meeting',
-                            fill: primaryColor,
-                            textColor: Colors.white,
-                            borderColor: primaryColor,
-                            onTap: () async {
-                              final saved = await showDialog<bool>(
-                                context: context,
-                                builder: (c) => _CompleteMeetingDialog(
-                                  caseId: doc.id,
-                                  svc: svc,
-                                ),
-                              );
-                              if (saved == true && onClose != null) {
-                                // keep open; stream refreshes
-                              }
-                            },
-                          ),
-                        ),
-                      if (canCompleteMeeting && canRescheduleMeeting)
-                        const SizedBox(width: 10),
-                      if (canRescheduleMeeting)
-                        Expanded(
-                          child: _ActionBtn(
-                            label: 'Reschedule',
+                            label: 'Case Logs',
                             fill: Colors.white,
                             textColor: primaryColor,
                             borderColor: primaryColor.withValues(alpha: 0.35),
-                            onTap: () async {
-                              final confirm = await showDialog<bool>(
+                            onTap: () {
+                              showDialog<void>(
                                 context: context,
-                                builder: (c) => AlertDialog(
-                                  title: const Text('Reschedule meeting?'),
-                                  content: Text(reschedulePrompt),
-                                  actions: [
-                                    TextButton(
-                                      onPressed: () => Navigator.pop(c, false),
-                                      child: const Text('Cancel'),
-                                    ),
-                                    TextButton(
-                                      onPressed: () => Navigator.pop(c, true),
-                                      child: const Text('Reschedule'),
-                                    ),
-                                  ],
+                                builder: (_) => _CaseLogsDialog(
+                                  caseId: doc.id,
+                                  caseData: d,
                                 ),
                               );
-                              if (confirm == true) {
-                                await svc.rescheduleMissedMeeting(
-                                  caseId: doc.id,
-                                );
-                              }
                             },
                           ),
                         ),
+                        const SizedBox(width: 10),
+                      ] else ...[
+                        if (canCompleteMeeting)
+                          Expanded(
+                            child: _ActionBtn(
+                              label: 'Complete Meeting',
+                              fill: primaryColor,
+                              textColor: Colors.white,
+                              borderColor: primaryColor,
+                              onTap: () async {
+                                final saved = await showDialog<bool>(
+                                  context: context,
+                                  builder: (c) => _CompleteMeetingDialog(
+                                    caseId: doc.id,
+                                    svc: svc,
+                                  ),
+                                );
+                                if (saved == true) {
+                                  _showInlineNotice(
+                                    context,
+                                    message: 'Meeting completed.',
+                                    tone: _InlineNoticeTone.success,
+                                  );
+                                  onClose?.call();
+                                }
+                              },
+                            ),
+                          ),
+                        if (canCompleteMeeting && canRescheduleMeeting)
+                          const SizedBox(width: 10),
+                        if (canRescheduleMeeting)
+                          Expanded(
+                            child: _ActionBtn(
+                              label: 'Reschedule',
+                              fill: Colors.white,
+                              textColor: primaryColor,
+                              borderColor: primaryColor.withValues(alpha: 0.35),
+                              onTap: () async {
+                                final confirm = await showDialog<bool>(
+                                  context: context,
+                                  builder: (c) => AlertDialog(
+                                    title: const Text('Reschedule meeting?'),
+                                    content: Text(reschedulePrompt),
+                                    actions: [
+                                      TextButton(
+                                        onPressed: () =>
+                                            Navigator.pop(c, false),
+                                        child: const Text('Cancel'),
+                                      ),
+                                      TextButton(
+                                        onPressed: () => Navigator.pop(c, true),
+                                        child: const Text('Reschedule'),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                                if (confirm == true) {
+                                  await svc.rescheduleMissedMeeting(
+                                    caseId: doc.id,
+                                  );
+                                  if (!context.mounted) return;
+                                  _showInlineNotice(
+                                    context,
+                                    message: 'Meeting rescheduled.',
+                                    tone: _InlineNoticeTone.success,
+                                  );
+                                  onClose?.call();
+                                }
+                              },
+                            ),
+                          ),
+                        if (canCompleteMeeting || canRescheduleMeeting)
+                          const SizedBox(width: 10),
+                      ],
+                      PopupMenuButton<_MonitorMoreAction>(
+                        tooltip: 'Options',
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(AppRadii.md),
+                        ),
+                        color: Colors.white,
+                        onSelected: (action) async {
+                          if (action == _MonitorMoreAction.viewCaseLogs) {
+                            showDialog<void>(
+                              context: context,
+                              builder: (_) =>
+                                  _CaseLogsDialog(caseId: doc.id, caseData: d),
+                            );
+                            return;
+                          }
+                          if (action == _MonitorMoreAction.correctCase) {
+                            if (!canCorrectCase) {
+                              _showInlineNotice(
+                                context,
+                                message:
+                                    'Correction is not allowed for this case status.',
+                                tone: _InlineNoticeTone.warning,
+                              );
+                              return;
+                            }
+                            final changed = await showDialog<bool>(
+                              context: context,
+                              builder: (c) =>
+                                  _CorrectViolationDialog(doc: doc, svc: svc),
+                            );
+                            if (changed == true) {
+                              _showInlineNotice(
+                                context,
+                                message: 'Case corrected successfully.',
+                                tone: _InlineNoticeTone.success,
+                              );
+                              if (onClose != null) {
+                                // keep open; stream refreshes automatically
+                              }
+                            }
+                            return;
+                          }
+                          if (action == _MonitorMoreAction.cancelCase) {
+                            final changed = await showDialog<bool>(
+                              context: context,
+                              builder: (c) => _CancelViolationDialog(
+                                doc: doc,
+                                svc: svc,
+                                asCaseCancellation: true,
+                              ),
+                            );
+                            if (changed == true) {
+                              _showInlineNotice(
+                                context,
+                                message: 'Case cancelled.',
+                                tone: _InlineNoticeTone.success,
+                              );
+                              onClose?.call();
+                            }
+                          }
+                        },
+                        itemBuilder: (_) => [
+                          if (statusKey != 'resolved')
+                            const PopupMenuItem<_MonitorMoreAction>(
+                              value: _MonitorMoreAction.viewCaseLogs,
+                              child: ListTile(
+                                dense: true,
+                                contentPadding: EdgeInsets.zero,
+                                leading: Icon(
+                                  Icons.history_rounded,
+                                  color: primaryColor,
+                                ),
+                                title: Text('Case Logs'),
+                              ),
+                            ),
+                          if (canCorrectCase)
+                            const PopupMenuItem<_MonitorMoreAction>(
+                              value: _MonitorMoreAction.correctCase,
+                              child: ListTile(
+                                dense: true,
+                                contentPadding: EdgeInsets.zero,
+                                leading: Icon(
+                                  Icons.edit_note_rounded,
+                                  color: primaryColor,
+                                ),
+                                title: Text('Correct Case'),
+                              ),
+                            ),
+                          if (statusKey != 'cancelled')
+                            const PopupMenuItem<_MonitorMoreAction>(
+                              value: _MonitorMoreAction.cancelCase,
+                              child: ListTile(
+                                dense: true,
+                                contentPadding: EdgeInsets.zero,
+                                leading: Icon(
+                                  Icons.cancel_outlined,
+                                  color: Colors.redAccent,
+                                ),
+                                title: Text('Cancel Case'),
+                              ),
+                            ),
+                        ],
+                        child: Container(
+                          height: 44,
+                          width: 44,
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(AppRadii.md),
+                            border: Border.all(
+                              color: primaryColor.withValues(alpha: 0.30),
+                            ),
+                          ),
+                          child: const Icon(
+                            Icons.more_vert_rounded,
+                            color: primaryColor,
+                          ),
+                        ),
+                      ),
                     ],
                   ),
           ),
@@ -1914,11 +3312,11 @@ class _MeetingDetailsInfo extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheduledAt = _globalTsToDate(data['scheduledAt']);
+    final isResolvedCase = _statusKey(_safeStr(data['status'])) == 'resolved';
     final meetingLocation = _safeStr(data['meetingLocation']);
     final meetingNotes = _safeStr(data['meetingNotes']);
     final facultyNote = _safeStr(data['meetingFacultyNote']);
     final completedAt = _globalTsToDate(data['meetingCompletedAt']);
-    final history = _meetingHistoryEntries(data);
     final meetingType = _meetingTypeLabelForDisplay(data);
     final meetingStatus = _meetingStatusChipTextGlobal(data);
 
@@ -1934,7 +3332,12 @@ class _MeetingDetailsInfo extends StatelessWidget {
           const SizedBox(height: 8),
         ],
         if (scheduledAt != null) ...[
-          _meetingInfoCard('Scheduled At', _fmtMeetingDateTime(scheduledAt)),
+          isResolvedCase
+              ? _meetingKv('Scheduled At', _fmtMeetingDateTime(scheduledAt))
+              : _meetingInfoCard(
+                  'Scheduled At',
+                  _fmtMeetingDateTime(scheduledAt),
+                ),
         ],
         if (completedAt != null) ...[
           const SizedBox(height: 8),
@@ -1951,71 +3354,6 @@ class _MeetingDetailsInfo extends StatelessWidget {
         if (facultyNote.isNotEmpty) ...[
           const SizedBox(height: 10),
           _meetingTextBlock('Faculty Note', facultyNote),
-        ],
-        if (history.isNotEmpty) ...[
-          const SizedBox(height: 10),
-          const Text(
-            'Meeting History',
-            style: TextStyle(
-              color: hintColor,
-              fontWeight: FontWeight.w900,
-              fontSize: 12,
-              letterSpacing: 0.3,
-            ),
-          ),
-          const SizedBox(height: 8),
-          ...history.take(5).map((item) {
-            final at = _globalTsToDate(item['recordedAt']);
-            final status = _safeStr(item['previousMeetingStatus']);
-            final reason = _safeStr(item['reason']);
-            final prevSchedule = _globalTsToDate(item['previousScheduledAt']);
-            final statusText = status.isEmpty
-                ? 'Missed meeting'
-                : _titleCase(status);
-            final scheduleText = prevSchedule == null
-                ? ''
-                : ' (${_fmtMeetingDateTime(prevSchedule)})';
-            return Container(
-              margin: const EdgeInsets.only(bottom: 6),
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.03),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.black.withValues(alpha: 0.07)),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    '$statusText$scheduleText',
-                    style: const TextStyle(
-                      color: textDark,
-                      fontWeight: FontWeight.w800,
-                      fontSize: 12,
-                    ),
-                  ),
-                  if (at != null)
-                    Text(
-                      _fmtMeetingDateTime(at),
-                      style: const TextStyle(
-                        color: hintColor,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 11.3,
-                      ),
-                    ),
-                  if (reason.isNotEmpty)
-                    Text(
-                      reason,
-                      style: const TextStyle(
-                        color: hintColor,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 11.3,
-                      ),
-                    ),
-                ],
-              ),
-            );
-          }),
         ],
       ],
     );
@@ -2135,6 +3473,1056 @@ class _MeetingDetailsInfo extends StatelessWidget {
   }
 }
 
+class _CaseLogsDialog extends StatelessWidget {
+  final String caseId;
+  final Map<String, dynamic> caseData;
+
+  const _CaseLogsDialog({required this.caseId, required this.caseData});
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: bg,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      titlePadding: const EdgeInsets.fromLTRB(24, 18, 12, 0),
+      title: Row(
+        children: [
+          const Expanded(
+            child: Text(
+              'Case Logs',
+              style: TextStyle(
+                color: primaryColor,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ),
+          IconButton(
+            onPressed: () => Navigator.pop(context),
+            tooltip: 'Close',
+            icon: const Icon(Icons.close_rounded, color: hintColor),
+            style: IconButton.styleFrom(
+              backgroundColor: Colors.black.withValues(alpha: 0.06),
+            ),
+          ),
+        ],
+      ),
+      content: SizedBox(
+        width: 560,
+        child: SingleChildScrollView(
+          child: _CaseLogsSection(caseId: caseId, caseData: caseData),
+        ),
+      ),
+      actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Close'),
+        ),
+      ],
+    );
+  }
+}
+
+class _CaseLogsSection extends StatelessWidget {
+  final String caseId;
+  final Map<String, dynamic> caseData;
+
+  const _CaseLogsSection({required this.caseId, required this.caseData});
+
+  @override
+  Widget build(BuildContext context) {
+    final logsRef = FirebaseFirestore.instance
+        .collection('violation_cases')
+        .doc(caseId)
+        .collection('activity')
+        .orderBy('createdAt', descending: true)
+        .limit(40);
+
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: logsRef.snapshots(),
+      builder: (context, snapshot) {
+        final activityEntries = <_CaseLogEntry>[];
+        if (snapshot.hasData) {
+          for (final doc in snapshot.data!.docs) {
+            final entry = _CaseLogEntry.fromActivity(doc.data());
+            if (entry != null) {
+              activityEntries.add(entry);
+            }
+          }
+          activityEntries.sort((a, b) {
+            final ad = a.at ?? DateTime.fromMillisecondsSinceEpoch(0);
+            final bd = b.at ?? DateTime.fromMillisecondsSinceEpoch(0);
+            return bd.compareTo(ad);
+          });
+        }
+
+        final fallbackEntries = _CaseLogEntry.fallbackFromCase(caseData);
+        final entries = activityEntries.isNotEmpty
+            ? activityEntries
+            : fallbackEntries;
+
+        if (snapshot.hasError && entries.isEmpty) {
+          return const Text(
+            'Could not load case logs.',
+            style: TextStyle(
+              color: Colors.redAccent,
+              fontWeight: FontWeight.w700,
+              fontSize: 12.5,
+            ),
+          );
+        }
+
+        if (!snapshot.hasData && entries.isEmpty) {
+          return const Padding(
+            padding: EdgeInsets.symmetric(vertical: 10),
+            child: SizedBox(
+              height: 20,
+              width: 20,
+              child: CircularProgressIndicator(strokeWidth: 2.1),
+            ),
+          );
+        }
+
+        if (entries.isEmpty) {
+          return const Text(
+            'No case logs yet.',
+            style: TextStyle(
+              color: hintColor,
+              fontWeight: FontWeight.w700,
+              fontSize: 12.5,
+            ),
+          );
+        }
+
+        return Column(
+          children: entries
+              .map((entry) {
+                final accentColor = entry.toneColor;
+                final when = entry.at == null
+                    ? '--'
+                    : DateFormat('MMM d, yyyy - h:mm a').format(entry.at!);
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: Colors.black.withValues(alpha: 0.08),
+                    ),
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    entry.title,
+                                    style: const TextStyle(
+                                      color: textDark,
+                                      fontWeight: FontWeight.w900,
+                                      fontSize: 13.3,
+                                    ),
+                                  ),
+                                ),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 3,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: accentColor.withValues(alpha: 0.12),
+                                    borderRadius: BorderRadius.circular(
+                                      AppRadii.pill,
+                                    ),
+                                    border: Border.all(
+                                      color: accentColor.withValues(
+                                        alpha: 0.28,
+                                      ),
+                                    ),
+                                  ),
+                                  child: Text(
+                                    entry.actionLabel,
+                                    style: TextStyle(
+                                      color: accentColor,
+                                      fontWeight: FontWeight.w900,
+                                      fontSize: 10.8,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            if (entry.description.isNotEmpty) ...[
+                              const SizedBox(height: 6),
+                              Text(
+                                entry.description,
+                                style: const TextStyle(
+                                  color: textDark,
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 12.4,
+                                  height: 1.34,
+                                ),
+                              ),
+                            ],
+                            const SizedBox(height: 7),
+                            Text(
+                              '$when${entry.actorRole.isEmpty ? '' : ' - ${entry.actorRole}'}',
+                              style: const TextStyle(
+                                color: hintColor,
+                                fontWeight: FontWeight.w700,
+                                fontSize: 11.2,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              })
+              .toList(growable: false),
+        );
+      },
+    );
+  }
+}
+
+class _CaseLogEntry {
+  final String event;
+  final String title;
+  final String description;
+  final DateTime? at;
+  final String actorRole;
+
+  const _CaseLogEntry({
+    required this.event,
+    required this.title,
+    required this.description,
+    required this.at,
+    required this.actorRole,
+  });
+
+  static _CaseLogEntry? fromActivity(Map<String, dynamic> data) {
+    final event = _safeStr(data['event']).toLowerCase();
+    if (event.isEmpty) return null;
+    final rawMeta = data['meta'];
+    final meta = rawMeta is Map
+        ? Map<String, dynamic>.from(rawMeta)
+        : const <String, dynamic>{};
+    final title = _safeStr(data['title']).isEmpty
+        ? _defaultTitleForEvent(event)
+        : _safeStr(data['title']);
+    final description = _descriptionForEvent(
+      event: event,
+      meta: meta,
+      fallback: _safeStr(data['description']),
+    );
+    final actorRole = _safeStr(data['actorRole']).isEmpty
+        ? ''
+        : _titleCase(_safeStr(data['actorRole']).replaceAll('_', ' '));
+    return _CaseLogEntry(
+      event: event,
+      title: title,
+      description: description,
+      at: _dateFromAny(data['createdAt'], data['createdAtEpochMs']),
+      actorRole: actorRole,
+    );
+  }
+
+  static List<_CaseLogEntry> fallbackFromCase(Map<String, dynamic> data) {
+    final list = <_CaseLogEntry>[];
+    final caseCode = _safeStr(data['caseCode']);
+    final correction = data['correction'] as Map<String, dynamic>? ?? {};
+    final correctionReason = _safeStr(correction['latestReason']);
+
+    final createdAt = _globalTsToDate(data['createdAt']);
+    if (createdAt != null) {
+      list.add(
+        _CaseLogEntry(
+          event: 'report_submitted',
+          title: 'Violation report submitted',
+          description: caseCode.isEmpty
+              ? 'Case was submitted for OSA review.'
+              : 'Case $caseCode was submitted for OSA review.',
+          at: createdAt,
+          actorRole: '',
+        ),
+      );
+    }
+
+    final correctedAt = _globalTsToDate(correction['latestAt']);
+    if (correctedAt != null) {
+      list.add(
+        _CaseLogEntry(
+          event: 'osa_correction',
+          title: 'Violation report corrected',
+          description: correctionReason.isEmpty
+              ? 'OSA corrected report details.'
+              : 'OSA corrected report details. Reason: $correctionReason',
+          at: correctedAt,
+          actorRole: 'OSA Admin',
+        ),
+      );
+    }
+
+    final assessedAt = _globalTsToDate(data['assessedAt']);
+    if (assessedAt != null) {
+      final actionSelected = _safeStr(data['actionSelected']);
+      final meetingRequired = data['meetingRequired'] == true;
+      final meetingStatus = _safeStr(data['meetingStatus']);
+      final finalSeverity = _safeStr(data['finalSeverity']);
+      final bookingDeadlineAt = _globalTsToDate(data['bookingDeadlineAt']);
+      list.add(
+        _CaseLogEntry(
+          event: 'osa_action_set',
+          title: 'OSA action set',
+          description: _descriptionForEvent(
+            event: 'osa_action_set',
+            meta: {
+              'actionSelected': actionSelected,
+              'meetingRequired': meetingRequired,
+              'meetingStatus': meetingStatus,
+              'finalSeverity': finalSeverity,
+              'bookingDeadlineAt': bookingDeadlineAt?.toIso8601String(),
+            },
+            fallback: actionSelected.isEmpty
+                ? 'OSA applied a case action.'
+                : 'OSA set action to ${_titleCase(actionSelected)}.',
+          ),
+          at: assessedAt,
+          actorRole: 'OSA Admin',
+        ),
+      );
+    }
+
+    final bookingBookedAt = _globalTsToDate(data['bookingBookedAt']);
+    final scheduledAt = _globalTsToDate(data['scheduledAt']);
+    if (bookingBookedAt != null || scheduledAt != null) {
+      list.add(
+        _CaseLogEntry(
+          event: 'appointment_booked',
+          title: 'Meeting booked',
+          description: _descriptionForEvent(
+            event: 'appointment_booked',
+            meta: {
+              'scheduledAt': (scheduledAt ?? bookingBookedAt)
+                  ?.toIso8601String(),
+            },
+            fallback: 'A meeting slot was booked for this case.',
+          ),
+          at: bookingBookedAt ?? scheduledAt,
+          actorRole: '',
+        ),
+      );
+    }
+
+    final bookingMissedAt = _globalTsToDate(data['bookingMissedAt']);
+    if (bookingMissedAt != null) {
+      list.add(
+        _CaseLogEntry(
+          event: 'booking_missed',
+          title: 'Booking not completed',
+          description: _descriptionForEvent(
+            event: 'booking_missed',
+            meta: {
+              'bookingDeadlineAt': _globalTsToDate(
+                data['bookingDeadlineAt'],
+              )?.toIso8601String(),
+            },
+            fallback: 'Booking window was missed.',
+          ),
+          at: bookingMissedAt,
+          actorRole: '',
+        ),
+      );
+    }
+
+    final meetingMissedAt = _globalTsToDate(data['meetingMissedAt']);
+    if (meetingMissedAt != null) {
+      list.add(
+        _CaseLogEntry(
+          event: 'meeting_missed',
+          title: 'Meeting missed',
+          description: _descriptionForEvent(
+            event: 'meeting_missed',
+            meta: {'scheduledAt': scheduledAt?.toIso8601String()},
+            fallback: 'Scheduled meeting was missed.',
+          ),
+          at: meetingMissedAt,
+          actorRole: '',
+        ),
+      );
+    }
+
+    final unresolvedAt = _globalTsToDate(data['unresolvedAt']);
+    if (unresolvedAt != null) {
+      list.add(
+        _CaseLogEntry(
+          event: 'case_unresolved',
+          title: 'Case set to unresolved',
+          description: _descriptionForEvent(
+            event: 'case_unresolved',
+            meta: {'reason': _safeStr(data['unresolvedReason'])},
+            fallback: 'Case was moved to unresolved status.',
+          ),
+          at: unresolvedAt,
+          actorRole: 'OSA Admin',
+        ),
+      );
+    }
+
+    final rescheduledAt = _globalTsToDate(data['meetingRescheduledAt']);
+    if (rescheduledAt != null) {
+      list.add(
+        _CaseLogEntry(
+          event: 'meeting_rescheduled',
+          title: 'Meeting rebooking opened',
+          description: 'OSA reopened the booking window for this case.',
+          at: rescheduledAt,
+          actorRole: 'OSA Admin',
+        ),
+      );
+    }
+
+    final completedAt = _globalTsToDate(data['meetingCompletedAt']);
+    if (completedAt != null) {
+      list.add(
+        _CaseLogEntry(
+          event: 'meeting_completed',
+          title: 'Meeting completed',
+          description: _descriptionForEvent(
+            event: 'meeting_completed',
+            meta: {
+              'finalSeverity': _safeStr(data['finalSeverity']),
+              'sanctionType': _safeStr(data['sanctionType']).isEmpty
+                  ? _safeStr(data['sanctionTypeCode'])
+                  : _safeStr(data['sanctionType']),
+            },
+            fallback: 'OSA completed the meeting and resolved the case.',
+          ),
+          at: completedAt,
+          actorRole: 'OSA Admin',
+        ),
+      );
+    }
+
+    final cancelledAt = _globalTsToDate(data['cancelledAt']);
+    if (cancelledAt != null) {
+      final reason = _safeStr(data['cancellationReason']);
+      list.add(
+        _CaseLogEntry(
+          event: 'case_cancelled',
+          title: 'Case cancelled',
+          description: reason.isEmpty
+              ? 'OSA cancelled this case.'
+              : 'OSA cancelled this case. Reason: $reason',
+          at: cancelledAt,
+          actorRole: 'OSA Admin',
+        ),
+      );
+    }
+
+    final reopenedAt = _globalTsToDate(data['reopenedAt']);
+    if (reopenedAt != null) {
+      final reason = _safeStr(data['reopenReason']);
+      final reopenedToResolved =
+          _statusKey(_safeStr(data['status'])) == 'resolved';
+      list.add(
+        _CaseLogEntry(
+          event: 'case_reopened',
+          title: 'Case reopened',
+          description: reason.isEmpty
+              ? (reopenedToResolved
+                    ? 'OSA reopened this cancelled case and moved it back to Resolved.'
+                    : 'OSA reopened this cancelled case and applied a new action.')
+              : 'OSA reopened this cancelled case. Reason: $reason',
+          at: reopenedAt,
+          actorRole: 'OSA Admin',
+        ),
+      );
+    }
+
+    final resolvedAt = _globalTsToDate(data['resolvedAt']);
+    if (resolvedAt != null &&
+        _safeStr(data['status']).toLowerCase().contains('resolved')) {
+      list.add(
+        _CaseLogEntry(
+          event: 'case_resolved',
+          title: 'Case resolved',
+          description: _descriptionForEvent(
+            event: 'case_resolved',
+            meta: {
+              'finalSeverity': _safeStr(data['finalSeverity']),
+              'sanctionType': _safeStr(data['sanctionType']).isEmpty
+                  ? _safeStr(data['sanctionTypeCode'])
+                  : _safeStr(data['sanctionType']),
+            },
+            fallback: 'This case was marked as resolved.',
+          ),
+          at: resolvedAt,
+          actorRole: 'OSA Admin',
+        ),
+      );
+    }
+
+    list.sort((a, b) {
+      final ad = a.at ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final bd = b.at ?? DateTime.fromMillisecondsSinceEpoch(0);
+      return bd.compareTo(ad);
+    });
+    return list;
+  }
+
+  static DateTime? _dateFromAny(dynamic createdAt, dynamic epoch) {
+    if (createdAt is Timestamp) return createdAt.toDate();
+    if (createdAt is DateTime) return createdAt;
+    if (createdAt is String && createdAt.trim().isNotEmpty) {
+      return DateTime.tryParse(createdAt.trim())?.toLocal();
+    }
+    if (epoch is num) {
+      return DateTime.fromMillisecondsSinceEpoch(epoch.toInt());
+    }
+    return null;
+  }
+
+  String get actionLabel {
+    final key = event.toLowerCase();
+    if (key.contains('reopen')) return 'Reopened';
+    if (key.contains('cancel')) return 'Cancelled';
+    if (key.contains('resolve')) return 'Resolved';
+    if (key.contains('unresolved')) return 'Unresolved';
+    if (key.contains('correct')) return 'Corrected';
+    if (key.contains('action_set')) return 'Action Set';
+    if (key.contains('booked')) return 'Booked';
+    if (key.contains('booking_missed')) return 'Not Booked';
+    if (key.contains('meeting_missed')) return 'Missed';
+    if (key.contains('meeting_completed')) return 'Completed';
+    if (key.contains('rescheduled')) return 'Rebook';
+    if (key.contains('submit')) return 'Submitted';
+    return 'Update';
+  }
+
+  Color get toneColor {
+    final key = event.toLowerCase();
+    if (key.contains('reopen')) return Colors.blue.shade700;
+    if (key.contains('cancel')) return Colors.red.shade700;
+    if (key.contains('unresolved') || key.contains('missed')) {
+      return Colors.orange.shade800;
+    }
+    if (key.contains('resolve')) return primaryColor;
+    if (key.contains('correct')) return Colors.blue.shade700;
+    if (key.contains('meeting') || key.contains('booked')) {
+      return Colors.indigo.shade600;
+    }
+    if (key.contains('submit')) return Colors.teal.shade700;
+    return hintColor;
+  }
+
+  static String _defaultTitleForEvent(String event) {
+    final key = event.toLowerCase();
+    if (key == 'case_reopened') return 'Case reopened';
+    if (key == 'osa_action_set') return 'OSA action set';
+    if (key == 'appointment_booked') return 'Meeting booked';
+    if (key == 'booking_window_extended') return 'Booking window extended';
+    if (key == 'booking_missed') return 'Booking not completed';
+    if (key == 'meeting_missed') return 'Meeting missed';
+    if (key == 'case_unresolved') return 'Case set to unresolved';
+    if (key == 'meeting_completed') return 'Meeting completed';
+    if (key == 'case_resolved_without_meeting') return 'Case resolved';
+    return _titleCase(key.replaceAll('_', ' '));
+  }
+
+  static String _descriptionForEvent({
+    required String event,
+    required Map<String, dynamic> meta,
+    required String fallback,
+  }) {
+    final key = event.toLowerCase();
+    final action = _toTitle(
+      _safeStr(meta['actionSelected']).isEmpty
+          ? _safeStr(meta['actionTypeCode'])
+          : _safeStr(meta['actionSelected']),
+    );
+    final severity = _toTitle(_safeStr(meta['finalSeverity']));
+    final sanction = _toTitle(_safeStr(meta['sanctionType']));
+    final scheduledAt = _dateFromAny(meta['scheduledAt'], null);
+    final bookingDeadlineAt = _dateFromAny(meta['bookingDeadlineAt'], null);
+    final reason = _toTitle(_safeStr(meta['reason']));
+
+    if (key == 'osa_action_set') {
+      return 'Action: ${action.isEmpty ? 'Not specified' : action}.';
+    }
+    if (key == 'appointment_booked') {
+      return 'Meeting slot booked'
+          '${scheduledAt == null ? '' : ' for ${DateFormat('MMM d, yyyy - h:mm a').format(scheduledAt)}'}.';
+    }
+    if (key == 'booking_window_extended') {
+      return 'Booking window was extended.'
+          '${bookingDeadlineAt == null ? '' : ' New deadline: ${DateFormat('MMM d, yyyy - h:mm a').format(bookingDeadlineAt)}.'}';
+    }
+    if (key == 'booking_missed') {
+      return 'Student did not book within the allowed window.'
+          '${bookingDeadlineAt == null ? '' : ' Deadline was ${DateFormat('MMM d, yyyy - h:mm a').format(bookingDeadlineAt)}.'}';
+    }
+    if (key == 'meeting_missed') {
+      return 'Student missed the scheduled meeting'
+          '${scheduledAt == null ? '' : ' at ${DateFormat('MMM d, yyyy - h:mm a').format(scheduledAt)}'}.';
+    }
+    if (key == 'case_unresolved') {
+      return 'Case moved to Unresolved status.'
+          '${reason.isEmpty ? '' : ' Reason: $reason.'}';
+    }
+    if (key == 'meeting_completed') {
+      return 'Required meeting completed.'
+          '${severity.isEmpty ? '' : ' Severity: $severity.'}'
+          '${sanction.isEmpty ? '' : ' Sanction: $sanction.'}';
+    }
+    if (key == 'case_resolved' || key == 'case_resolved_without_meeting') {
+      return 'Case marked as resolved.'
+          '${severity.isEmpty ? '' : ' Severity: $severity.'}'
+          '${sanction.isEmpty ? '' : ' Sanction: $sanction.'}';
+    }
+    if (key == 'meeting_rescheduled') {
+      return reason.isEmpty
+          ? (fallback.isEmpty
+                ? 'OSA reopened the booking window after a missed meeting.'
+                : fallback)
+          : 'OSA reopened booking window. Reason: $reason.';
+    }
+    if (key == 'case_reopened') {
+      final toStatus = _statusKey(_safeStr(meta['toStatus']));
+      return reason.isEmpty
+          ? (toStatus == 'resolved'
+                ? 'OSA reopened this cancelled case and moved it back to Resolved.'
+                : 'OSA reopened this cancelled case and applied a new action.')
+          : 'OSA reopened this cancelled case. Reason: $reason.';
+    }
+    return fallback;
+  }
+
+  static String _toTitle(String raw) {
+    final value = raw.trim();
+    if (value.isEmpty) return '';
+    return value
+        .replaceAll('_', ' ')
+        .replaceAll('-', ' ')
+        .split(' ')
+        .where((part) => part.trim().isNotEmpty)
+        .map((part) {
+          final lower = part.toLowerCase();
+          return '${lower[0].toUpperCase()}${lower.substring(1)}';
+        })
+        .join(' ');
+  }
+}
+
+class _CancelViolationDialog extends StatefulWidget {
+  final QueryDocumentSnapshot<Map<String, dynamic>> doc;
+  final ViolationCaseService svc;
+  final bool asCaseCancellation;
+
+  const _CancelViolationDialog({
+    required this.doc,
+    required this.svc,
+    this.asCaseCancellation = false,
+  });
+
+  @override
+  State<_CancelViolationDialog> createState() => _CancelViolationDialogState();
+}
+
+class _CancelViolationDialogState extends State<_CancelViolationDialog> {
+  late final TextEditingController _reasonCtrl;
+  bool _saving = false;
+  bool _showError = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _reasonCtrl = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    _reasonCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final reason = _reasonCtrl.text.trim();
+    if (reason.isEmpty) {
+      setState(() => _showError = true);
+      return;
+    }
+
+    setState(() {
+      _showError = false;
+      _saving = true;
+    });
+
+    try {
+      await widget.svc.cancelReport(caseId: widget.doc.id, reason: reason);
+      if (!mounted) return;
+      Navigator.pop(context, true);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _saving = false);
+      _showInlineNotice(
+        context,
+        message: 'Cancel failed: $e',
+        tone: _InlineNoticeTone.danger,
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final caseCode = _safeStr(widget.doc.data()['caseCode']);
+    final statusKey = _statusKey(_safeStr(widget.doc.data()['status']));
+    final resolvedCase = statusKey == 'resolved';
+    final titleText = widget.asCaseCancellation
+        ? 'Cancel Case'
+        : 'Cancel Report';
+    final noteText = widget.asCaseCancellation
+        ? (resolvedCase
+              ? 'This case is already resolved. Cancelling will move it to Cancelled cases.'
+              : 'This will move the case to Cancelled cases.')
+        : 'This will move the report to Cancelled cases.';
+    final hintText = widget.asCaseCancellation
+        ? 'Explain why this case is being cancelled'
+        : 'Explain why this report is being cancelled';
+    final actionText = widget.asCaseCancellation
+        ? 'Cancel Case'
+        : 'Cancel Report';
+    return AlertDialog(
+      backgroundColor: bg,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      titlePadding: const EdgeInsets.fromLTRB(24, 18, 12, 0),
+      title: Row(
+        children: [
+          const Expanded(child: SizedBox.shrink()),
+          IconButton(
+            onPressed: _saving ? null : () => Navigator.pop(context, false),
+            tooltip: 'Close',
+            icon: const Icon(Icons.close_rounded, color: hintColor),
+            style: IconButton.styleFrom(
+              backgroundColor: Colors.black.withValues(alpha: 0.06),
+            ),
+          ),
+        ],
+      ),
+      content: SizedBox(
+        width: 500,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              titleText,
+              style: const TextStyle(
+                color: primaryColor,
+                fontWeight: FontWeight.w900,
+                fontSize: 20,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              caseCode.isEmpty
+                  ? widget.asCaseCancellation
+                        ? 'Provide a reason for cancelling this case.'
+                        : 'Provide a reason for cancelling this report.'
+                  : 'Provide a reason for cancelling $caseCode.',
+              style: const TextStyle(
+                color: hintColor,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: primaryColor.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: primaryColor.withValues(alpha: 0.18)),
+              ),
+              child: Text(
+                noteText,
+                style: const TextStyle(
+                  color: primaryColor,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 12.5,
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _reasonCtrl,
+              enabled: !_saving,
+              maxLines: 4,
+              onChanged: (_) {
+                if (_showError && _reasonCtrl.text.trim().isNotEmpty) {
+                  setState(() => _showError = false);
+                }
+              },
+              decoration: InputDecoration(
+                labelText: 'Reason',
+                hintText: hintText,
+                alignLabelWithHint: true,
+                filled: true,
+                fillColor: Colors.white,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(AppRadii.md),
+                  borderSide: BorderSide(
+                    color: _showError
+                        ? Colors.redAccent
+                        : Colors.black.withValues(alpha: 0.15),
+                  ),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(AppRadii.md),
+                  borderSide: BorderSide(
+                    color: _showError
+                        ? Colors.redAccent
+                        : Colors.black.withValues(alpha: 0.15),
+                  ),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(AppRadii.md),
+                  borderSide: BorderSide(
+                    color: _showError ? Colors.redAccent : primaryColor,
+                    width: 1.35,
+                  ),
+                ),
+                errorText: _showError ? 'Reason is required.' : null,
+              ),
+            ),
+          ],
+        ),
+      ),
+      actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+      actions: [
+        TextButton(
+          onPressed: _saving ? null : () => Navigator.pop(context, false),
+          child: const Text('Close'),
+        ),
+        FilledButton.icon(
+          onPressed: _saving ? null : _submit,
+          icon: _saving
+              ? const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2.0),
+                )
+              : const Icon(Icons.cancel_outlined),
+          label: Text(_saving ? 'Cancelling...' : actionText),
+          style: FilledButton.styleFrom(
+            backgroundColor: Colors.red.shade700,
+            foregroundColor: Colors.white,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ReopenCancelledCaseDialog extends StatefulWidget {
+  final QueryDocumentSnapshot<Map<String, dynamic>> doc;
+  final ViolationCaseService svc;
+
+  const _ReopenCancelledCaseDialog({required this.doc, required this.svc});
+
+  @override
+  State<_ReopenCancelledCaseDialog> createState() =>
+      _ReopenCancelledCaseDialogState();
+}
+
+class _ReopenCancelledCaseDialogState
+    extends State<_ReopenCancelledCaseDialog> {
+  late final TextEditingController _reasonCtrl;
+  bool _saving = false;
+  bool _showError = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _reasonCtrl = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    _reasonCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final reason = _reasonCtrl.text.trim();
+    if (reason.isEmpty) {
+      setState(() => _showError = true);
+      return;
+    }
+
+    setState(() {
+      _showError = false;
+      _saving = true;
+    });
+
+    try {
+      await widget.svc.reopenCancelledCase(
+        caseId: widget.doc.id,
+        reason: reason,
+      );
+      if (!mounted) return;
+      Navigator.pop(context, true);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _saving = false);
+      _showInlineNotice(
+        context,
+        message: 'Reopen failed: $e',
+        tone: _InlineNoticeTone.danger,
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final caseCode = _safeStr(widget.doc.data()['caseCode']);
+    return AlertDialog(
+      backgroundColor: bg,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      titlePadding: const EdgeInsets.fromLTRB(24, 18, 12, 0),
+      title: Row(
+        children: [
+          const Expanded(child: SizedBox.shrink()),
+          IconButton(
+            onPressed: _saving ? null : () => Navigator.pop(context, false),
+            tooltip: 'Close',
+            icon: const Icon(Icons.close_rounded, color: hintColor),
+            style: IconButton.styleFrom(
+              backgroundColor: Colors.black.withValues(alpha: 0.06),
+            ),
+          ),
+        ],
+      ),
+      content: SizedBox(
+        width: 500,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Reopen Case',
+              style: TextStyle(
+                color: primaryColor,
+                fontWeight: FontWeight.w900,
+                fontSize: 20,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              caseCode.isEmpty
+                  ? 'Provide a reason for reopening this cancelled case.'
+                  : 'Provide a reason for reopening $caseCode.',
+              style: const TextStyle(
+                color: hintColor,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: primaryColor.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: primaryColor.withValues(alpha: 0.18)),
+              ),
+              child: const Text(
+                'This is already a resolved case. Reopening will move it back to Resolved cases.',
+                style: TextStyle(
+                  color: primaryColor,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 12.5,
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _reasonCtrl,
+              enabled: !_saving,
+              maxLines: 4,
+              onChanged: (_) {
+                if (_showError && _reasonCtrl.text.trim().isNotEmpty) {
+                  setState(() => _showError = false);
+                }
+              },
+              decoration: InputDecoration(
+                labelText: 'Reason',
+                hintText: 'Explain why this case is being reopened',
+                alignLabelWithHint: true,
+                filled: true,
+                fillColor: Colors.white,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(AppRadii.md),
+                  borderSide: BorderSide(
+                    color: _showError
+                        ? Colors.redAccent
+                        : Colors.black.withValues(alpha: 0.15),
+                  ),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(AppRadii.md),
+                  borderSide: BorderSide(
+                    color: _showError
+                        ? Colors.redAccent
+                        : Colors.black.withValues(alpha: 0.15),
+                  ),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(AppRadii.md),
+                  borderSide: BorderSide(
+                    color: _showError ? Colors.redAccent : primaryColor,
+                    width: 1.35,
+                  ),
+                ),
+                errorText: _showError ? 'Reason is required.' : null,
+              ),
+            ),
+          ],
+        ),
+      ),
+      actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+      actions: [
+        TextButton(
+          onPressed: _saving ? null : () => Navigator.pop(context, false),
+          child: const Text('Close'),
+        ),
+        FilledButton.icon(
+          onPressed: _saving ? null : _submit,
+          icon: _saving
+              ? const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2.0),
+                )
+              : const Icon(Icons.refresh_rounded),
+          label: Text(_saving ? 'Reopening...' : 'Reopen Case'),
+          style: FilledButton.styleFrom(
+            backgroundColor: primaryColor,
+            foregroundColor: Colors.white,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 class _CorrectViolationDialog extends StatefulWidget {
   final QueryDocumentSnapshot<Map<String, dynamic>> doc;
   final ViolationCaseService svc;
@@ -2147,8 +4535,10 @@ class _CorrectViolationDialog extends StatefulWidget {
 }
 
 class _CorrectViolationDialogState extends State<_CorrectViolationDialog> {
-  static const _concernOptions = ['basic', 'serious'];
+  final _typesSvc = ViolationTypesService();
 
+  late final String _statusKeyAtOpen;
+  late final bool _statusAllowsCorrection;
   late final String _initialConcern;
   late String _concern;
   late final String _initialCategoryId;
@@ -2157,6 +4547,7 @@ class _CorrectViolationDialogState extends State<_CorrectViolationDialog> {
   late final String _initialTypeName;
   late final DateTime? _expectedUpdatedAt;
 
+  List<String> _concernOptions = const [];
   List<QueryDocumentSnapshot<Map<String, dynamic>>> _categories = const [];
   List<QueryDocumentSnapshot<Map<String, dynamic>>> _types = const [];
   String? _selectedCategoryId;
@@ -2234,10 +4625,10 @@ class _CorrectViolationDialogState extends State<_CorrectViolationDialog> {
   void initState() {
     super.initState();
     final data = widget.doc.data();
+    _statusKeyAtOpen = _statusKey(_safeStr(data['status']));
+    _statusAllowsCorrection = _canCorrectCaseStatusKey(_statusKeyAtOpen);
     final rawConcern = _normalizeConcernValue(_safeStr(data['concern']));
-    _initialConcern = _concernOptions.contains(rawConcern)
-        ? rawConcern
-        : 'basic';
+    _initialConcern = rawConcern;
     _concern = _initialConcern;
     _initialCategoryId = _safeStr(data['categoryId']);
     _initialCategoryName = _safeStr(
@@ -2251,7 +4642,7 @@ class _CorrectViolationDialogState extends State<_CorrectViolationDialog> {
         (data['updatedAt'] as Timestamp?)?.toDate() ??
         (data['createdAt'] as Timestamp?)?.toDate();
     _reasonCtrl = TextEditingController();
-    _loadCategoriesAndTypes();
+    _loadConcernOptionsAndCategories();
   }
 
   @override
@@ -2260,16 +4651,40 @@ class _CorrectViolationDialogState extends State<_CorrectViolationDialog> {
     super.dispose();
   }
 
+  Future<void> _loadConcernOptionsAndCategories() async {
+    setState(() => _loadingOptions = true);
+    try {
+      var options = await _typesSvc.fetchActiveConcernOptions();
+      final selected = _concern.trim().toLowerCase();
+      if (selected.isNotEmpty &&
+          !options.any((item) => item.toLowerCase() == selected)) {
+        options = List<String>.from(options)..add(selected);
+      }
+      if (selected.isEmpty && options.isNotEmpty) {
+        _concern = options.first;
+      }
+      if (!mounted) return;
+      setState(() => _concernOptions = options);
+    } finally {
+      if (mounted) setState(() => _loadingOptions = false);
+    }
+    await _loadCategoriesAndTypes();
+  }
+
   Future<void> _loadCategoriesAndTypes() async {
     setState(() => _loadingOptions = true);
     try {
-      final strictConcernSnap = await FirebaseFirestore.instance
-          .collection('violation_categories')
-          .where('isActive', isEqualTo: true)
-          .where('concern', isEqualTo: _concern)
-          .orderBy('order')
-          .get();
-      var categories = strictConcernSnap.docs;
+      List<QueryDocumentSnapshot<Map<String, dynamic>>> categories = const [];
+      final normalizedConcern = _concern.trim().toLowerCase();
+      if (normalizedConcern.isNotEmpty) {
+        final strictConcernSnap = await FirebaseFirestore.instance
+            .collection('violation_categories')
+            .where('isActive', isEqualTo: true)
+            .where('concern', isEqualTo: normalizedConcern)
+            .orderBy('order')
+            .get();
+        categories = strictConcernSnap.docs;
+      }
       if (categories.isEmpty) {
         final allActiveSnap = await FirebaseFirestore.instance
             .collection('violation_categories')
@@ -2453,7 +4868,7 @@ class _CorrectViolationDialogState extends State<_CorrectViolationDialog> {
       ),
       prefixIcon: Icon(icon, color: primaryColor.withValues(alpha: 0.85)),
       filled: true,
-      fillColor: enabled ? Colors.white : Colors.grey[100],
+      fillColor: Colors.white,
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(AppRadii.md),
         borderSide: BorderSide(color: Colors.grey[300]!),
@@ -2524,7 +4939,7 @@ class _CorrectViolationDialogState extends State<_CorrectViolationDialog> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Concern: ${_titleCase(fromConcern)} â†’ ${_titleCase(toConcern)}',
+              'Concern: ${_titleCase(fromConcern)} Ã¢â€ â€™ ${_titleCase(toConcern)}',
               style: const TextStyle(
                 color: textDark,
                 fontWeight: FontWeight.w700,
@@ -2532,7 +4947,7 @@ class _CorrectViolationDialogState extends State<_CorrectViolationDialog> {
             ),
             const SizedBox(height: 6),
             Text(
-              'Category: $fromCategory â†’ $toCategory',
+              'Category: $fromCategory Ã¢â€ â€™ $toCategory',
               style: const TextStyle(
                 color: textDark,
                 fontWeight: FontWeight.w700,
@@ -2540,7 +4955,7 @@ class _CorrectViolationDialogState extends State<_CorrectViolationDialog> {
             ),
             const SizedBox(height: 6),
             Text(
-              'Specific Violation: $fromType â†’ $toType',
+              'Specific Violation: $fromType Ã¢â€ â€™ $toType',
               style: const TextStyle(
                 color: textDark,
                 fontWeight: FontWeight.w700,
@@ -2576,6 +4991,30 @@ class _CorrectViolationDialogState extends State<_CorrectViolationDialog> {
   }
 
   Future<void> _saveChanges() async {
+    if (!_statusAllowsCorrection) {
+      _showInlineNotice(
+        context,
+        message: 'Correction is not allowed for this case status.',
+        tone: _InlineNoticeTone.warning,
+      );
+      return;
+    }
+    if (!_hasCorrectionChanges()) {
+      _showInlineNotice(
+        context,
+        message: 'No changes detected. Update at least one field.',
+        tone: _InlineNoticeTone.neutral,
+      );
+      return;
+    }
+    if (_reasonCtrl.text.trim().isEmpty) {
+      _showInlineNotice(
+        context,
+        message: 'Correction reason is required.',
+        tone: _InlineNoticeTone.warning,
+      );
+      return;
+    }
     setState(() => _saving = true);
     try {
       final categoryId = _selectedCategoryId ?? '';
@@ -2613,9 +5052,11 @@ class _CorrectViolationDialogState extends State<_CorrectViolationDialog> {
       final message = e is FirebaseException && e.code == 'aborted'
           ? 'This report was updated by another user. Close and reopen to load latest data.'
           : 'Update failed: $e';
-      ScaffoldMessenger.of(
+      _showInlineNotice(
         context,
-      ).showSnackBar(SnackBar(content: Text(message)));
+        message: message,
+        tone: _InlineNoticeTone.danger,
+      );
       setState(() => _saving = false);
     }
   }
@@ -2624,13 +5065,15 @@ class _CorrectViolationDialogState extends State<_CorrectViolationDialog> {
   Widget build(BuildContext context) {
     final hasChanges = _hasCorrectionChanges();
     final canSaveChanges =
+        _statusAllowsCorrection &&
         !_saving &&
         !_loadingOptions &&
         (_selectedCategoryId?.isNotEmpty ?? false) &&
         (_selectedTypeId?.isNotEmpty ?? false) &&
         hasChanges &&
         _reasonCtrl.text.trim().isNotEmpty;
-    final fieldEnabled = !_saving && !_loadingOptions;
+    final fieldEnabled =
+        _statusAllowsCorrection && !_saving && !_loadingOptions;
 
     return AlertDialog(
       backgroundColor: bg,
@@ -2664,6 +5107,29 @@ class _CorrectViolationDialogState extends State<_CorrectViolationDialog> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              if (!_statusAllowsCorrection) ...[
+                Container(
+                  width: double.infinity,
+                  margin: const EdgeInsets.only(bottom: 12),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFF7E6),
+                    borderRadius: BorderRadius.circular(AppRadii.md),
+                    border: Border.all(color: const Color(0xFFB7791F)),
+                  ),
+                  child: Text(
+                    'Correction is locked for status: ${_titleCase(_statusKeyAtOpen)}.',
+                    style: const TextStyle(
+                      color: Color(0xFF8C5A12),
+                      fontWeight: FontWeight.w800,
+                      fontSize: 12.4,
+                    ),
+                  ),
+                ),
+              ],
               const Text(
                 'REPORT CORRECTION',
                 style: TextStyle(
@@ -2675,7 +5141,7 @@ class _CorrectViolationDialogState extends State<_CorrectViolationDialog> {
               ),
               const SizedBox(height: 10),
               DropdownButtonFormField<String>(
-                initialValue: _concern,
+                initialValue: _concern.trim().isEmpty ? null : _concern,
                 style: const TextStyle(
                   color: textDark,
                   fontWeight: FontWeight.w700,
@@ -2863,16 +5329,30 @@ class _CompleteMeetingDialogState extends State<_CompleteMeetingDialog> {
   String? _severity;
   String? _sanctionType;
   bool _saving = false;
-  static const List<String> _severities = ['Minor', 'Moderate', 'Major'];
-  List<Map<String, String>> _sanctionOptions = const [
-    {'code': 'none', 'label': 'None'},
-    {'code': 'suspension', 'label': 'Suspension'},
-  ];
+  bool _loadingConfig = true;
+  String? _configError;
+  List<String> _severities = const [];
+  List<Map<String, String>> _sanctionOptions = const [];
 
-  Future<void> _loadSanctionTypes() async {
+  Future<void> _loadDialogConfig() async {
+    setState(() {
+      _loadingConfig = true;
+      _configError = null;
+    });
     try {
-      final rows = await _typesSvc.fetchActiveSanctionTypes();
-      final options = rows
+      final results = await Future.wait([
+        _typesSvc.fetchSeverityLevels(),
+        _typesSvc.fetchActiveSanctionTypes(),
+      ]);
+      final severityOptions = (results[0] as List<String>)
+          .map((item) => item.trim())
+          .where((item) => item.isNotEmpty)
+          .toList(growable: false);
+      final effectiveSeverityOptions = severityOptions.isEmpty
+          ? const <String>['Minor', 'Moderate', 'Major']
+          : severityOptions;
+      final sanctionRows = results[1] as List<Map<String, dynamic>>;
+      final sanctionOptions = sanctionRows
           .map(
             (row) => <String, String>{
               'code': (row['id'] ?? '').toString().trim().toLowerCase(),
@@ -2881,22 +5361,44 @@ class _CompleteMeetingDialogState extends State<_CompleteMeetingDialog> {
           )
           .where((row) => (row['code'] ?? '').isNotEmpty)
           .toList(growable: false);
-      if (!mounted || options.isEmpty) return;
+      if (!mounted) return;
       setState(() {
-        _sanctionOptions = options;
-        if (_sanctionType == null ||
-            !_sanctionOptions.any((item) => item['code'] == _sanctionType)) {
-          _sanctionType = _sanctionOptions.first['code'];
+        _severities = effectiveSeverityOptions;
+        _sanctionOptions = sanctionOptions;
+        _severity =
+            _severity != null &&
+                _severities.any(
+                  (item) => item.toLowerCase() == _severity!.toLowerCase(),
+                )
+            ? _severity
+            : null;
+        _sanctionType =
+            _sanctionType != null &&
+                _sanctionOptions.any((item) => item['code'] == _sanctionType)
+            ? _sanctionType
+            : (_sanctionOptions.isEmpty
+                  ? null
+                  : _sanctionOptions.first['code']);
+        if (_sanctionOptions.isEmpty) {
+          _configError =
+              'Missing violation config. Please seed or add Sanction Types in Violation Settings.';
         }
+        _loadingConfig = false;
       });
-    } catch (_) {}
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _loadingConfig = false;
+        _configError =
+            'Unable to load violation config. Please check your Firestore data.';
+      });
+    }
   }
 
   @override
   void initState() {
     super.initState();
-    _sanctionType = _sanctionOptions.first['code'];
-    _loadSanctionTypes();
+    _loadDialogConfig();
   }
 
   @override
@@ -2963,6 +5465,32 @@ class _CompleteMeetingDialogState extends State<_CompleteMeetingDialog> {
                 ),
               ),
               const SizedBox(height: 12),
+              if (_loadingConfig)
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 12),
+                  child: LinearProgressIndicator(color: primaryColor),
+                )
+              else if (_configError != null)
+                Container(
+                  width: double.infinity,
+                  margin: const EdgeInsets.only(bottom: 12),
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.red.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: Colors.red.withValues(alpha: 0.25),
+                    ),
+                  ),
+                  child: Text(
+                    _configError!,
+                    style: TextStyle(
+                      color: Colors.red.shade700,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 12,
+                    ),
+                  ),
+                ),
               TextField(
                 controller: _notesCtrl,
                 onChanged: (_) => setState(() {}),
@@ -2982,7 +5510,7 @@ class _CompleteMeetingDialogState extends State<_CompleteMeetingDialog> {
               DropdownButtonFormField<String>(
                 initialValue: _severity,
                 hint: const Text('Select severity'),
-                onChanged: _saving
+                onChanged: _saving || _loadingConfig
                     ? null
                     : (v) => setState(() => _severity = v),
                 decoration: _decor(
@@ -3001,7 +5529,7 @@ class _CompleteMeetingDialogState extends State<_CompleteMeetingDialog> {
               DropdownButtonFormField<String>(
                 initialValue: _sanctionType,
                 hint: const Text('Select sanction'),
-                onChanged: _saving
+                onChanged: _saving || _loadingConfig
                     ? null
                     : (v) => setState(() => _sanctionType = v),
                 decoration: _decor(
@@ -3065,7 +5593,12 @@ class _CompleteMeetingDialogState extends State<_CompleteMeetingDialog> {
         ),
         FilledButton(
           onPressed:
-              _saving || _notesCtrl.text.trim().isEmpty || _severity == null
+              _saving ||
+                  _loadingConfig ||
+                  _configError != null ||
+                  _notesCtrl.text.trim().isEmpty ||
+                  _severity == null ||
+                  _sanctionType == null
               ? null
               : () async {
                   setState(() => _saving = true);
@@ -3074,15 +5607,17 @@ class _CompleteMeetingDialogState extends State<_CompleteMeetingDialog> {
                       caseId: widget.caseId,
                       meetingNotes: _notesCtrl.text,
                       finalSeverity: _severity!,
-                      sanctionType: _sanctionType ?? 'none',
+                      sanctionType: _sanctionType!,
                       facultyNote: _facultyNoteCtrl.text,
                     );
                     if (!context.mounted) return;
                     Navigator.pop(context, true);
                   } catch (e) {
                     if (!context.mounted) return;
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Resolve failed: $e')),
+                    _showInlineNotice(
+                      context,
+                      message: 'Resolve failed: $e',
+                      tone: _InlineNoticeTone.danger,
                     );
                     setState(() => _saving = false);
                   }
@@ -3108,33 +5643,397 @@ class _CompleteMeetingDialogState extends State<_CompleteMeetingDialog> {
 // STUDENT HISTORY SECTION
 // ======================================================================
 
-class _StudentHistorySection extends StatelessWidget {
+class _StudentHistorySection extends StatefulWidget {
   final String studentUid;
   final String currentCaseId;
   final String currentViolationType;
+  final String currentCategory;
+  final ValueChanged<QueryDocumentSnapshot<Map<String, dynamic>>>? onOpenCase;
+  final bool showCurrentOffenseSummary;
 
   const _StudentHistorySection({
     required this.studentUid,
     required this.currentCaseId,
     required this.currentViolationType,
+    required this.currentCategory,
+    this.onOpenCase,
+    this.showCurrentOffenseSummary = true,
   });
 
   @override
+  State<_StudentHistorySection> createState() => _StudentHistorySectionState();
+}
+
+class _StudentHistorySectionState extends State<_StudentHistorySection> {
+  final Set<String> _expandedCategories = <String>{};
+  bool _showAllCategories = false;
+
+  static const int _initialCategoryCount = 3;
+
+  String _normalizeCategoryKey(String raw) {
+    final value = raw.trim().toLowerCase();
+    if (value.isEmpty || value == '--' || value == 'uncategorized') {
+      return 'uncategorized';
+    }
+    return value;
+  }
+
+  String _displayCategoryLabel(String raw) {
+    final value = raw.trim();
+    if (value.isEmpty || value == '--') return 'Uncategorized';
+    return value;
+  }
+
+  DateTime? _historyDate(Map<String, dynamic> data) {
+    return _globalTsToDate(data['createdAt']) ??
+        _globalTsToDate(data['incidentAt']) ??
+        _globalTsToDate(data['reportedAt']);
+  }
+
+  bool _isExcludedFromOffenseHistory(Map<String, dynamic> data) {
+    return _statusKey(_safeStr(data['status'])) == 'cancelled';
+  }
+
+  String _ordinal(int value) {
+    if (value <= 0) return '${value}th';
+    final mod100 = value % 100;
+    if (mod100 >= 11 && mod100 <= 13) return '${value}th';
+    switch (value % 10) {
+      case 1:
+        return '${value}st';
+      case 2:
+        return '${value}nd';
+      case 3:
+        return '${value}rd';
+      default:
+        return '${value}th';
+    }
+  }
+
+  bool _isConnected(String type, String current) {
+    final t = type.toLowerCase();
+    final c = current.toLowerCase();
+    if (t == c) return true;
+
+    final tardinessKeywords = ['tardy', 'late', 'absent', 'attendance'];
+    final typeIsTardiness = tardinessKeywords.any((k) => t.contains(k));
+    final currentIsTardiness = tardinessKeywords.any((k) => c.contains(k));
+    return typeIsTardiness && currentIsTardiness;
+  }
+
+  Widget _buildCategoryCard(
+    BuildContext context, {
+    required String categoryKey,
+    required String categoryLabel,
+    required List<QueryDocumentSnapshot<Map<String, dynamic>>> priorCases,
+    required List<QueryDocumentSnapshot<Map<String, dynamic>>>
+    allCasesInCategory,
+    required bool isCurrentCategory,
+  }) {
+    final isExpanded = _expandedCategories.contains(categoryKey);
+    final sortedAll = [...allCasesInCategory]
+      ..sort((a, b) {
+        final da = _historyDate(a.data()) ?? DateTime(2000);
+        final db = _historyDate(b.data()) ?? DateTime(2000);
+        final byDate = da.compareTo(
+          db,
+        ); // oldest to latest => first offense to latest
+        if (byDate != 0) return byDate;
+        return a.id.compareTo(b.id);
+      });
+    final sorted = [...priorCases]
+      ..sort((a, b) {
+        final da = _historyDate(a.data()) ?? DateTime(2000);
+        final db = _historyDate(b.data()) ?? DateTime(2000);
+        final byDate = da.compareTo(
+          db,
+        ); // oldest to latest => first offense to latest
+        if (byDate != 0) return byDate;
+        return a.id.compareTo(b.id);
+      });
+
+    final totalInCategory = sortedAll.length;
+    final currentIndexInCategory = isCurrentCategory
+        ? sortedAll.indexWhere((doc) => doc.id == widget.currentCaseId) + 1
+        : 0;
+    final subtitle = (widget.showCurrentOffenseSummary && isCurrentCategory)
+        ? (currentIndexInCategory <= 1
+              ? 'Current case appears to be the 1st offense in this category.'
+              : 'Current case is the ${_ordinal(currentIndexInCategory)} offense in this category.')
+        : '';
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: isCurrentCategory
+              ? primaryColor.withValues(alpha: 0.25)
+              : Colors.black.withValues(alpha: 0.08),
+        ),
+      ),
+      child: Column(
+        children: [
+          InkWell(
+            borderRadius: BorderRadius.circular(10),
+            onTap: () {
+              setState(() {
+                if (isExpanded) {
+                  _expandedCategories.remove(categoryKey);
+                } else {
+                  _expandedCategories.add(categoryKey);
+                }
+              });
+            },
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                '$categoryLabel ($totalInCategory)',
+                                style: TextStyle(
+                                  color: isCurrentCategory
+                                      ? primaryColor
+                                      : textDark,
+                                  fontWeight: FontWeight.w900,
+                                  fontSize: 13,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        if (subtitle.isNotEmpty) ...[
+                          const SizedBox(height: 3),
+                          Text(
+                            subtitle,
+                            style: const TextStyle(
+                              color: hintColor,
+                              fontWeight: FontWeight.w700,
+                              fontSize: 11.4,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Icon(
+                    isExpanded
+                        ? Icons.keyboard_arrow_up_rounded
+                        : Icons.keyboard_arrow_down_rounded,
+                    color: primaryColor,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (isExpanded) ...[
+            const Divider(height: 1),
+            if (sorted.isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(12),
+                child: Text(
+                  'No prior offense records yet for this category.',
+                  style: TextStyle(
+                    color: hintColor,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 11.8,
+                  ),
+                ),
+              )
+            else
+              Padding(
+                padding: const EdgeInsets.all(10),
+                child: Column(
+                  children: sorted
+                      .asMap()
+                      .entries
+                      .map((entry) {
+                        final caseDoc = entry.value;
+                        final offenseIndex =
+                            sortedAll.indexWhere(
+                              (doc) => doc.id == caseDoc.id,
+                            ) +
+                            1;
+                        final data = caseDoc.data();
+                        final type = _safeStr(
+                          data['violationTypeLabel'] ??
+                              data['violationNameSnapshot'] ??
+                              data['violationName'],
+                        );
+                        final status = _statusLabel(_safeStr(data['status']));
+                        final severity = _safeStr(
+                          data['finalSeverity'] ?? data['concern'],
+                        );
+                        final date = _historyDate(data);
+                        final dateText = date == null
+                            ? '--'
+                            : DateFormat('MMM d, yyyy').format(date);
+                        final linked = _isConnected(
+                          type,
+                          widget.currentViolationType,
+                        );
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(9),
+                            onTap: () {
+                              showDialog<void>(
+                                context: context,
+                                builder: (_) => _HistoryCaseDetailsDialog(
+                                  caseDoc: caseDoc,
+                                  offenseLabel:
+                                      '${_ordinal(offenseIndex)} Offense',
+                                  categoryLabel: categoryLabel,
+                                  onOpenCase: widget.onOpenCase,
+                                ),
+                              );
+                            },
+                            child: Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: linked
+                                    ? primaryColor.withValues(alpha: 0.05)
+                                    : Colors.black.withValues(alpha: 0.02),
+                                borderRadius: BorderRadius.circular(9),
+                                border: Border.all(
+                                  color: linked
+                                      ? primaryColor.withValues(alpha: 0.20)
+                                      : Colors.black.withValues(alpha: 0.06),
+                                ),
+                              ),
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          '${_ordinal(offenseIndex)} Offense',
+                                          style: TextStyle(
+                                            color: linked
+                                                ? primaryColor
+                                                : textDark,
+                                            fontWeight: FontWeight.w900,
+                                            fontSize: 12,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 3),
+                                        Text(
+                                          type.isEmpty ? '--' : type,
+                                          style: const TextStyle(
+                                            color: textDark,
+                                            fontWeight: FontWeight.w800,
+                                            fontSize: 12.2,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          '$dateText - $status${severity.isEmpty ? '' : ' - ${_titleCase(severity)}'}',
+                                          style: const TextStyle(
+                                            color: hintColor,
+                                            fontWeight: FontWeight.w700,
+                                            fontSize: 11.1,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  const Icon(
+                                    Icons.open_in_new_rounded,
+                                    color: primaryColor,
+                                    size: 16,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        );
+                      })
+                      .toList(growable: false),
+                ),
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
-    if (studentUid.isEmpty) return const SizedBox.shrink();
+    if (widget.studentUid.isEmpty) return const SizedBox.shrink();
 
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: FirebaseFirestore.instance
           .collection('violation_cases')
-          .where('studentUid', isEqualTo: studentUid)
+          .where('studentUid', isEqualTo: widget.studentUid)
           .snapshots(),
       builder: (context, snapshot) {
-        if (!snapshot.hasData) return const SizedBox.shrink();
+        if (!snapshot.hasData) {
+          return const Padding(
+            padding: EdgeInsets.symmetric(vertical: 16),
+            child: SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2.0),
+            ),
+          );
+        }
 
-        final docs = snapshot.data!.docs
-            .where((d) => d.id != currentCaseId)
-            .toList();
-        if (docs.isEmpty) {
+        final allDocs = snapshot.data!.docs;
+        final activeDocs = allDocs
+            .where((doc) => !_isExcludedFromOffenseHistory(doc.data()))
+            .toList(growable: false);
+        final priorDocs = activeDocs
+            .where((d) => d.id != widget.currentCaseId)
+            .toList(growable: false);
+
+        final groupedByKey =
+            <String, List<QueryDocumentSnapshot<Map<String, dynamic>>>>{};
+        final groupedAllByKey =
+            <String, List<QueryDocumentSnapshot<Map<String, dynamic>>>>{};
+        final labelsByKey = <String, String>{};
+        for (final doc in activeDocs) {
+          final rawCategory = _categoryLabelFromCaseGlobal(doc.data());
+          final categoryKey = _normalizeCategoryKey(rawCategory);
+          groupedAllByKey.putIfAbsent(categoryKey, () => []).add(doc);
+        }
+        for (final doc in priorDocs) {
+          final rawCategory = _categoryLabelFromCaseGlobal(doc.data());
+          final categoryKey = _normalizeCategoryKey(rawCategory);
+          final categoryLabel = _displayCategoryLabel(rawCategory);
+          groupedByKey.putIfAbsent(categoryKey, () => []).add(doc);
+          labelsByKey.putIfAbsent(categoryKey, () => categoryLabel);
+        }
+
+        final currentCategoryKey = _normalizeCategoryKey(
+          widget.currentCategory,
+        );
+        final currentCategoryLabel = _displayCategoryLabel(
+          widget.currentCategory,
+        );
+        if (!groupedByKey.containsKey(currentCategoryKey)) {
+          groupedByKey[currentCategoryKey] =
+              <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+        }
+        if (!groupedAllByKey.containsKey(currentCategoryKey)) {
+          groupedAllByKey[currentCategoryKey] =
+              <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+        }
+        labelsByKey[currentCategoryKey] = currentCategoryLabel;
+
+        if (priorDocs.isEmpty && groupedByKey.length <= 1) {
           return const Center(
             child: Padding(
               padding: EdgeInsets.symmetric(vertical: 20),
@@ -3150,120 +6049,255 @@ class _StudentHistorySection extends StatelessWidget {
           );
         }
 
-        // Sort: Connected cases first, then by date
-        docs.sort((a, b) {
-          final typeA = _safeStr(
-            a.data()['violationTypeLabel'] ??
-                a.data()['violationNameSnapshot'] ??
-                a.data()['violationName'],
-          );
-          final typeB = _safeStr(
-            b.data()['violationTypeLabel'] ??
-                b.data()['violationNameSnapshot'] ??
-                b.data()['violationName'],
-          );
+        final entries = groupedByKey.entries.toList()
+          ..sort((a, b) {
+            final aIsCurrent = a.key == currentCategoryKey;
+            final bIsCurrent = b.key == currentCategoryKey;
+            if (aIsCurrent && !bIsCurrent) return -1;
+            if (!aIsCurrent && bIsCurrent) return 1;
+            final byCount = b.value.length.compareTo(a.value.length);
+            if (byCount != 0) return byCount;
+            return a.key.toLowerCase().compareTo(b.key.toLowerCase());
+          });
 
-          final isConnectedA = _isConnected(typeA, currentViolationType);
-          final isConnectedB = _isConnected(typeB, currentViolationType);
-
-          if (isConnectedA && !isConnectedB) return -1;
-          if (!isConnectedA && isConnectedB) return 1;
-
-          final dateA =
-              (a.data()['createdAt'] as Timestamp?)?.toDate() ?? DateTime(2000);
-          final dateB =
-              (b.data()['createdAt'] as Timestamp?)?.toDate() ?? DateTime(2000);
-          return dateB.compareTo(dateA);
-        });
+        final visibleEntries = _showAllCategories
+            ? entries
+            : entries.take(_initialCategoryCount).toList(growable: false);
 
         return Column(
-          children: docs.map((doc) {
-            final d = doc.data();
-            final type = _safeStr(
-              d['violationTypeLabel'] ??
-                  d['violationNameSnapshot'] ??
-                  d['violationName'],
-            );
-            final date = (d['createdAt'] as Timestamp?)?.toDate();
-            final dateStr = date == null
-                ? '--'
-                : '${date.month}/${date.day}/${date.year}';
-            final status = _statusLabel(_safeStr(d['status']));
-            final severity = _safeStr(
-              d['finalSeverity'] ?? d['concern'],
-            ).toUpperCase();
-
-            final isConnected = _isConnected(type, currentViolationType);
-
-            return Container(
-              margin: const EdgeInsets.only(bottom: 8),
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: isConnected
-                    ? primaryColor.withValues(alpha: 0.05)
-                    : Colors.black.withValues(alpha: 0.02),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(
-                  color: isConnected
-                      ? primaryColor.withValues(alpha: 0.2)
-                      : Colors.black.withValues(alpha: 0.05),
-                ),
-              ),
-              child: Row(
-                children: [
-                  if (isConnected)
-                    const Padding(
-                      padding: EdgeInsets.only(right: 8),
-                      child: Icon(
-                        Icons.link_rounded,
-                        color: primaryColor,
-                        size: 16,
-                      ),
-                    ),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          type,
-                          style: TextStyle(
-                            color: isConnected ? primaryColor : textDark,
-                            fontWeight: FontWeight.w800,
-                            fontSize: 12.5,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          '$dateStr - $status - $severity',
-                          style: const TextStyle(
-                            color: hintColor,
-                            fontWeight: FontWeight.w700,
-                            fontSize: 11,
-                          ),
-                        ),
-                      ],
+          children: [
+            ...visibleEntries.map((entry) {
+              return _buildCategoryCard(
+                context,
+                categoryKey: entry.key,
+                categoryLabel: labelsByKey[entry.key] ?? 'Uncategorized',
+                priorCases: entry.value,
+                allCasesInCategory:
+                    groupedAllByKey[entry.key] ??
+                    <QueryDocumentSnapshot<Map<String, dynamic>>>[],
+                isCurrentCategory: entry.key == currentCategoryKey,
+              );
+            }),
+            if (entries.length > _initialCategoryCount)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: () {
+                    setState(() => _showAllCategories = !_showAllCategories);
+                  },
+                  icon: Icon(
+                    _showAllCategories
+                        ? Icons.expand_less_rounded
+                        : Icons.expand_more_rounded,
+                    color: primaryColor,
+                  ),
+                  label: Text(
+                    _showAllCategories
+                        ? 'Show less categories'
+                        : 'See more categories',
+                    style: const TextStyle(
+                      color: primaryColor,
+                      fontWeight: FontWeight.w800,
                     ),
                   ),
-                ],
+                ),
               ),
-            );
-          }).toList(),
+          ],
         );
       },
     );
   }
+}
 
-  bool _isConnected(String type, String current) {
-    final t = type.toLowerCase();
-    final c = current.toLowerCase();
-    if (t == c) return true;
+class _HistoryCaseDetailsDialog extends StatelessWidget {
+  final QueryDocumentSnapshot<Map<String, dynamic>> caseDoc;
+  final String offenseLabel;
+  final String categoryLabel;
+  final ValueChanged<QueryDocumentSnapshot<Map<String, dynamic>>>? onOpenCase;
 
-    // Logic for connected cases: frequent absent and late links to tardiness
-    final tardinessKeywords = ['tardy', 'late', 'absent', 'attendance'];
-    bool typeIsTardiness = tardinessKeywords.any((k) => t.contains(k));
-    bool currentIsTardiness = tardinessKeywords.any((k) => c.contains(k));
+  const _HistoryCaseDetailsDialog({
+    required this.caseDoc,
+    required this.offenseLabel,
+    required this.categoryLabel,
+    this.onOpenCase,
+  });
 
-    return typeIsTardiness && currentIsTardiness;
+  static Widget _kv(String k, String v) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 122,
+          child: Text(
+            '$k:',
+            style: const TextStyle(
+              color: hintColor,
+              fontWeight: FontWeight.w900,
+              fontSize: 12.2,
+            ),
+          ),
+        ),
+        Expanded(
+          child: Text(
+            v,
+            style: const TextStyle(
+              color: textDark,
+              fontWeight: FontWeight.w700,
+              fontSize: 12.4,
+              height: 1.3,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final d = caseDoc.data();
+    final caseCode = _safeStr(d['caseCode']).isEmpty
+        ? caseDoc.id
+        : _safeStr(d['caseCode']);
+    final violation = _safeStr(
+      d['violationTypeLabel'] ??
+          d['violationNameSnapshot'] ??
+          d['violationName'],
+    );
+    final status = _statusLabel(_safeStr(d['status']));
+    final severity = _safeStr(d['finalSeverity'] ?? d['concern']);
+    final reportedAt =
+        _globalTsToDate(d['createdAt']) ?? _globalTsToDate(d['reportedAt']);
+    final incidentAt = _globalTsToDate(d['incidentAt']);
+    final reportedBy = _reportedByDisplay(d);
+    final narrative = _safeStr(d['narrative'] ?? d['description']);
+
+    return AlertDialog(
+      backgroundColor: bg,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      titlePadding: const EdgeInsets.fromLTRB(24, 18, 12, 0),
+      title: Row(
+        children: [
+          Expanded(
+            child: Text(
+              offenseLabel,
+              style: const TextStyle(
+                color: primaryColor,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ),
+          IconButton(
+            onPressed: () => Navigator.pop(context),
+            tooltip: 'Close',
+            icon: const Icon(Icons.close_rounded, color: hintColor),
+            style: IconButton.styleFrom(
+              backgroundColor: Colors.black.withValues(alpha: 0.06),
+            ),
+          ),
+        ],
+      ),
+      content: SizedBox(
+        width: 560,
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _kv('Case Code', caseCode),
+              const SizedBox(height: 8),
+              _kv('Category', categoryLabel),
+              const SizedBox(height: 8),
+              _kv('Violation Type', violation.isEmpty ? '--' : violation),
+              const SizedBox(height: 8),
+              _kv('Status', status),
+              const SizedBox(height: 8),
+              _kv('Severity', severity.isEmpty ? '--' : _titleCase(severity)),
+              const SizedBox(height: 8),
+              _kv(
+                'Date Reported',
+                reportedAt == null
+                    ? '--'
+                    : DateFormat('MMM d, yyyy - h:mm a').format(reportedAt),
+              ),
+              const SizedBox(height: 8),
+              _kv(
+                'Date of Incident',
+                incidentAt == null
+                    ? '--'
+                    : DateFormat('MMM d, yyyy - h:mm a').format(incidentAt),
+              ),
+              const SizedBox(height: 8),
+              _kv('Reported By', reportedBy),
+              if (narrative.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                const Text(
+                  'Incident Summary',
+                  style: TextStyle(
+                    color: hintColor,
+                    fontWeight: FontWeight.w900,
+                    fontSize: 12.2,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.03),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: Colors.black.withValues(alpha: 0.08),
+                    ),
+                  ),
+                  child: Text(
+                    narrative,
+                    style: const TextStyle(
+                      color: textDark,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 12.4,
+                      height: 1.35,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+      actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+      actions: [
+        if (onOpenCase != null)
+          OutlinedButton.icon(
+            onPressed: () {
+              Navigator.pop(context);
+              onOpenCase?.call(caseDoc);
+            },
+            icon: const Icon(Icons.open_in_new_rounded),
+            label: const Text('Open Case'),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: primaryColor,
+              side: BorderSide(color: primaryColor.withValues(alpha: 0.35)),
+            ),
+          ),
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Close'),
+        ),
+        FilledButton.icon(
+          onPressed: () {
+            showDialog<void>(
+              context: context,
+              builder: (_) => _CaseLogsDialog(caseId: caseDoc.id, caseData: d),
+            );
+          },
+          icon: const Icon(Icons.history_rounded),
+          label: const Text('Case Logs'),
+          style: FilledButton.styleFrom(
+            backgroundColor: primaryColor,
+            foregroundColor: Colors.white,
+          ),
+        ),
+      ],
+    );
   }
 }
 
@@ -3275,11 +6309,15 @@ class _SetActionOption {
   final String code;
   final String label;
   final bool meetingRequired;
+  final int bookingWindowDays;
+  final int graceWindowDays;
 
   const _SetActionOption({
     required this.code,
     required this.label,
     required this.meetingRequired,
+    this.bookingWindowDays = 3,
+    this.graceWindowDays = 2,
   });
 }
 
@@ -3303,96 +6341,224 @@ class _AssignActionDialog extends StatefulWidget {
 class _AssignActionDialogState extends State<_AssignActionDialog> {
   final _scheduleSvc = OsaMeetingScheduleService();
   final _typesSvc = ViolationTypesService();
+  final _academicSvc = AcademicSettingsService();
   String? _severity;
   String? _action;
-  String? _meetingTimeframeKey; // fixed: 3days
+  String? _meetingTimeframeKey;
   bool _submitting = false;
   bool _checkingTimeframeSlots = false;
   bool _hasSlotsInTimeframe = true;
+  bool _hasGeneratedScheduleForTerm = true;
   String? _timeframeSlotMessage;
   int _timeframeValidationSeq = 0;
+  final TextEditingController _reopenReasonCtrl = TextEditingController();
+  bool _showReopenReasonError = false;
+  bool _loadingConfig = true;
+  String? _configError;
 
-  final List<String> _severities = ['Minor', 'Moderate', 'Major'];
+  List<String> _severities = const [];
   List<_SetActionOption> _reviewActions = const [];
+  List<_SetActionOption> _monitorActions = const [];
 
-  final List<String> _monitorActions = [
-    'Monitoring Progress',
-    'Follow-up Session',
-    'Home Visitation',
-    'Behavioral Contract Update',
-    'Counseling Extension',
-    'Case Resolution Pending',
-  ];
-
-  List<_SetActionOption> _defaultActionOptions() => ViolationSetActionTypes.all
-      .map(
-        (item) => _SetActionOption(
-          code: item.code,
-          label: item.label,
-          meetingRequired: item.meetingRequired,
-        ),
-      )
-      .toList(growable: false);
-
-  Future<void> _loadActionTypes() async {
+  Future<void> _loadDialogConfig() async {
+    setState(() {
+      _loadingConfig = true;
+      _configError = null;
+    });
     try {
-      final rows = await _typesSvc.fetchActiveActionTypes();
-      final options = rows
-          .map(
-            (row) => _SetActionOption(
-              code: (row['id'] ?? '').toString().trim().toLowerCase(),
+      final results = await Future.wait([
+        _typesSvc.fetchActiveActionTypes(),
+        _typesSvc.fetchSeverityLevels(),
+      ]);
+      final actionRows = results[0] as List<Map<String, dynamic>>;
+      final severityRows = results[1] as List<String>;
+      final reviewActions = actionRows
+          .map((row) {
+            final code = (row['id'] ?? '').toString().trim().toLowerCase();
+            final meetingRequired = row['meetingRequired'] == true;
+            final fallbackBooking =
+                code == ViolationSetActionTypes.immediateActionRequired
+                ? ViolationSetActionTypes.immediateBookingWindowDays
+                : ViolationSetActionTypes.defaultBookingWindowDays;
+            final fallbackGrace =
+                code == ViolationSetActionTypes.immediateActionRequired
+                ? 0
+                : ViolationSetActionTypes.bookingGraceExtensionDays;
+            return _SetActionOption(
+              code: code,
               label: (row['label'] ?? '').toString().trim(),
-              meetingRequired: row['meetingRequired'] == true,
-            ),
-          )
+              meetingRequired: meetingRequired,
+              bookingWindowDays:
+                  ((row['bookingWindowDays'] as num?)?.toInt() ??
+                  fallbackBooking),
+              graceWindowDays: meetingRequired
+                  ? ((row['graceWindowDays'] as num?)?.toInt() ?? fallbackGrace)
+                  : 0,
+            );
+          })
           .where((row) => row.code.isNotEmpty && row.label.isNotEmpty)
           .toList(growable: false);
+      final monitorActions = reviewActions;
+      final severities = severityRows
+          .map((item) => item.trim())
+          .where((item) => item.isNotEmpty)
+          .toList(growable: false);
+      final effectiveSeverities = severities.isEmpty
+          ? const <String>['Minor', 'Moderate', 'Major']
+          : severities;
       if (!mounted) return;
+      final status = _safeStr(widget.doc.data()['status']).toLowerCase();
+      final isMonitor =
+          status == 'action set' ||
+          status == 'unresolved' ||
+          status == 'resolved';
+      final actionLabels = isMonitor
+          ? monitorActions.map((item) => item.label).toList(growable: false)
+          : reviewActions.map((item) => item.label).toList(growable: false);
+      String? matchedAction;
+      final currentKey = widget.currentAction.toLowerCase();
+      for (final label in actionLabels) {
+        if (currentKey.contains(label.split('(')[0].trim().toLowerCase())) {
+          matchedAction = label;
+          break;
+        }
+      }
+      matchedAction ??= actionLabels.isEmpty ? null : actionLabels.first;
+      String? matchedSeverity;
+      if (effectiveSeverities.any(
+        (item) => item.toLowerCase() == widget.currentSeverity.toLowerCase(),
+      )) {
+        matchedSeverity = effectiveSeverities.firstWhere(
+          (item) => item.toLowerCase() == widget.currentSeverity.toLowerCase(),
+        );
+      }
       setState(() {
-        _reviewActions = options.isEmpty ? _defaultActionOptions() : options;
+        _reviewActions = reviewActions;
+        _monitorActions = monitorActions;
+        _severities = effectiveSeverities;
+        _action = matchedAction;
+        _severity = matchedSeverity;
+        _meetingTimeframeKey = _defaultMeetingTimeframeKeyForAction(_action);
+        if ((!isMonitor && reviewActions.isEmpty) ||
+            (isMonitor && monitorActions.isEmpty)) {
+          _configError =
+              'Missing violation config. Please seed Action Types in Violation Settings.';
+        }
+        _loadingConfig = false;
       });
     } catch (_) {
       if (!mounted) return;
-      setState(() => _reviewActions = _defaultActionOptions());
+      setState(() {
+        _loadingConfig = false;
+        _configError =
+            'Unable to load violation config. Please check Firestore.';
+      });
     }
+    _validateTimeframeSlots();
+  }
+
+  _SetActionOption? _actionOptionForLabel(String? label) {
+    if (label == null || label.trim().isEmpty) return null;
+    for (final item in _reviewActions) {
+      if (item.label == label) return item;
+    }
+    return null;
   }
 
   String? _actionCodeForLabel(String? label) {
-    if (label == null || label.trim().isEmpty) return null;
-    final match = _reviewActions.where((item) => item.label == label);
-    if (match.isEmpty) return null;
-    return match.first.code;
+    return _actionOptionForLabel(label)?.code;
+  }
+
+  bool _isImmediateActionRequired(String? actionLabel) {
+    if (actionLabel == null || actionLabel.trim().isEmpty) return false;
+    final configuredCode = _actionOptionForLabel(actionLabel)?.code;
+    return configuredCode == ViolationSetActionTypes.immediateActionRequired;
+  }
+
+  String _defaultMeetingTimeframeKeyForAction(String? actionLabel) {
+    final bookingDays = _initialBookingDaysForAction(actionLabel);
+    return '${bookingDays}days';
+  }
+
+  int _initialBookingDaysForAction(String? actionLabel) {
+    final option = _actionOptionForLabel(actionLabel);
+    final configuredDays = option?.bookingWindowDays ?? 0;
+    if (configuredDays > 0) return configuredDays;
+    return _isImmediateActionRequired(actionLabel)
+        ? ViolationSetActionTypes.immediateBookingWindowDays
+        : ViolationSetActionTypes.defaultBookingWindowDays;
+  }
+
+  int _graceBookingDaysForAction(String? actionLabel) {
+    final option = _actionOptionForLabel(actionLabel);
+    if (option == null) return _isImmediateActionRequired(actionLabel) ? 0 : 2;
+    if (!option.meetingRequired) return 0;
+    final configuredDays = option.graceWindowDays;
+    return configuredDays < 0 ? 0 : configuredDays;
+  }
+
+  String _bookingWindowSummaryForAction(String? actionLabel) {
+    final initialDays = _initialBookingDaysForAction(actionLabel);
+    final graceDays = _graceBookingDaysForAction(actionLabel);
+    if (graceDays == 0) {
+      return 'Initial booking window: $initialDays days (no auto extension)';
+    }
+    return 'Initial booking window: $initialDays days '
+        '(+$graceDays-day auto extension)';
   }
 
   bool _isMeetingRequiredAction(String actionLabel) {
-    final fromBackend = ViolationSetActionTypes.resolve(actionLabel);
-    if (fromBackend != null) return fromBackend.meetingRequired;
-
     final configured = _reviewActions.where(
       (item) => item.label == actionLabel,
     );
     if (configured.isNotEmpty) return configured.first.meetingRequired;
-
-    final a = actionLabel.toLowerCase().trim();
-    if (a.contains('advisory') || a.contains('reminder')) return false;
-    if (a.contains('formal warning') || a.contains('written warning')) {
-      return false;
-    }
-    if (a.contains('guidance') && a.contains('check')) return true;
-    if (a.contains('parent') || a.contains('guardian')) return true;
-    if (a.contains('osa')) return true;
-    if (a.contains('immediate action')) return true;
     return false;
   }
 
   DateTime _endOfDay(DateTime d) => DateTime(d.year, d.month, d.day, 23, 59);
 
+  Future<Map<String, dynamic>?> _resolveMeetingSlotContext() async {
+    try {
+      final activeSy = await _academicSvc.getActiveSY();
+      final activeSchoolYearId = _safeStr(activeSy?['id']);
+      final activeTermId = _safeStr(activeSy?['activeTermId']);
+      if (activeSchoolYearId.isNotEmpty && activeTermId.isNotEmpty) {
+        return <String, dynamic>{
+          'schoolYearId': activeSchoolYearId,
+          'termId': activeTermId,
+          'fromActive': true,
+        };
+      }
+    } catch (_) {}
+
+    final caseSchoolYearId = _safeStr(widget.doc.data()['schoolYearId']);
+    final caseTermId = _safeStr(widget.doc.data()['termId']);
+    if (caseSchoolYearId.isEmpty || caseTermId.isEmpty) {
+      return null;
+    }
+    return <String, dynamic>{
+      'schoolYearId': caseSchoolYearId,
+      'termId': caseTermId,
+      'fromActive': false,
+    };
+  }
+
   DateTime _meetingDueByForKey(String key) {
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
-    switch (key) {
+    final normalized = key.trim().toLowerCase();
+    final dynamicDays = RegExp(r'^(\d+)\s*days?$').firstMatch(normalized);
+    if (dynamicDays != null) {
+      final parsed = int.tryParse(dynamicDays.group(1) ?? '');
+      if (parsed != null && parsed > 0) {
+        return _endOfDay(today.add(Duration(days: parsed)));
+      }
+    }
+    switch (normalized) {
       case 'today':
         return _endOfDay(today);
+      case '2days':
+        return _endOfDay(today.add(const Duration(days: 2)));
       case '3days':
         return _endOfDay(today.add(const Duration(days: 3)));
       case 'week':
@@ -3416,6 +6582,7 @@ class _AssignActionDialogState extends State<_AssignActionDialog> {
       setState(() {
         _checkingTimeframeSlots = false;
         _hasSlotsInTimeframe = true;
+        _hasGeneratedScheduleForTerm = true;
         _timeframeSlotMessage = null;
       });
       return;
@@ -3423,21 +6590,24 @@ class _AssignActionDialogState extends State<_AssignActionDialog> {
 
     final timeframe =
         (_meetingTimeframeKey == null || _meetingTimeframeKey!.isEmpty)
-        ? '3days'
+        ? _defaultMeetingTimeframeKeyForAction(_action)
         : _meetingTimeframeKey!;
 
-    final schoolYearId = _safeStr(widget.doc.data()['schoolYearId']);
-    final termId = _safeStr(widget.doc.data()['termId']);
-    if (schoolYearId.isEmpty || termId.isEmpty) {
+    final slotContext = await _resolveMeetingSlotContext();
+    if (slotContext == null) {
       if (!mounted) return;
       setState(() {
         _checkingTimeframeSlots = false;
         _hasSlotsInTimeframe = false;
+        _hasGeneratedScheduleForTerm = false;
         _timeframeSlotMessage =
             'This case has no linked school year/term. Cannot validate available meeting slots.';
       });
       return;
     }
+    final schoolYearId = (slotContext['schoolYearId'] as String?) ?? '';
+    final termId = (slotContext['termId'] as String?) ?? '';
+    final fromActive = slotContext['fromActive'] == true;
 
     final seq = ++_timeframeValidationSeq;
     if (!mounted) return;
@@ -3447,6 +6617,22 @@ class _AssignActionDialogState extends State<_AssignActionDialog> {
     });
 
     try {
+      final hasGeneratedSchedule = await _scheduleSvc.hasSlotsForTerm(
+        schoolYearId: schoolYearId,
+        termId: termId,
+      );
+      if (!mounted || seq != _timeframeValidationSeq) return;
+      if (!hasGeneratedSchedule) {
+        setState(() {
+          _checkingTimeframeSlots = false;
+          _hasGeneratedScheduleForTerm = false;
+          _hasSlotsInTimeframe = false;
+          _timeframeSlotMessage =
+              'No generated meeting schedule found for this school year/semester. Generate slots in Meeting Schedule first.';
+        });
+        return;
+      }
+
       final now = DateTime.now();
       final dueBy = _meetingDueByForKey(timeframe);
       final count = await _scheduleSvc.countOpenSlotsInRange(
@@ -3458,15 +6644,17 @@ class _AssignActionDialogState extends State<_AssignActionDialog> {
       if (!mounted || seq != _timeframeValidationSeq) return;
       setState(() {
         _checkingTimeframeSlots = false;
+        _hasGeneratedScheduleForTerm = true;
         _hasSlotsInTimeframe = count > 0;
         _timeframeSlotMessage = count > 0
-            ? '$count open slot(s) available for the current booking window.'
-            : 'No available slots for the current booking window. Please update meeting schedule.';
+            ? '$count open slot(s) available for the current booking window${fromActive ? ' in the active term' : ''}.'
+            : 'No available slots for the current booking window${fromActive ? ' in the active term' : ''}. Please update meeting schedule.';
       });
     } catch (_) {
       if (!mounted || seq != _timeframeValidationSeq) return;
       setState(() {
         _checkingTimeframeSlots = false;
+        _hasGeneratedScheduleForTerm = false;
         _hasSlotsInTimeframe = false;
         _timeframeSlotMessage =
             'Unable to validate available slots right now. Please try again.';
@@ -3477,50 +6665,30 @@ class _AssignActionDialogState extends State<_AssignActionDialog> {
   @override
   void initState() {
     super.initState();
-    _reviewActions = _defaultActionOptions();
-    final status = _safeStr(widget.doc.data()['status']).toLowerCase();
-    final isMonitor =
-        status == 'action set' ||
-        status == 'unresolved' ||
-        status == 'resolved';
-    final actions = isMonitor
-        ? _monitorActions
-        : _reviewActions.map((item) => item.label).toList(growable: false);
+    _loadDialogConfig();
+  }
 
-    if (_severities.any(
-      (s) => s.toLowerCase() == widget.currentSeverity.toLowerCase(),
-    )) {
-      _severity = _severities.firstWhere(
-        (s) => s.toLowerCase() == widget.currentSeverity.toLowerCase(),
-      );
-    }
-    // Try to match action
-    final currentKey = widget.currentAction.toLowerCase();
-    for (final a in actions) {
-      if (currentKey.contains(a.split('(')[0].trim().toLowerCase())) {
-        _action = a;
-        break;
-      }
-    }
-
-    // Fixed meeting booking window for meeting-required actions
-    _meetingTimeframeKey = '3days';
-    _loadActionTypes();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _validateTimeframeSlots();
-    });
+  @override
+  void dispose() {
+    _reopenReasonCtrl.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    final viewport = MediaQuery.sizeOf(context);
+    final compact = viewport.width < 760;
+    final dialogWidth = compact ? (viewport.width * 0.95) : 500.0;
     final status = _safeStr(widget.doc.data()['status']).toLowerCase();
+    final isCancelled = status == 'cancelled';
     final isMonitor =
         status == 'action set' ||
         status == 'unresolved' ||
         status == 'resolved';
-    final actions = isMonitor
-        ? _monitorActions
-        : _reviewActions.map((item) => item.label).toList(growable: false);
+    final actionOptions = isMonitor ? _monitorActions : _reviewActions;
+    final actions = actionOptions
+        .map((item) => item.label)
+        .toList(growable: false);
     final selectedMeetingAction =
         !isMonitor && _action != null && _isMeetingRequiredAction(_action!);
     final willResolveImmediately =
@@ -3528,14 +6696,40 @@ class _AssignActionDialogState extends State<_AssignActionDialog> {
     final showTimeframeSection = _action != null && selectedMeetingAction;
     final showSeveritySection = _action != null && !showTimeframeSection;
     final requiresSeverity = showSeveritySection;
-    final title = isMonitor ? 'Update Monitoring' : 'Assign Assessment';
-    final subtitle = isMonitor
-        ? 'Update the monitoring status or follow-up action.'
-        : 'Set the severity and required action for this case.';
+    final title = isCancelled
+        ? 'Reopen + Set Action'
+        : (isMonitor ? 'Update Monitoring' : 'Assign Assessment');
+    final subtitle = isCancelled
+        ? 'Provide a reason for reopening, then assign the next action.'
+        : (isMonitor
+              ? 'Update the monitoring status or follow-up action.'
+              : 'Set the severity and required action for this case.');
 
     return AlertDialog(
       backgroundColor: bg,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      insetPadding: EdgeInsets.symmetric(
+        horizontal: compact ? 10 : 24,
+        vertical: compact ? 10 : 24,
+      ),
+      titlePadding: EdgeInsets.fromLTRB(
+        compact ? 18 : 24,
+        compact ? 14 : 20,
+        compact ? 18 : 24,
+        0,
+      ),
+      contentPadding: EdgeInsets.fromLTRB(
+        compact ? 18 : 24,
+        12,
+        compact ? 18 : 24,
+        0,
+      ),
+      actionsPadding: EdgeInsets.fromLTRB(
+        compact ? 12 : 16,
+        8,
+        compact ? 12 : 16,
+        compact ? 12 : 14,
+      ),
       title: Text(
         title,
         style: const TextStyle(
@@ -3544,7 +6738,7 @@ class _AssignActionDialogState extends State<_AssignActionDialog> {
         ),
       ),
       content: SizedBox(
-        width: 500,
+        width: dialogWidth,
         child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -3559,6 +6753,89 @@ class _AssignActionDialogState extends State<_AssignActionDialog> {
                 ),
               ),
               const SizedBox(height: 16),
+              if (_loadingConfig)
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 12),
+                  child: LinearProgressIndicator(color: primaryColor),
+                )
+              else if (_configError != null)
+                Container(
+                  width: double.infinity,
+                  margin: const EdgeInsets.only(bottom: 12),
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.red.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: Colors.red.withValues(alpha: 0.25),
+                    ),
+                  ),
+                  child: Text(
+                    _configError!,
+                    style: TextStyle(
+                      color: Colors.red.shade700,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 12,
+                    ),
+                  ),
+                ),
+              if (isCancelled) ...[
+                const Text(
+                  'Reopen reason (Required)',
+                  style: TextStyle(
+                    color: textDark,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 13,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _reopenReasonCtrl,
+                  enabled: !_submitting,
+                  minLines: 2,
+                  maxLines: 3,
+                  onChanged: (_) {
+                    if (_showReopenReasonError &&
+                        _reopenReasonCtrl.text.trim().isNotEmpty) {
+                      setState(() => _showReopenReasonError = false);
+                    }
+                  },
+                  decoration: InputDecoration(
+                    hintText: 'Why are you reopening this cancelled case?',
+                    filled: true,
+                    fillColor: Colors.white,
+                    errorText: _showReopenReasonError
+                        ? 'Reopen reason is required.'
+                        : null,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(AppRadii.md),
+                      borderSide: BorderSide(
+                        color: _showReopenReasonError
+                            ? Colors.redAccent
+                            : Colors.black.withValues(alpha: 0.15),
+                      ),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(AppRadii.md),
+                      borderSide: BorderSide(
+                        color: _showReopenReasonError
+                            ? Colors.redAccent
+                            : Colors.black.withValues(alpha: 0.15),
+                      ),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(AppRadii.md),
+                      borderSide: BorderSide(
+                        color: _showReopenReasonError
+                            ? Colors.redAccent
+                            : primaryColor,
+                        width: 1.35,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+              ],
               Text(
                 'ACTION SETTINGS',
                 style: const TextStyle(
@@ -3580,19 +6857,44 @@ class _AssignActionDialogState extends State<_AssignActionDialog> {
                 ),
               ),
               const SizedBox(height: 8),
+              if (actions.isEmpty)
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.red.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: Colors.red.withValues(alpha: 0.25),
+                    ),
+                  ),
+                  child: Text(
+                    isMonitor
+                        ? 'No active action types configured.'
+                        : 'No active action types configured.',
+                    style: TextStyle(
+                      color: Colors.red.shade700,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 12,
+                    ),
+                  ),
+                ),
               ...actions.map((a) {
                 final selected = _action == a;
                 final needsMeeting = !isMonitor && _isMeetingRequiredAction(a);
                 return GestureDetector(
-                  onTap: () {
-                    setState(() {
-                      _action = a;
-                      if (!isMonitor && _isMeetingRequiredAction(a)) {
-                        _meetingTimeframeKey ??= '3days';
-                      }
-                    });
-                    _validateTimeframeSlots();
-                  },
+                  onTap: _loadingConfig
+                      ? null
+                      : () {
+                          setState(() {
+                            _action = a;
+                            if (!isMonitor && _isMeetingRequiredAction(a)) {
+                              _meetingTimeframeKey =
+                                  _defaultMeetingTimeframeKeyForAction(a);
+                            }
+                          });
+                          _validateTimeframeSlots();
+                        },
                   child: Container(
                     margin: const EdgeInsets.only(bottom: 8),
                     padding: const EdgeInsets.symmetric(
@@ -3687,9 +6989,9 @@ class _AssignActionDialogState extends State<_AssignActionDialog> {
                       color: primaryColor.withValues(alpha: 0.2),
                     ),
                   ),
-                  child: const Text(
-                    'Initial booking window: 3 days (+2-day auto extension)',
-                    style: TextStyle(
+                  child: Text(
+                    _bookingWindowSummaryForAction(_action),
+                    style: const TextStyle(
                       color: primaryColor,
                       fontWeight: FontWeight.w800,
                       fontSize: 12.5,
@@ -3823,7 +7125,11 @@ class _AssignActionDialogState extends State<_AssignActionDialog> {
           ),
         ),
         FilledButton(
-          onPressed: (_action == null || _submitting)
+          onPressed:
+              (_loadingConfig ||
+                  _configError != null ||
+                  _action == null ||
+                  _submitting)
               ? null
               : (requiresSeverity && (_severity == null || _severity!.isEmpty))
               ? null
@@ -3831,8 +7137,9 @@ class _AssignActionDialogState extends State<_AssignActionDialog> {
                     (_meetingTimeframeKey == null ||
                         _meetingTimeframeKey!.isEmpty))
               ? null
-              : (showTimeframeSection &&
-                    (_checkingTimeframeSlots || !_hasSlotsInTimeframe))
+              : (showTimeframeSection && !_hasGeneratedScheduleForTerm)
+              ? null
+              : (showTimeframeSection && _checkingTimeframeSlots)
               ? null
               : _submit,
           style: FilledButton.styleFrom(
@@ -3852,7 +7159,11 @@ class _AssignActionDialogState extends State<_AssignActionDialog> {
                   ),
                 )
               : Text(
-                  willResolveImmediately ? 'Resolve Case' : 'Confirm Action',
+                  isCancelled
+                      ? 'Reopen + Apply Action'
+                      : (willResolveImmediately
+                            ? 'Resolve Case'
+                            : 'Confirm Action'),
                   style: const TextStyle(fontWeight: FontWeight.w900),
                 ),
         ),
@@ -3861,27 +7172,67 @@ class _AssignActionDialogState extends State<_AssignActionDialog> {
   }
 
   Future<void> _submit() async {
-    setState(() => _submitting = true);
+    final status = _safeStr(widget.doc.data()['status']).toLowerCase();
+    final isCancelled = status == 'cancelled';
+    final reopenReason = _reopenReasonCtrl.text.trim();
+    if (isCancelled && reopenReason.isEmpty) {
+      setState(() => _showReopenReasonError = true);
+      return;
+    }
+
+    setState(() {
+      _submitting = true;
+      _showReopenReasonError = false;
+    });
     try {
-      final status = _safeStr(widget.doc.data()['status']).toLowerCase();
       final isMonitor =
           status == 'action set' ||
           status == 'unresolved' ||
           status == 'resolved';
       final isMeetingRequired =
           _action != null && _isMeetingRequiredAction(_action!);
+      String? meetingSchoolYearIdForSubmit;
+      String? meetingTermIdForSubmit;
+      if (isMeetingRequired) {
+        final slotContext = await _resolveMeetingSlotContext();
+        if (slotContext == null) {
+          if (mounted &&
+              await _showNoMeetingScheduleDialog(
+                message:
+                    'Cannot set meeting action because active school year/semester is not configured.',
+              )) {
+            _openMeetingScheduleFromDialog();
+          }
+          if (mounted) setState(() => _submitting = false);
+          return;
+        }
+        meetingSchoolYearIdForSubmit = (slotContext['schoolYearId'] as String?)
+            ?.trim();
+        meetingTermIdForSubmit = (slotContext['termId'] as String?)?.trim();
+        if (!_hasGeneratedScheduleForTerm) {
+          if (mounted &&
+              await _showNoMeetingScheduleDialog(
+                message:
+                    'No generated meeting schedule found for the selected school year/semester.',
+              )) {
+            _openMeetingScheduleFromDialog();
+          }
+          if (mounted) setState(() => _submitting = false);
+          return;
+        }
+      }
       if (isMeetingRequired &&
           (_checkingTimeframeSlots || !_hasSlotsInTimeframe)) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                'No available meeting slots for the initial 3-day booking window.',
-              ),
-            ),
-          );
+        final initialDays = _initialBookingDaysForAction(_action);
+        if (mounted &&
+            await _showNoMeetingScheduleDialog(
+              message:
+                  'No available meeting slots for the initial '
+                  '$initialDays-day booking window.',
+            )) {
+          _openMeetingScheduleFromDialog();
         }
-        setState(() => _submitting = false);
+        if (mounted) setState(() => _submitting = false);
         return;
       }
       final finalSeverity = (!isMonitor && isMeetingRequired)
@@ -3893,14 +7244,21 @@ class _AssignActionDialogState extends State<_AssignActionDialog> {
         finalSeverity: finalSeverity,
         actionSelected: _action!,
         actionTypeCode: actionCode,
+        meetingSchoolYearId: meetingSchoolYearIdForSubmit,
+        meetingTermId: meetingTermIdForSubmit,
+        reopenReason: isCancelled ? reopenReason : null,
         meetingRequiredOverride: !isMonitor ? isMeetingRequired : null,
         actionReason: null,
         meetingStatus: isMeetingRequired ? 'pending_student_booking' : null,
         meetingWindow: isMeetingRequired
-            ? (_meetingTimeframeKey ?? '3days')
+            ? (_meetingTimeframeKey ??
+                  _defaultMeetingTimeframeKeyForAction(_action))
             : null,
         meetingDueBy: isMeetingRequired
-            ? _meetingDueByForKey(_meetingTimeframeKey ?? '3days')
+            ? _meetingDueByForKey(
+                _meetingTimeframeKey ??
+                    _defaultMeetingTimeframeKeyForAction(_action),
+              )
             : null,
         scheduledAt: null,
         meetingLocation: null,
@@ -3910,12 +7268,83 @@ class _AssignActionDialogState extends State<_AssignActionDialog> {
       if (mounted) Navigator.pop(context, true);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
+        _showInlineNotice(
           context,
-        ).showSnackBar(SnackBar(content: Text('Error: $e')));
+          message: 'Error: $e',
+          tone: _InlineNoticeTone.danger,
+        );
         setState(() => _submitting = false);
       }
     }
+  }
+
+  Future<bool> _showNoMeetingScheduleDialog({required String message}) async {
+    final open = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: bg,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        title: const Row(
+          children: [
+            Icon(Icons.warning_amber_rounded, color: Colors.orange),
+            SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'No Meeting Schedule',
+                style: TextStyle(
+                  color: textDark,
+                  fontWeight: FontWeight.w900,
+                  fontSize: 18,
+                ),
+              ),
+            ),
+          ],
+        ),
+        content: Text(
+          '$message\n\nSet up or sync Meeting Schedule first before assigning a meeting-required action.',
+          style: const TextStyle(
+            color: hintColor,
+            fontWeight: FontWeight.w700,
+            height: 1.35,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text(
+              'Cancel',
+              style: TextStyle(fontWeight: FontWeight.w900, color: hintColor),
+            ),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(context, true),
+            style: FilledButton.styleFrom(
+              backgroundColor: primaryColor,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(AppRadii.md),
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+            ),
+            icon: const Icon(Icons.calendar_month_rounded, size: 18),
+            label: const Text(
+              'Open Meeting Schedule',
+              style: TextStyle(fontWeight: FontWeight.w900),
+            ),
+          ),
+        ],
+      ),
+    );
+    return open == true;
+  }
+
+  void _openMeetingScheduleFromDialog() {
+    final rootNav = Navigator.of(context, rootNavigator: true);
+    rootNav.pop();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      rootNav.push(
+        MaterialPageRoute<void>(builder: (_) => const MeetingSchedulePage()),
+      );
+    });
   }
 }
 
@@ -3931,28 +7360,39 @@ class _CategoryPill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isSerious = concern.toLowerCase().contains('serious');
+    final normalized = concern.trim().toLowerCase();
+    final isSerious = normalized.contains('serious');
+    final isBasic = normalized.contains('basic');
+    final fill = isSerious
+        ? Colors.orange.withValues(alpha: 0.12)
+        : isBasic
+        ? primaryColor.withValues(alpha: 0.12)
+        : Colors.black.withValues(alpha: 0.06);
+    final border = isSerious
+        ? Colors.orange.withValues(alpha: 0.30)
+        : isBasic
+        ? primaryColor.withValues(alpha: 0.25)
+        : Colors.black.withValues(alpha: 0.12);
+    final textColor = isSerious
+        ? Colors.orange.shade900
+        : isBasic
+        ? primaryColor
+        : hintColor;
 
     return Container(
       constraints: const BoxConstraints(maxWidth: 150),
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: isSerious
-            ? primaryColor.withValues(alpha: 0.12)
-            : Colors.blue.withValues(alpha: 0.12),
+        color: fill,
         borderRadius: BorderRadius.circular(6),
-        border: Border.all(
-          color: isSerious
-              ? primaryColor.withValues(alpha: 0.25)
-              : Colors.blue.withValues(alpha: 0.25),
-        ),
+        border: Border.all(color: border),
       ),
       child: Text(
         text,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
         style: TextStyle(
-          color: isSerious ? primaryColor : Colors.blue.shade700,
+          color: textColor,
           fontWeight: FontWeight.w800,
           fontSize: 11,
         ),
@@ -3963,30 +7403,45 @@ class _CategoryPill extends StatelessWidget {
 
 class _DetailCard extends StatelessWidget {
   final String title;
+  final Widget? titleTrailing;
   final Widget child;
 
-  const _DetailCard({required this.title, required this.child});
+  const _DetailCard({
+    required this.title,
+    this.titleTrailing,
+    required this.child,
+  });
 
   @override
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(AppSpacing.sm),
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: const Color(0xFFF8FBF8),
         borderRadius: BorderRadius.circular(AppRadii.md),
-        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+        border: Border.all(color: Colors.black.withValues(alpha: 0.06)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            title,
-            style: const TextStyle(
-              color: textDark,
-              fontWeight: FontWeight.w900,
-              fontSize: 14.5,
-            ),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  title,
+                  style: const TextStyle(
+                    color: textDark,
+                    fontWeight: FontWeight.w900,
+                    fontSize: 14.5,
+                  ),
+                ),
+              ),
+              if (titleTrailing != null) ...[
+                const SizedBox(width: 8),
+                titleTrailing!,
+              ],
+            ],
           ),
           const SizedBox(height: 10),
           child,
@@ -4022,11 +7477,6 @@ class _EvidencePlaceholders extends StatelessWidget {
             fontWeight: FontWeight.w700,
             fontSize: 12,
           ),
-        ),
-        const SizedBox(height: 8),
-        Text(
-          'Evidence files ($count)',
-          style: const TextStyle(color: hintColor, fontWeight: FontWeight.w800),
         ),
         const SizedBox(height: 10),
         Wrap(
@@ -4233,6 +7683,22 @@ String _safeStr(dynamic v) => (v ?? '').toString().trim();
 
 final Map<String, Future<String>> _studentProgramFutureCache =
     <String, Future<String>>{};
+final Map<String, Future<String>> _studentPhotoFutureCache =
+    <String, Future<String>>{};
+final Map<String, Future<_OffenseIndicator>> _offenseIndicatorFutureCache =
+    <String, Future<_OffenseIndicator>>{};
+
+class _OffenseIndicator {
+  final String label;
+  final String subtitle;
+  final int offenseNumber;
+
+  const _OffenseIndicator({
+    required this.label,
+    required this.subtitle,
+    required this.offenseNumber,
+  });
+}
 
 String _studentProgramLabelFromCase(Map<String, dynamic> data) {
   final fromCase = _safeStr(
@@ -4275,6 +7741,157 @@ Future<String> _resolveStudentProgramLabel(
     );
     return fromUser.isEmpty ? '--' : fromUser;
   });
+}
+
+Future<String> _resolveStudentPhotoUrl(String studentUid) {
+  final uid = _safeStr(studentUid);
+  if (uid.isEmpty) {
+    return Future<String>.value('');
+  }
+
+  return _studentPhotoFutureCache.putIfAbsent(uid, () async {
+    final userDoc = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(uid)
+        .get();
+    final userData = userDoc.data() ?? const <String, dynamic>{};
+    final studentProfile =
+        userData['studentProfile'] as Map<String, dynamic>? ??
+        const <String, dynamic>{};
+    final employeeProfile =
+        userData['employeeProfile'] as Map<String, dynamic>? ??
+        const <String, dynamic>{};
+
+    final source = _safeStr(
+      userData['photoUrl'] ??
+          userData['profilePhotoUrl'] ??
+          studentProfile['photoUrl'] ??
+          studentProfile['profilePhotoUrl'] ??
+          employeeProfile['photoUrl'] ??
+          employeeProfile['profilePhotoUrl'],
+    );
+    return _resolveImageSourceUrl(source);
+  });
+}
+
+String _normalizeCategoryKeyGlobal(String raw) {
+  final value = raw.trim().toLowerCase();
+  if (value.isEmpty || value == '--' || value == 'uncategorized') {
+    return 'uncategorized';
+  }
+  return value;
+}
+
+DateTime? _offenseSortDate(Map<String, dynamic> data) {
+  return _globalTsToDate(data['createdAt']) ??
+      _globalTsToDate(data['incidentAt']) ??
+      _globalTsToDate(data['reportedAt']);
+}
+
+String _ordinalGlobal(int value) {
+  if (value <= 0) return '${value}th';
+  final mod100 = value % 100;
+  if (mod100 >= 11 && mod100 <= 13) return '${value}th';
+  switch (value % 10) {
+    case 1:
+      return '${value}st';
+    case 2:
+      return '${value}nd';
+    case 3:
+      return '${value}rd';
+    default:
+      return '${value}th';
+  }
+}
+
+Future<_OffenseIndicator> _resolveOffenseIndicator({
+  required String studentUid,
+  required String currentCaseId,
+  required String currentCategory,
+}) {
+  final uid = _safeStr(studentUid);
+  if (uid.isEmpty) {
+    return Future<_OffenseIndicator>.value(
+      const _OffenseIndicator(
+        label: '--',
+        subtitle: 'Offense indicator unavailable.',
+        offenseNumber: 0,
+      ),
+    );
+  }
+
+  final categoryKey = _normalizeCategoryKeyGlobal(currentCategory);
+  final cacheKey = '$uid::$currentCaseId::$categoryKey';
+  final computation = () async {
+    final snap = await FirebaseFirestore.instance
+        .collection('violation_cases')
+        .where('studentUid', isEqualTo: uid)
+        .get();
+
+    final docs = snap.docs
+        .where((doc) {
+          final docCategory = _normalizeCategoryKeyGlobal(
+            _categoryLabelFromCaseGlobal(doc.data()),
+          );
+          if (docCategory != categoryKey) return false;
+          final isCancelled =
+              _statusKey(_safeStr(doc.data()['status'])) == 'cancelled';
+          return !isCancelled;
+        })
+        .toList(growable: false);
+
+    if (docs.isEmpty) {
+      return const _OffenseIndicator(
+        label: '1st Offense',
+        subtitle: 'No prior offense records in this category.',
+        offenseNumber: 1,
+      );
+    }
+
+    final sorted = [...docs]
+      ..sort((a, b) {
+        final da = _offenseSortDate(a.data()) ?? DateTime(2000);
+        final db = _offenseSortDate(b.data()) ?? DateTime(2000);
+        final byDate = da.compareTo(db); // oldest first
+        if (byDate != 0) return byDate;
+        return a.id.compareTo(b.id);
+      });
+
+    final idx = sorted.indexWhere((doc) => doc.id == currentCaseId);
+    final offenseNumber = (idx >= 0 ? idx + 1 : sorted.length + 1);
+    final label = '${_ordinalGlobal(offenseNumber)} Offense';
+    final subtitle = offenseNumber <= 1
+        ? 'This appears to be the first recorded offense in this category.'
+        : 'This case is the $label in this category.';
+
+    return _OffenseIndicator(
+      label: label,
+      subtitle: subtitle,
+      offenseNumber: offenseNumber,
+    );
+  }();
+
+  // Always refresh this key to avoid stale offense rank after case updates.
+  _offenseIndicatorFutureCache[cacheKey] = computation;
+  return computation;
+}
+
+bool _isHttpImageUrl(String value) {
+  return value.startsWith('http://') || value.startsWith('https://');
+}
+
+Future<String> _resolveImageSourceUrl(String source) async {
+  final value = _safeStr(source);
+  if (value.isEmpty) return '';
+  if (_isHttpImageUrl(value)) return value;
+  try {
+    if (value.startsWith('gs://')) {
+      return await FirebaseStorage.instance.refFromURL(value).getDownloadURL();
+    }
+    return await FirebaseStorage.instance.ref(value).getDownloadURL();
+  } catch (_) {
+    return '';
+  }
 }
 
 String _categoryLabelFromCaseGlobal(Map<String, dynamic> data) {
@@ -4375,6 +7992,7 @@ String _statusKey(String raw) {
   if (n.contains('under') && n.contains('review')) return 'under review';
   if (n.contains('action')) return 'action set';
   if (n.contains('unresolved')) return 'unresolved';
+  if (n.contains('cancel')) return 'cancelled';
   if (n.contains('resolved') || n.contains('done')) return 'resolved';
   if (n.contains('submitted')) return 'submitted';
   if (n.contains('rejected')) return 'rejected';
@@ -4390,6 +8008,8 @@ String _statusLabel(String raw) {
       return 'Action Set';
     case 'unresolved':
       return 'Unresolved';
+    case 'cancelled':
+      return 'Cancelled';
     case 'resolved':
       return 'Resolved';
     case 'submitted':
@@ -4401,6 +8021,15 @@ String _statusLabel(String raw) {
     default:
       return raw.isEmpty ? 'Unknown' : _titleCase(raw);
   }
+}
+
+bool _canCorrectCaseStatusKey(String key) {
+  return key == 'submitted' ||
+      key == 'under review' ||
+      key == 'action set' ||
+      key == 'unresolved' ||
+      key == 'cancelled' ||
+      key == 'resolved';
 }
 
 String _actionKey(Map<String, dynamic> d) {
@@ -4556,28 +8185,6 @@ String _fmtMeetingDateTime(DateTime dateTime) {
   return DateFormat('MMM d, yyyy - h:mm a').format(dateTime);
 }
 
-List<Map<String, dynamic>> _meetingHistoryEntries(Map<String, dynamic> d) {
-  final raw = d['meetingHistory'];
-  if (raw is! List) return const [];
-
-  final list = <Map<String, dynamic>>[];
-  for (final item in raw) {
-    if (item is Map) {
-      list.add(Map<String, dynamic>.from(item));
-    }
-  }
-
-  list.sort((a, b) {
-    final ad = _globalTsToDate(a['recordedAt']);
-    final bd = _globalTsToDate(b['recordedAt']);
-    if (ad == null && bd == null) return 0;
-    if (ad == null) return 1;
-    if (bd == null) return -1;
-    return bd.compareTo(ad);
-  });
-  return list;
-}
-
 DateTime? _globalTsToDate(dynamic ts) {
   if (ts == null) return null;
   try {
@@ -4671,9 +8278,11 @@ Future<void> _openEvidenceFile(BuildContext context, String rawUrl) async {
   final resolved = await _resolveEvidenceUrl(rawUrl);
   if (resolved == null || resolved.isEmpty) {
     if (context.mounted) {
-      ScaffoldMessenger.of(
+      _showInlineNotice(
         context,
-      ).showSnackBar(const SnackBar(content: Text('Unable to open file URL.')));
+        message: 'Unable to open file URL.',
+        tone: _InlineNoticeTone.warning,
+      );
     }
     return;
   }
@@ -4681,18 +8290,22 @@ Future<void> _openEvidenceFile(BuildContext context, String rawUrl) async {
   final uri = Uri.tryParse(resolved);
   if (uri == null) {
     if (context.mounted) {
-      ScaffoldMessenger.of(
+      _showInlineNotice(
         context,
-      ).showSnackBar(const SnackBar(content: Text('Invalid file URL.')));
+        message: 'Invalid file URL.',
+        tone: _InlineNoticeTone.warning,
+      );
     }
     return;
   }
 
   final ok = await launchUrl(uri, mode: LaunchMode.platformDefault);
   if (!ok && context.mounted) {
-    ScaffoldMessenger.of(
+    _showInlineNotice(
       context,
-    ).showSnackBar(const SnackBar(content: Text('Could not open the file.')));
+      message: 'Could not open the file.',
+      tone: _InlineNoticeTone.warning,
+    );
   }
 }
 
@@ -4714,8 +8327,10 @@ Future<void> _openEvidenceViewer(
 
   if (resolved.isEmpty) {
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No previewable image evidence found.')),
+      _showInlineNotice(
+        context,
+        message: 'No previewable image evidence found.',
+        tone: _InlineNoticeTone.neutral,
       );
     }
     return;
@@ -4731,6 +8346,134 @@ Future<void> _openEvidenceViewer(
       initialIndex: initialIndex.clamp(0, resolved.length - 1),
     ),
   );
+}
+
+Future<void> _openProfilePhotoViewer(
+  BuildContext context, {
+  required String sourceUrl,
+  required String studentName,
+}) async {
+  final resolvedUrl = await _resolveImageSourceUrl(sourceUrl);
+  if (resolvedUrl.isEmpty) {
+    if (context.mounted) {
+      _showInlineNotice(
+        context,
+        message: 'No profile photo available.',
+        tone: _InlineNoticeTone.neutral,
+      );
+    }
+    return;
+  }
+  if (!context.mounted) return;
+
+  showDialog<void>(
+    context: context,
+    barrierColor: Colors.black.withValues(alpha: 0.72),
+    builder: (_) => _ProfilePhotoViewerDialog(
+      photoUrl: resolvedUrl,
+      studentName: studentName,
+    ),
+  );
+}
+
+class _ProfilePhotoViewerDialog extends StatelessWidget {
+  final String photoUrl;
+  final String studentName;
+
+  const _ProfilePhotoViewerDialog({
+    required this.photoUrl,
+    required this.studentName,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final size = MediaQuery.of(context).size;
+    final dialogWidth = size.width > 760 ? 640.0 : size.width * 0.94;
+    final dialogHeight = size.height > 620 ? 560.0 : size.height * 0.88;
+
+    return Dialog(
+      backgroundColor: Colors.black,
+      insetPadding: const EdgeInsets.all(16),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(AppRadii.xl),
+      ),
+      child: SizedBox(
+        width: dialogWidth,
+        height: dialogHeight,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 10, 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      studentName.isEmpty ? 'Profile Photo' : studentName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close_rounded, color: Colors.white),
+                    style: IconButton.styleFrom(
+                      backgroundColor: Colors.white.withValues(alpha: 0.14),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(10, 4, 10, 10),
+                child: InteractiveViewer(
+                  minScale: 0.8,
+                  maxScale: 4.0,
+                  child: Center(
+                    child: Image.network(
+                      photoUrl,
+                      fit: BoxFit.contain,
+                      webHtmlElementStrategy: WebHtmlElementStrategy.prefer,
+                      loadingBuilder: (context, child, progress) {
+                        if (progress == null) return child;
+                        return const Center(
+                          child: CircularProgressIndicator(color: Colors.white),
+                        );
+                      },
+                      errorBuilder: (context, error, stackTrace) =>
+                          const Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                Icons.broken_image_outlined,
+                                color: Colors.white70,
+                                size: 42,
+                              ),
+                              SizedBox(height: 8),
+                              Text(
+                                'Failed to load profile photo',
+                                style: TextStyle(
+                                  color: Colors.white70,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ],
+                          ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _EvidenceViewerDialog extends StatefulWidget {

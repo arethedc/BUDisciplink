@@ -1,10 +1,30 @@
 {
   "project_info": {
     "project_number": "486417428487",
+    "firebase_url": "https://myapp-e5237-default-rtdb.asia-southeast1.firebasedatabase.app",
     "project_id": "myapp-e5237",
     "storage_bucket": "myapp-e5237.firebasestorage.app"
   },
   "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:486417428487:android:480e3e57a0624c77293aa2",
+        "android_client_info": {
+          "package_name": "com.budisciplink.budisciplink"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCT-LFOxFnQJI7QrxUE1ZzqQVbYp7o1Umc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
     {
       "client_info": {
         "mobilesdk_app_id": "1:486417428487:android:3a087b54201ea1c3293aa2",

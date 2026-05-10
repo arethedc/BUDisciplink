@@ -13,7 +13,7 @@ class PendingApprovalPage extends StatefulWidget {
 
 class _PendingApprovalPageState extends State<PendingApprovalPage> {
   // ===== DESIGN THEME (match your app) =====
-  static const bg = Color(0xFFF6FAF6);
+  static const bg = Colors.white;
   static const primary = Color(0xFF1B5E20);
   static const hint = Color(0xFF6D7F62);
   static const textDark = Color(0xFF1F2A1F);
@@ -101,7 +101,6 @@ class _PendingApprovalPageState extends State<PendingApprovalPage> {
     final programId = (profile['programId'] ?? data['programId'] ?? '')
         .toString()
         .trim();
-    final yearLevel = profile['yearLevel'] ?? data['yearLevel'];
 
     final collegeName = await _resolveNameFromCollection('colleges', collegeId);
     final programName = await _resolveNameFromCollection('programs', programId);
@@ -115,7 +114,6 @@ class _PendingApprovalPageState extends State<PendingApprovalPage> {
       studentNumber: studentNo,
       collegeName: collegeName,
       programName: programName,
-      yearLabel: yearLevel == null ? '-' : 'Year ${yearLevel.toString()}',
     );
   }
 
@@ -194,7 +192,6 @@ class _PendingApprovalPageState extends State<PendingApprovalPage> {
               ),
               _summaryRow('College', _valueOrDash(summary.collegeName)),
               _summaryRow('Program', _valueOrDash(summary.programName)),
-              _summaryRow('Year Level', _valueOrDash(summary.yearLabel)),
             ],
           ),
         );
@@ -359,20 +356,17 @@ class _PendingProfileSummary {
   final String studentNumber;
   final String collegeName;
   final String programName;
-  final String yearLabel;
 
   const _PendingProfileSummary({
     required this.studentName,
     required this.studentNumber,
     required this.collegeName,
     required this.programName,
-    required this.yearLabel,
   });
 
   const _PendingProfileSummary.empty()
     : studentName = '-',
       studentNumber = '-',
       collegeName = '-',
-      programName = '-',
-      yearLabel = '-';
+      programName = '-';
 }

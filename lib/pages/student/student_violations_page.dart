@@ -6,8 +6,17 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../shared/widgets/modern_table_layout.dart';
 import '../../services/osa_meeting_schedule_service.dart';
+import 'package:apps/pages/shared/widgets/app_inline_notice.dart';
 
-enum _StudentCasesTab { review, needsBooking, meeting, history }
+enum _StudentCasesTab {
+  all,
+  needsBooking,
+  scheduled,
+  underReview,
+  unresolved,
+  resolved,
+  cancelled,
+}
 
 class StudentViolationsPage extends StatefulWidget {
   const StudentViolationsPage({super.key});
@@ -19,10 +28,23 @@ class StudentViolationsPage extends StatefulWidget {
 class _StudentViolationsPageState extends State<StudentViolationsPage> {
   final _searchCtrl = TextEditingController();
   final _meetingScheduleSvc = OsaMeetingScheduleService();
-  _StudentCasesTab _tab = _StudentCasesTab.review;
+  final ValueNotifier<Map<_StudentCasesTab, int>> _tabCounts =
+      ValueNotifier<Map<_StudentCasesTab, int>>({
+        _StudentCasesTab.all: 0,
+        _StudentCasesTab.needsBooking: 0,
+        _StudentCasesTab.scheduled: 0,
+        _StudentCasesTab.underReview: 0,
+        _StudentCasesTab.unresolved: 0,
+        _StudentCasesTab.resolved: 0,
+        _StudentCasesTab.cancelled: 0,
+      });
+  _StudentCasesTab _tab = _StudentCasesTab.all;
   String? _selectedId;
   Timer? _bookingSweepTimer;
+  Timer? _searchDebounce;
   bool _bookingSweepRunning = false;
+  bool _isRefreshingTable = false;
+  String _searchQuery = '';
 
   @override
   void initState() {
@@ -48,16 +70,246 @@ class _StudentViolationsPageState extends State<StudentViolationsPage> {
   @override
   void dispose() {
     _bookingSweepTimer?.cancel();
+    _searchDebounce?.cancel();
     _searchCtrl.dispose();
+    _tabCounts.dispose();
     super.dispose();
+  }
+
+  int get _activeTabIndex {
+    return _StudentCasesTab.values.indexOf(_tab);
+  }
+
+  String _tabLabel(_StudentCasesTab tab) {
+    switch (tab) {
+      case _StudentCasesTab.all:
+        return 'All';
+      case _StudentCasesTab.needsBooking:
+        return 'Needs Booking';
+      case _StudentCasesTab.scheduled:
+        return 'Scheduled';
+      case _StudentCasesTab.underReview:
+        return 'Under Review';
+      case _StudentCasesTab.unresolved:
+        return 'Unresolved';
+      case _StudentCasesTab.resolved:
+        return 'Resolved';
+      case _StudentCasesTab.cancelled:
+        return 'Cancelled';
+    }
+  }
+
+  void _onSearchInputChanged(String value) {
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 220), () {
+      if (!mounted) return;
+      final next = value.trim();
+      if (_searchQuery == next) return;
+      setState(() => _searchQuery = next);
+    });
+  }
+
+  void _clearSearchQuery() {
+    _searchDebounce?.cancel();
+    _searchCtrl.clear();
+    if (_searchQuery.isNotEmpty) {
+      setState(() => _searchQuery = '');
+    }
+  }
+
+  Future<void> _refreshCurrentTable() async {
+    if (_isRefreshingTable) return;
+    setState(() => _isRefreshingTable = true);
+    try {
+      await _runBookingExpirySweep();
+      await Future<void>.delayed(const Duration(milliseconds: 420));
+    } finally {
+      if (mounted) setState(() => _isRefreshingTable = false);
+    }
+  }
+
+  void _updateTabCounts(List<QueryDocumentSnapshot<Map<String, dynamic>>> raw) {
+    final next = <_StudentCasesTab, int>{
+      _StudentCasesTab.all: 0,
+      _StudentCasesTab.needsBooking: 0,
+      _StudentCasesTab.scheduled: 0,
+      _StudentCasesTab.underReview: 0,
+      _StudentCasesTab.unresolved: 0,
+      _StudentCasesTab.resolved: 0,
+      _StudentCasesTab.cancelled: 0,
+    };
+
+    for (final doc in raw) {
+      final d = doc.data();
+      if (!_isVisibleToStudent(d)) continue;
+      for (final tab in _StudentCasesTab.values) {
+        if (_matchesStudentTab(d, tab)) {
+          next[tab] = (next[tab] ?? 0) + 1;
+        }
+      }
+    }
+
+    final current = _tabCounts.value;
+    var changed = false;
+    for (final tab in _StudentCasesTab.values) {
+      if ((current[tab] ?? 0) != (next[tab] ?? 0)) {
+        changed = true;
+        break;
+      }
+    }
+    if (!changed) return;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _tabCounts.value = next;
+    });
+  }
+
+  Widget _buildHandbookStyleSearchBar({bool shouldConstrainWidth = true}) {
+    const hintColor = Color(0xFF6D7F62);
+    const textDark = Color(0xFF1F2A1F);
+    final width = MediaQuery.sizeOf(context).width;
+    final isDesktop = width >= 900;
+    final constrainedWidth = width >= 1500
+        ? 660.0
+        : width >= 1300
+        ? 580.0
+        : 520.0;
+    final height = isDesktop ? 56.0 : 48.0;
+    final borderRadius = isDesktop ? 16.0 : 18.0;
+    final iconSize = isDesktop ? 24.0 : 22.0;
+    final fontSize = isDesktop ? 15.0 : 13.5;
+
+    final searchField = ValueListenableBuilder<TextEditingValue>(
+      valueListenable: _searchCtrl,
+      builder: (context, value, _) {
+        final hasText = value.text.trim().isNotEmpty;
+        return Container(
+          height: height,
+          padding: EdgeInsets.symmetric(horizontal: isDesktop ? 20 : 12),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.75),
+            borderRadius: BorderRadius.circular(borderRadius),
+            border: Border.all(color: Colors.black12),
+            boxShadow: isDesktop
+                ? [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.05),
+                      blurRadius: 10,
+                      offset: const Offset(0, 2),
+                    ),
+                  ]
+                : null,
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.search_rounded, color: hintColor, size: iconSize),
+              SizedBox(width: isDesktop ? 12 : 8),
+              Expanded(
+                child: TextField(
+                  controller: _searchCtrl,
+                  onChanged: _onSearchInputChanged,
+                  style: TextStyle(
+                    fontSize: fontSize,
+                    fontWeight: FontWeight.w600,
+                    color: textDark,
+                  ),
+                  decoration: InputDecoration(
+                    hintText: 'Search case, violation, status, date...',
+                    border: InputBorder.none,
+                    enabledBorder: InputBorder.none,
+                    focusedBorder: InputBorder.none,
+                    disabledBorder: InputBorder.none,
+                    filled: false,
+                    isDense: true,
+                    contentPadding: EdgeInsets.zero,
+                    hintStyle: TextStyle(
+                      color: hintColor,
+                      fontWeight: FontWeight.w600,
+                      fontSize: fontSize,
+                    ),
+                  ),
+                ),
+              ),
+              if (hasText)
+                IconButton(
+                  tooltip: 'Clear search',
+                  onPressed: _clearSearchQuery,
+                  icon: Icon(
+                    Icons.close_rounded,
+                    color: hintColor.withValues(alpha: 0.85),
+                    size: isDesktop ? 20 : 18,
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+
+    final refreshButton = Tooltip(
+      message: 'Refresh table',
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: _isRefreshingTable ? null : _refreshCurrentTable,
+        child: Container(
+          width: height,
+          height: height,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: Colors.white.withValues(alpha: 0.75),
+            border: Border.all(color: Colors.black12),
+            boxShadow: isDesktop
+                ? [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.05),
+                      blurRadius: 10,
+                      offset: const Offset(0, 2),
+                    ),
+                  ]
+                : null,
+          ),
+          child: _isRefreshingTable
+              ? SizedBox(
+                  width: isDesktop ? 18 : 16,
+                  height: isDesktop ? 18 : 16,
+                  child: const CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: hintColor,
+                  ),
+                )
+              : Icon(
+                  Icons.refresh_rounded,
+                  color: hintColor.withValues(alpha: 0.9),
+                  size: isDesktop ? 20 : 18,
+                ),
+        ),
+      ),
+    );
+
+    Widget searchWithRefresh() {
+      return Row(
+        children: [
+          Expanded(child: searchField),
+          const SizedBox(width: 8),
+          refreshButton,
+        ],
+      );
+    }
+
+    if (!shouldConstrainWidth) return searchWithRefresh();
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: SizedBox(width: constrainedWidth, child: searchWithRefresh()),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    const bg = Color(0xFFF6FAF6);
+    const bg = Colors.white;
     const primaryColor = Color(0xFF1B5E20);
     const hintColor = Color(0xFF6D7F62);
-    const textDark = Color(0xFF1F2A1F);
 
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
@@ -71,66 +323,52 @@ class _StudentViolationsPageState extends State<StudentViolationsPage> {
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final desktopWide = constraints.maxWidth >= 1100;
+        final desktopWide = constraints.maxWidth >= 900;
+        final detailsPaneWidth = (constraints.maxWidth * 0.33)
+            .clamp(320.0, 420.0)
+            .toDouble();
 
         return Scaffold(
           backgroundColor: bg,
           body: ModernTableLayout(
+            detailsWidth: detailsPaneWidth,
             header: ModernTableHeader(
-              title: 'My Violations',
-              subtitle: 'View your recorded violations and tracking status',
+              showTitleSection: false,
+              showTopControlsWhenTitleHidden: true,
+              showSearchBar: true,
+              searchBar: _buildHandbookStyleSearchBar(),
               tabs: DefaultTabController(
-                length: 4,
-                initialIndex: _tab == _StudentCasesTab.review
-                    ? 0
-                    : _tab == _StudentCasesTab.needsBooking
-                    ? 1
-                    : _tab == _StudentCasesTab.meeting
-                    ? 2
-                    : 3,
-                child: TabBar(
-                  isScrollable: true,
-                  tabAlignment: TabAlignment.start,
-                  labelColor: primaryColor,
-                  indicatorColor: primaryColor,
-                  dividerColor: Colors.transparent,
-                  onTap: (index) {
-                    final newTab = index == 0
-                        ? _StudentCasesTab.review
-                        : index == 1
-                        ? _StudentCasesTab.needsBooking
-                        : index == 2
-                        ? _StudentCasesTab.meeting
-                        : _StudentCasesTab.history;
-                    if (newTab == _tab) return;
-                    setState(() {
-                      _tab = newTab;
-                      _selectedId = null;
-                    });
+                length: _StudentCasesTab.values.length,
+                initialIndex: _activeTabIndex,
+                child: ValueListenableBuilder<Map<_StudentCasesTab, int>>(
+                  valueListenable: _tabCounts,
+                  builder: (context, counts, _) {
+                    return TabBar(
+                      isScrollable: true,
+                      tabAlignment: TabAlignment.start,
+                      labelColor: primaryColor,
+                      indicatorColor: primaryColor,
+                      dividerColor: Colors.transparent,
+                      onTap: (index) {
+                        final newTab = _StudentCasesTab.values[index];
+                        if (newTab == _tab) return;
+                        setState(() {
+                          _tab = newTab;
+                          _selectedId = null;
+                        });
+                      },
+                      tabs: _StudentCasesTab.values
+                          .map(
+                            (tab) => Tab(
+                              text: '${_tabLabel(tab)} (${counts[tab] ?? 0})',
+                            ),
+                          )
+                          .toList(growable: false),
+                    );
                   },
-                  tabs: const [
-                    Tab(text: 'Under Review'),
-                    Tab(text: 'Needs Booking'),
-                    Tab(text: 'My Schedule'),
-                    Tab(text: 'History'),
-                  ],
                 ),
               ),
-              searchBar: TextField(
-                controller: _searchCtrl,
-                onChanged: (_) => setState(() {}),
-                decoration: InputDecoration(
-                  hintText: 'Search violations...',
-                  prefixIcon: const Icon(Icons.search, color: primaryColor),
-                  filled: true,
-                  fillColor: bg,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide.none,
-                  ),
-                  contentPadding: EdgeInsets.zero,
-                ),
-              ),
+              filters: const [],
             ),
             body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
               stream: FirebaseFirestore.instance
@@ -146,7 +384,8 @@ class _StudentViolationsPageState extends State<StudentViolationsPage> {
                 }
 
                 final raw = snap.data!.docs;
-                final q = _searchCtrl.text.toLowerCase().trim();
+                _updateTabCounts(raw);
+                final q = _searchQuery.trim().toLowerCase();
 
                 List<QueryDocumentSnapshot<Map<String, dynamic>>> docs = raw
                     .where((doc) {
@@ -165,10 +404,19 @@ class _StudentViolationsPageState extends State<StudentViolationsPage> {
                       final severity = _safeStr(
                         d['finalSeverity'],
                       ).toLowerCase();
+                      final concern = _safeStr(
+                        d['concern'] ?? d['reportedConcernType'],
+                      ).toLowerCase();
+                      final date = _bestDate(d);
+                      final dateText = date != null
+                          ? _fmtShort(date).toLowerCase()
+                          : '';
                       return caseCode.contains(q) ||
                           violation.contains(q) ||
                           status.contains(q) ||
-                          severity.contains(q);
+                          severity.contains(q) ||
+                          concern.contains(q) ||
+                          dateText.contains(q);
                     })
                     .toList();
 
@@ -182,54 +430,59 @@ class _StudentViolationsPageState extends State<StudentViolationsPage> {
                 });
 
                 if (docs.isEmpty) {
-                  return _withReviewNotice(
-                    child: Center(
-                      child: Text(
-                        _tab == _StudentCasesTab.review
-                            ? 'No cases under review.'
-                            : _tab == _StudentCasesTab.needsBooking
-                            ? 'No cases that need booking.'
-                            : _tab == _StudentCasesTab.meeting
-                            ? 'No scheduled meeting cases.'
-                            : 'No case history.',
-                        style: const TextStyle(
-                          color: hintColor,
-                          fontWeight: FontWeight.bold,
+                  return Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          Icons.inbox_outlined,
+                          size: 64,
+                          color: Colors.grey[300],
                         ),
-                      ),
+                        const SizedBox(height: 16),
+                        const Text(
+                          'No cases found',
+                          style: TextStyle(
+                            color: hintColor,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
                     ),
                   );
                 }
 
-                return _withReviewNotice(
-                  child: ListView.builder(
-                    padding: const EdgeInsets.all(24),
-                    itemCount: docs.length,
-                    itemBuilder: (context, i) {
-                      final doc = docs[i];
-                      final isSelected = _selectedId == doc.id;
-                      return _buildViolationCard(
-                        doc.id,
-                        doc.data(),
-                        isSelected,
-                        desktopWide,
-                        () {
-                          if (desktopWide) {
-                            setState(
-                              () => _selectedId = isSelected ? null : doc.id,
-                            );
-                          } else {
-                            _openDetails(doc);
-                          }
-                        },
-                      );
-                    },
-                  ),
+                if (_selectedId != null &&
+                    !docs.any((doc) => doc.id == _selectedId)) {
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (!mounted) return;
+                    setState(() => _selectedId = null);
+                  });
+                }
+
+                if (desktopWide) {
+                  return _buildDesktopTable(docs);
+                }
+
+                return ListView.builder(
+                  padding: const EdgeInsets.all(14),
+                  itemCount: docs.length,
+                  itemBuilder: (context, i) {
+                    final doc = docs[i];
+                    final isSelected = _selectedId == doc.id;
+                    return _buildViolationCard(
+                      doc.id,
+                      doc.data(),
+                      isSelected,
+                      desktopWide,
+                      () => _openDetails(doc),
+                    );
+                  },
                 );
               },
             ),
-            showDetails: _selectedId != null,
-            details: _selectedId != null
+            showDetails: desktopWide && _selectedId != null,
+            details: desktopWide && _selectedId != null
                 ? StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
                     stream: FirebaseFirestore.instance
                         .collection('violation_cases')
@@ -256,16 +509,284 @@ class _StudentViolationsPageState extends State<StudentViolationsPage> {
     );
   }
 
-  Widget _withReviewNotice({required Widget child}) {
-    if (_tab != _StudentCasesTab.review) return child;
-    return Column(
-      children: [
-        const Padding(
-          padding: EdgeInsets.fromLTRB(24, 16, 24, 0),
-          child: _ReviewNoticeBox(),
+  Widget _buildDesktopTable(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+  ) {
+    const primaryColor = Color(0xFF1B5E20);
+    const hintColor = Color(0xFF6D7F62);
+    const textDark = Color(0xFF1F2A1F);
+    const bg = Colors.white;
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
+      child: Container(
+        width: double.infinity,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
         ),
-        Expanded(child: child),
-      ],
+        foregroundDecoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(16),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final tableWidth = constraints.maxWidth.toDouble();
+              final detailsOpen = _selectedId != null;
+              final compactTable = detailsOpen || tableWidth < 1120;
+              final tableHorizontalMargin = compactTable ? 8.0 : 12.0;
+              final tableColumnSpacing = compactTable ? 12.0 : 18.0;
+              final totalWeight = 1.20 + 1.35 + 2.55 + 1.20 + 1.45;
+              final usableWidth =
+                  (tableWidth -
+                          (tableHorizontalMargin * 2) -
+                          (tableColumnSpacing * (5 - 1)))
+                      .clamp(420.0, double.infinity)
+                      .toDouble();
+
+              double colWidth(
+                double weight,
+                double minWidth, {
+                double? compactMinWidth,
+              }) {
+                final value = usableWidth * (weight / totalWeight);
+                final effectiveMin = compactTable
+                    ? (compactMinWidth ?? minWidth)
+                    : minWidth;
+                return value < effectiveMin ? effectiveMin : value;
+              }
+
+              final codeCellWidth = colWidth(1.20, 104, compactMinWidth: 86);
+              final concernCellWidth = colWidth(
+                1.35,
+                126,
+                compactMinWidth: 98,
+              );
+              final violationCellWidth = colWidth(
+                2.55,
+                230,
+                compactMinWidth: 170,
+              );
+              final dateCellWidth = colWidth(1.20, 112, compactMinWidth: 92);
+              final statusCellWidth = colWidth(
+                1.45,
+                132,
+                compactMinWidth: 112,
+              );
+
+              return SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(minWidth: constraints.maxWidth),
+                  child: DataTable(
+                    showCheckboxColumn: false,
+                    headingRowColor: WidgetStateProperty.all(bg),
+                    dataRowMinHeight: 56,
+                    dataRowMaxHeight: 64,
+                    horizontalMargin: tableHorizontalMargin,
+                    columnSpacing: tableColumnSpacing,
+                    headingTextStyle: const TextStyle(
+                      color: hintColor,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 0.2,
+                      fontSize: 12,
+                    ),
+                    columns: [
+                      DataColumn(
+                        label: SizedBox(
+                          width: codeCellWidth,
+                          child: _tableHeaderText('CODE'),
+                        ),
+                      ),
+                      DataColumn(
+                        label: SizedBox(
+                          width: concernCellWidth,
+                          child: _tableHeaderText('CONCERN'),
+                        ),
+                      ),
+                      DataColumn(
+                        label: SizedBox(
+                          width: violationCellWidth,
+                          child: _tableHeaderText('VIOLATION'),
+                        ),
+                      ),
+                      DataColumn(
+                        label: SizedBox(
+                          width: dateCellWidth,
+                          child: _tableHeaderText('DATE'),
+                        ),
+                      ),
+                      DataColumn(
+                        label: SizedBox(
+                          width: statusCellWidth,
+                          child: _tableHeaderText('STATUS'),
+                        ),
+                      ),
+                    ],
+                    rows: [
+                      for (int i = 0; i < docs.length; i++)
+                        () {
+                          final doc = docs[i];
+                          final d = doc.data();
+                          final isSelected = _selectedId == doc.id;
+                          final code = _safeStr(d['caseCode']).isEmpty
+                              ? doc.id
+                              : _safeStr(d['caseCode']);
+                          final concern = _safeStr(
+                            d['concern'] ?? d['reportedConcernType'],
+                          );
+                          final violation = _safeStr(
+                            d['violationTypeLabel'] ??
+                                d['typeNameSnapshot'] ??
+                                d['violationNameSnapshot'] ??
+                                d['violationName'],
+                          );
+                          final date = _bestDate(d);
+                          final status = _statusLabel(_safeStr(d['status']));
+
+                          return DataRow.byIndex(
+                            index: i,
+                            selected: isSelected,
+                            color: WidgetStateProperty.resolveWith<Color?>((
+                              states,
+                            ) {
+                              if (isSelected) {
+                                return primaryColor.withValues(alpha: 0.10);
+                              }
+                              return Colors.white;
+                            }),
+                            onSelectChanged: (_) {
+                              setState(() {
+                                _selectedId = isSelected ? null : doc.id;
+                              });
+                            },
+                            cells: [
+                              DataCell(
+                                SizedBox(
+                                  width: codeCellWidth,
+                                  child: Text(
+                                    code,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: primaryColor,
+                                      fontWeight: FontWeight.w900,
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              DataCell(
+                                SizedBox(
+                                  width: concernCellWidth,
+                                  child: Align(
+                                    alignment: Alignment.centerLeft,
+                                    child: _buildConcernPill(concern),
+                                  ),
+                                ),
+                              ),
+                              DataCell(
+                                SizedBox(
+                                  width: violationCellWidth,
+                                  child: Text(
+                                    violation.isEmpty ? '--' : violation,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: textDark,
+                                      fontWeight: FontWeight.w700,
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              DataCell(
+                                SizedBox(
+                                  width: dateCellWidth,
+                                  child: Text(
+                                    date != null ? _fmtShort(date) : '--',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: hintColor,
+                                      fontWeight: FontWeight.w700,
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              DataCell(
+                                SizedBox(
+                                  width: statusCellWidth,
+                                  child: Align(
+                                    alignment: Alignment.centerLeft,
+                                    child: _buildStatusBadge(status),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          );
+                        }(),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _tableHeaderText(String text) {
+    return Text(
+      text,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: const TextStyle(
+        color: Color(0xFF6D7F62),
+        fontWeight: FontWeight.w900,
+        fontSize: 12,
+        letterSpacing: 0.2,
+      ),
+    );
+  }
+
+  Widget _buildConcernPill(String concernRaw) {
+    const primaryColor = Color(0xFF1B5E20);
+    const hintColor = Color(0xFF6D7F62);
+
+    final concern = _titleCase(concernRaw);
+    final norm = concernRaw.toLowerCase();
+    if (norm.contains('serious')) {
+      return _Pill(
+        text: concern.isEmpty ? 'Serious' : concern,
+        tone: _Tone(
+          fill: Colors.orange.withValues(alpha: 0.12),
+          border: Colors.orange.withValues(alpha: 0.38),
+          text: Colors.orange.shade900,
+        ),
+      );
+    }
+    if (norm.contains('basic')) {
+      return _Pill(
+        text: concern.isEmpty ? 'Basic' : concern,
+        tone: _Tone(
+          fill: primaryColor.withValues(alpha: 0.12),
+          border: primaryColor.withValues(alpha: 0.30),
+          text: primaryColor,
+        ),
+      );
+    }
+    return _Pill(
+      text: concern.isEmpty ? '--' : concern,
+      tone: _Tone(
+        fill: Colors.black.withValues(alpha: 0.04),
+        border: Colors.black.withValues(alpha: 0.10),
+        text: hintColor,
+      ),
     );
   }
 
@@ -860,7 +1381,7 @@ class _DesktopDetailsPanel extends StatelessWidget {
       child: Column(
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
+            padding: const EdgeInsets.fromLTRB(14, 14, 10, 8),
             child: Row(
               children: [
                 Container(
@@ -902,7 +1423,7 @@ class _DesktopDetailsPanel extends StatelessWidget {
           const Divider(height: 1),
           Expanded(
             child: SingleChildScrollView(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
               child: Column(
                 children: [
                   _StudentDetailCard(
@@ -935,7 +1456,7 @@ class _DesktopDetailsPanel extends StatelessWidget {
                     title: 'Incident Description',
                     child: Container(
                       width: double.infinity,
-                      padding: const EdgeInsets.all(12),
+                      padding: const EdgeInsets.all(14),
                       decoration: BoxDecoration(
                         color: Colors.black.withOpacity(0.03),
                         borderRadius: BorderRadius.circular(12),
@@ -959,7 +1480,7 @@ class _DesktopDetailsPanel extends StatelessWidget {
                       title: 'OSA Remarks',
                       child: Container(
                         width: double.infinity,
-                        padding: const EdgeInsets.all(12),
+                        padding: const EdgeInsets.all(14),
                         decoration: BoxDecoration(
                           color: Colors.black.withOpacity(0.03),
                           borderRadius: BorderRadius.circular(12),
@@ -1032,6 +1553,22 @@ class _DesktopDetailsPanel extends StatelessWidget {
                                       termId: termId,
                                       meetingDueBy: due,
                                       bookingDeadlineAt: bookingDeadline,
+                                      meetingWindow: _safeStr(
+                                        d['meetingWindow'],
+                                      ),
+                                      actionType: _safeStr(
+                                        d['actionTypeCode'] ??
+                                            d['actionSelected'] ??
+                                            d['actionType'],
+                                      ),
+                                      bookingWindowDays: _toInt(
+                                        d['bookingWindowDays'],
+                                      ),
+                                      graceWindowDays: _toInt(
+                                        d['bookingGraceDays'],
+                                      ),
+                                      bookingGraceCount:
+                                          _toInt(d['bookingGraceCount']) ?? 0,
                                     ),
                                   );
                                 },
@@ -1114,7 +1651,7 @@ class _StudentCaseDetailsSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const bg = Color(0xFFF6FAF6);
+    const bg = Colors.white;
     const primaryColor = Color(0xFF1B5E20);
     const hintColor = Color(0xFF6D7F62);
     const textDark = Color(0xFF1F2A1F);
@@ -1184,7 +1721,7 @@ class _StudentCaseDetailsSheet extends StatelessWidget {
       child: Column(
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+            padding: const EdgeInsets.fromLTRB(14, 14, 10, 8),
             child: Row(
               children: [
                 Container(
@@ -1225,7 +1762,7 @@ class _StudentCaseDetailsSheet extends StatelessWidget {
           const Divider(height: 1),
           Expanded(
             child: SingleChildScrollView(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
               child: Column(
                 children: [
                   _StudentDetailCard(
@@ -1258,7 +1795,7 @@ class _StudentCaseDetailsSheet extends StatelessWidget {
                     title: 'Incident Description',
                     child: Container(
                       width: double.infinity,
-                      padding: const EdgeInsets.all(12),
+                      padding: const EdgeInsets.all(14),
                       decoration: BoxDecoration(
                         color: Colors.black.withOpacity(0.03),
                         borderRadius: BorderRadius.circular(12),
@@ -1282,7 +1819,7 @@ class _StudentCaseDetailsSheet extends StatelessWidget {
                       title: 'OSA Remarks',
                       child: Container(
                         width: double.infinity,
-                        padding: const EdgeInsets.all(12),
+                        padding: const EdgeInsets.all(14),
                         decoration: BoxDecoration(
                           color: Colors.black.withOpacity(0.03),
                           borderRadius: BorderRadius.circular(12),
@@ -1355,6 +1892,22 @@ class _StudentCaseDetailsSheet extends StatelessWidget {
                                       termId: termId,
                                       meetingDueBy: due,
                                       bookingDeadlineAt: bookingDeadline,
+                                      meetingWindow: _safeStr(
+                                        d['meetingWindow'],
+                                      ),
+                                      actionType: _safeStr(
+                                        d['actionTypeCode'] ??
+                                            d['actionSelected'] ??
+                                            d['actionType'],
+                                      ),
+                                      bookingWindowDays: _toInt(
+                                        d['bookingWindowDays'],
+                                      ),
+                                      graceWindowDays: _toInt(
+                                        d['bookingGraceDays'],
+                                      ),
+                                      bookingGraceCount:
+                                          _toInt(d['bookingGraceCount']) ?? 0,
                                     ),
                                   );
                                 },
@@ -1441,11 +1994,11 @@ class _StudentDetailCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.black.withOpacity(0.08)),
+        color: const Color(0xFFF8FBF8),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.black.withOpacity(0.06)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1455,7 +2008,7 @@ class _StudentDetailCard extends StatelessWidget {
             style: const TextStyle(
               color: Color(0xFF1F2A1F),
               fontWeight: FontWeight.w900,
-              fontSize: 13.5,
+              fontSize: 14.5,
             ),
           ),
           const SizedBox(height: 10),
@@ -1598,6 +2151,11 @@ class _BookMeetingSlotDialog extends StatefulWidget {
   final String termId;
   final DateTime? meetingDueBy;
   final DateTime? bookingDeadlineAt;
+  final String meetingWindow;
+  final String actionType;
+  final int? bookingWindowDays;
+  final int? graceWindowDays;
+  final int bookingGraceCount;
 
   const _BookMeetingSlotDialog({
     required this.caseId,
@@ -1606,6 +2164,11 @@ class _BookMeetingSlotDialog extends StatefulWidget {
     required this.termId,
     required this.meetingDueBy,
     required this.bookingDeadlineAt,
+    required this.meetingWindow,
+    required this.actionType,
+    this.bookingWindowDays,
+    this.graceWindowDays,
+    this.bookingGraceCount = 0,
   });
 
   @override
@@ -1615,7 +2178,7 @@ class _BookMeetingSlotDialog extends StatefulWidget {
 class _BookMeetingSlotDialogState extends State<_BookMeetingSlotDialog> {
   final _svc = OsaMeetingScheduleService();
   final _slotScrollCtrl = ScrollController();
-  static const _bg = Color(0xFFF6FAF6);
+  static const _bg = Colors.white;
   static const _primaryColor = Color(0xFF1B5E20);
   static const _hintColor = Color(0xFF6D7F62);
   static const _textDark = Color(0xFF1F2A1F);
@@ -1626,6 +2189,84 @@ class _BookMeetingSlotDialogState extends State<_BookMeetingSlotDialog> {
   void dispose() {
     _slotScrollCtrl.dispose();
     super.dispose();
+  }
+
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _limitByOpenDays(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+    int dayCount, {
+    int minSlots = 12,
+    int maxDayCount = 21,
+  }) {
+    if (docs.isEmpty) return docs;
+    final preferredDayCount = dayCount <= 0 ? 7 : dayCount;
+    final boundedMaxDays = maxDayCount < preferredDayCount
+        ? preferredDayCount
+        : maxDayCount;
+
+    final out = <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+    final uniqueDayKeys = <String>{};
+
+    for (final doc in docs) {
+      final start = (doc.data()['startAt'] as Timestamp?)?.toDate();
+      if (start == null) continue;
+      final dayKey = DateFormat('yyyy-MM-dd').format(start);
+      final isNewDay = !uniqueDayKeys.contains(dayKey);
+      if (isNewDay &&
+          uniqueDayKeys.length >= preferredDayCount &&
+          out.length >= minSlots) {
+        break;
+      }
+      if (isNewDay && uniqueDayKeys.length >= boundedMaxDays) {
+        break;
+      }
+      uniqueDayKeys.add(dayKey);
+      out.add(doc);
+    }
+    return out;
+  }
+
+  bool _isImmediateActionRequiredFallback() {
+    final meetingWindowKey = widget.meetingWindow.toLowerCase().replaceAll(
+      RegExp(r'[\s_-]+'),
+      '',
+    );
+    if (meetingWindowKey == '2days' ||
+        meetingWindowKey == 'twodays' ||
+        meetingWindowKey == 'within2days') {
+      return true;
+    }
+    final actionKey = widget.actionType.toLowerCase().trim();
+    return actionKey == 'immediate_action_required' ||
+        actionKey.contains('immediate action');
+  }
+
+  int _meetingWindowDaysFromRaw() {
+    final normalized = widget.meetingWindow.toLowerCase().trim();
+    final dynamicDays = RegExp(r'^(\d+)\s*days?$').firstMatch(normalized);
+    if (dynamicDays != null) {
+      final parsed = int.tryParse(dynamicDays.group(1) ?? '');
+      if (parsed != null && parsed > 0) return parsed;
+    }
+    final key = normalized.replaceAll(RegExp(r'[\s_-]+'), '');
+    if (key == '2days' || key == 'twodays' || key == 'within2days') return 2;
+    if (key == '3days' || key == 'threedays' || key == 'within3days') return 3;
+    if (key == 'week' || key == '1week' || key == 'within7days') return 7;
+    if (key == 'today' || key == 'withinaday' || key == 'within1day') return 1;
+    return _isImmediateActionRequiredFallback() ? 2 : 3;
+  }
+
+  int _effectiveOpenSlotDays() {
+    final configuredBookingDays = widget.bookingWindowDays ?? 0;
+    final baseDays = configuredBookingDays > 0
+        ? configuredBookingDays
+        : _meetingWindowDaysFromRaw();
+    final configuredGraceDays = widget.graceWindowDays ?? 0;
+    final graceDays = configuredGraceDays >= 0 ? configuredGraceDays : 0;
+    final extendedDays = widget.bookingGraceCount > 0 ? graceDays : 0;
+    final total = baseDays + extendedDays;
+    if (total < 1) return 1;
+    if (total > 21) return 21;
+    return total;
   }
 
   @override
@@ -1639,15 +2280,10 @@ class _BookMeetingSlotDialogState extends State<_BookMeetingSlotDialog> {
         now.isAfter(widget.bookingDeadlineAt!);
     final dueWindowClosed =
         widget.meetingDueBy != null && now.isAfter(widget.meetingDueBy!);
-    final defaultUpperBound = now.add(const Duration(days: 14));
-    final upperBound =
-        (widget.meetingDueBy != null &&
-            widget.meetingDueBy!.isBefore(defaultUpperBound))
-        ? widget.meetingDueBy!
-        : defaultUpperBound;
     final screenWidth = MediaQuery.sizeOf(context).width;
     final dialogWidth = screenWidth < 760 ? screenWidth - 32 : 640.0;
     final dialogHeight = screenWidth < 760 ? 520.0 : 600.0;
+    final effectiveOpenSlotDays = _effectiveOpenSlotDays();
 
     return AlertDialog(
       backgroundColor: _bg,
@@ -1717,7 +2353,8 @@ class _BookMeetingSlotDialogState extends State<_BookMeetingSlotDialog> {
                 stream: _svc.streamOpenSlots(
                   schoolYearId: widget.schoolYearId,
                   termId: widget.termId,
-                  limit: 120,
+                  fromDate: earliestAllowedStart,
+                  limit: 500,
                 ),
                 builder: (context, snapshot) {
                   if (snapshot.hasError) {
@@ -1747,14 +2384,17 @@ class _BookMeetingSlotDialogState extends State<_BookMeetingSlotDialog> {
                     );
                   }
 
-                  final docs =
+                  final sorted =
                       snapshot.data!.where((slotDoc) {
                         final data = slotDoc.data();
                         final start = (data['startAt'] as Timestamp?)?.toDate();
                         if (start == null) return false;
                         if (start.isBefore(now)) return false;
                         if (start.isBefore(earliestAllowedStart)) return false;
-                        if (start.isAfter(upperBound)) return false;
+                        if (widget.meetingDueBy != null &&
+                            start.isAfter(widget.meetingDueBy!)) {
+                          return false;
+                        }
                         return true;
                       }).toList()..sort((a, b) {
                         final aStart =
@@ -1765,6 +2405,12 @@ class _BookMeetingSlotDialogState extends State<_BookMeetingSlotDialog> {
                             DateTime.fromMillisecondsSinceEpoch(0);
                         return aStart.compareTo(bStart);
                       });
+                  final docs = _limitByOpenDays(
+                    sorted,
+                    effectiveOpenSlotDays,
+                    minSlots: 12,
+                    maxDayCount: 21,
+                  );
                   if (docs.isEmpty) {
                     return Container(
                       padding: const EdgeInsets.all(14),
@@ -1822,8 +2468,8 @@ class _BookMeetingSlotDialogState extends State<_BookMeetingSlotDialog> {
                         ),
                         child: Text(
                           widget.meetingDueBy == null
-                              ? 'Available slots shown: next 14 days (minimum 2-hour lead time).'
-                              : 'Book until ${_fmtDeadline(widget.meetingDueBy!)} (minimum 2-hour lead time).',
+                              ? 'Showing the next $effectiveOpenSlotDays available days with open slots (minimum 2-hour lead time).'
+                              : 'Showing up to the next $effectiveOpenSlotDays available days before ${_fmtDeadline(widget.meetingDueBy!)} (minimum 2-hour lead time).',
                           style: const TextStyle(
                             color: _primaryColor,
                             fontWeight: FontWeight.w800,
@@ -1881,55 +2527,59 @@ class _BookMeetingSlotDialogState extends State<_BookMeetingSlotDialog> {
                             child: CustomScrollView(
                               controller: _slotScrollCtrl,
                               slivers: [
-                                for (final group in dayGroups) ...[
-                                  SliverPersistentHeader(
-                                    pinned: true,
-                                    delegate: _StickyDayHeaderDelegate(
-                                      height: 34,
-                                      child: Container(
-                                        color: Colors.white,
-                                        alignment: Alignment.centerLeft,
-                                        padding: const EdgeInsets.only(
-                                          top: 8,
-                                          bottom: 6,
-                                        ),
-                                        child: Text(
-                                          _formatSlotDayHeader(group.day),
-                                          style: const TextStyle(
-                                            color: _hintColor,
-                                            fontWeight: FontWeight.w900,
-                                            fontSize: 12,
-                                            letterSpacing: 0.6,
+                                for (final group in dayGroups)
+                                  SliverMainAxisGroup(
+                                    slivers: [
+                                      SliverPersistentHeader(
+                                        pinned: true,
+                                        delegate: _StickyDayHeaderDelegate(
+                                          height: 34,
+                                          child: Container(
+                                            color: Colors.white,
+                                            alignment: Alignment.centerLeft,
+                                            padding: const EdgeInsets.only(
+                                              top: 8,
+                                              bottom: 6,
+                                            ),
+                                            child: Text(
+                                              _formatSlotDayHeader(group.day),
+                                              style: const TextStyle(
+                                                color: _hintColor,
+                                                fontWeight: FontWeight.w900,
+                                                fontSize: 12,
+                                                letterSpacing: 0.6,
+                                              ),
+                                            ),
                                           ),
                                         ),
                                       ),
-                                    ),
+                                      SliverList(
+                                        delegate: SliverChildBuilderDelegate((
+                                          _,
+                                          index,
+                                        ) {
+                                          final doc = group.slots[index];
+                                          final start = _slotStart(doc);
+                                          final end = _slotEnd(doc);
+                                          if (start == null || end == null) {
+                                            return const SizedBox.shrink();
+                                          }
+                                          return _buildSlotCard(
+                                            doc: doc,
+                                            start: start,
+                                            end: end,
+                                            selectedSlotId: _selectedSlotId,
+                                            onSelect: _booking
+                                                ? null
+                                                : (slotId) => setState(
+                                                    () => _selectedSlotId =
+                                                        slotId,
+                                                  ),
+                                          );
+                                        }, childCount: group.slots.length),
+                                      ),
+                                    ],
                                   ),
-                                  SliverList(
-                                    delegate: SliverChildBuilderDelegate((
-                                      _,
-                                      index,
-                                    ) {
-                                      final doc = group.slots[index];
-                                      final start = _slotStart(doc);
-                                      final end = _slotEnd(doc);
-                                      if (start == null || end == null) {
-                                        return const SizedBox.shrink();
-                                      }
-                                      return _buildSlotCard(
-                                        doc: doc,
-                                        start: start,
-                                        end: end,
-                                        selectedSlotId: _selectedSlotId,
-                                        onSelect: _booking
-                                            ? null
-                                            : (slotId) => setState(
-                                                () => _selectedSlotId = slotId,
-                                              ),
-                                      );
-                                    }, childCount: group.slots.length),
-                                  ),
-                                ],
                               ],
                             ),
                           ),
@@ -1986,7 +2636,7 @@ class _BookMeetingSlotDialogState extends State<_BookMeetingSlotDialog> {
                       studentUid: widget.studentUid,
                     );
                     if (!mounted) return;
-                    final messenger = ScaffoldMessenger.of(context);
+                    final messenger = AppScaffoldMessenger.of(context);
                     Navigator.pop(context, true);
                     messenger.showSnackBar(
                       const SnackBar(
@@ -1996,7 +2646,7 @@ class _BookMeetingSlotDialogState extends State<_BookMeetingSlotDialog> {
                   } catch (e) {
                     if (!mounted) return;
                     setState(() => _booking = false);
-                    ScaffoldMessenger.of(context).showSnackBar(
+                    AppScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(content: Text('Booking failed: $e')),
                     );
                   }
@@ -2282,22 +2932,38 @@ bool _matchesStudentTab(Map<String, dynamic> d, _StudentCasesTab tab) {
   final statusKey = _statusKey(_safeStr(d['status']));
   final meetingRequired = _meetingRequired(d);
   final meetingFlow = _studentMeetingFlowKey(d);
+  final isCancelled = _isCancelledStatusKey(statusKey);
+  final isResolved = statusKey == 'resolved';
+  final isUnresolved = statusKey == 'unresolved';
+  final isReviewLike = statusKey == 'submitted' ||
+      statusKey == 'under review' ||
+      statusKey == 'action set';
 
   switch (tab) {
-    case _StudentCasesTab.review:
-      return statusKey == 'submitted' || statusKey == 'under review';
+    case _StudentCasesTab.all:
+      return _isVisibleToStudent(d);
     case _StudentCasesTab.needsBooking:
-      return meetingRequired &&
-          statusKey != 'resolved' &&
-          statusKey != 'unresolved' &&
-          meetingFlow == 'needs_booking';
-    case _StudentCasesTab.meeting:
-      return statusKey != 'resolved' &&
-          statusKey != 'unresolved' &&
+      return !isCancelled &&
+          !isResolved &&
+          !isUnresolved &&
           meetingRequired &&
-          (meetingFlow == 'scheduled' || meetingFlow == 'completed');
-    case _StudentCasesTab.history:
-      return statusKey == 'resolved' || statusKey == 'unresolved';
+          meetingFlow == 'needs_booking';
+    case _StudentCasesTab.scheduled:
+      return !isCancelled &&
+          !isResolved &&
+          !isUnresolved &&
+          meetingRequired &&
+          meetingFlow == 'scheduled';
+    case _StudentCasesTab.underReview:
+      return isReviewLike &&
+          (!meetingRequired ||
+              (meetingFlow != 'needs_booking' && meetingFlow != 'scheduled'));
+    case _StudentCasesTab.unresolved:
+      return isUnresolved;
+    case _StudentCasesTab.resolved:
+      return isResolved;
+    case _StudentCasesTab.cancelled:
+      return isCancelled;
   }
 }
 
@@ -2307,7 +2973,8 @@ bool _isVisibleToStudent(Map<String, dynamic> d) {
       statusKey == 'under review' ||
       statusKey == 'action set' ||
       statusKey == 'unresolved' ||
-      statusKey == 'resolved';
+      statusKey == 'resolved' ||
+      _isCancelledStatusKey(statusKey);
 }
 
 bool _meetingRequired(Map<String, dynamic> d) {
@@ -2405,11 +3072,22 @@ String _meetingHistoryText(Map<String, dynamic> d) {
 String _meetingWindowLabel(String raw) {
   final k = raw.toLowerCase().replaceAll(RegExp(r'[\s_-]+'), '');
   if (k.isEmpty) return '';
+  final dynamicDays = RegExp(r'^(\d+)days?$').firstMatch(k);
+  if (dynamicDays != null) {
+    final parsed = int.tryParse(dynamicDays.group(1) ?? '');
+    if (parsed != null && parsed > 0) {
+      return '$parsed Day${parsed == 1 ? '' : 's'}';
+    }
+  }
   switch (k) {
     case 'today':
     case 'withinaday':
     case 'within1day':
       return 'Same Day';
+    case '2days':
+    case 'twodays':
+    case 'within2days':
+      return '2 Days';
     case '3days':
     case 'threedays':
     case 'within3days':
@@ -2431,6 +3109,12 @@ String _meetingWindowCompactBadgeText(String raw, DateTime? due) {
   }
   final window = _meetingWindowLabel(raw);
   return window.isEmpty ? 'MEETING REQUIRED' : window.toUpperCase();
+}
+
+int? _toInt(dynamic raw) {
+  if (raw is num) return raw.toInt();
+  if (raw == null) return null;
+  return int.tryParse(raw.toString().trim());
 }
 
 DateTime? _tsToDate(dynamic ts) {
@@ -2576,6 +3260,7 @@ String _reportedByDisplay(Map<String, dynamic> data) {
 
 String _statusKey(String raw) {
   final n = _safeStr(raw).toLowerCase();
+  if (n.contains('cancel')) return 'cancelled';
   if (n.contains('under') && n.contains('review')) return 'under review';
   if (n.contains('action')) return 'action set';
   if (n.contains('unresolved')) return 'unresolved';
@@ -2598,14 +3283,21 @@ String _statusLabel(String raw) {
       return 'Resolved';
     case 'submitted':
       return 'Under Review';
+    case 'cancelled':
+      return 'Cancelled';
     case 'rejected':
-      return 'Rejected';
+      return 'Cancelled';
     case 'dismissed':
-      return 'Dismissed';
+      return 'Cancelled';
     default:
       return raw.isEmpty ? 'Unknown' : _titleCase(raw);
   }
 }
+
+bool _isCancelledStatusKey(String statusKey) =>
+    statusKey == 'cancelled' ||
+    statusKey == 'rejected' ||
+    statusKey == 'dismissed';
 
 _Tone _statusTone(String raw, Color primaryColor, Color hintColor) {
   final k = _statusKey(raw);
@@ -2633,6 +3325,14 @@ _Tone _statusTone(String raw, Color primaryColor, Color hintColor) {
         fill: Colors.black.withOpacity(0.04),
         border: Colors.black.withOpacity(0.10),
         text: hintColor,
+      );
+    case 'cancelled':
+    case 'rejected':
+    case 'dismissed':
+      return _Tone(
+        fill: Colors.grey.withOpacity(0.10),
+        border: Colors.grey.withOpacity(0.25),
+        text: Colors.grey.shade800,
       );
     default:
       return _Tone(

@@ -80,15 +80,21 @@ class ModernTableHeader extends StatelessWidget {
   final String subtitle;
   final Widget? action;
   final Widget searchBar;
+  final bool showTitleSection;
+  final bool showTopControlsWhenTitleHidden;
+  final bool showSearchBar;
   final Widget? tabs;
   final List<Widget>? filters;
 
   const ModernTableHeader({
     super.key,
-    required this.title,
-    required this.subtitle,
+    this.title = '',
+    this.subtitle = '',
     this.action,
     required this.searchBar,
+    this.showTitleSection = true,
+    this.showTopControlsWhenTitleHidden = false,
+    this.showSearchBar = true,
     this.tabs,
     this.filters,
   });
@@ -102,14 +108,22 @@ class ModernTableHeader extends StatelessWidget {
         viewport.width >= ResponsiveBreakpoints.shellDesktop &&
         viewport.width <= ResponsiveBreakpoints.compactDesktopMaxWidth &&
         viewport.height <= ResponsiveBreakpoints.compactHeaderMaxHeight;
+    final showTopControlsRow =
+        !showTitleSection && showTopControlsWhenTitleHidden;
+    final showSearchInTabsRow = showSearchBar && !showTopControlsRow;
 
     return Container(
-      padding: EdgeInsets.fromLTRB(24, compactDesktopHeader ? 12 : 20, 24, 0),
+      padding: EdgeInsets.fromLTRB(
+        24,
+        showTitleSection ? (compactDesktopHeader ? 12 : 20) : 10,
+        24,
+        0,
+      ),
       color: AppColors.surface,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (!compactDesktopHeader)
+          if (showTitleSection && !compactDesktopHeader)
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -140,9 +154,39 @@ class ModernTableHeader extends StatelessWidget {
                 if (action != null) action!,
               ],
             )
-          else if (action != null)
+          else if (showTitleSection && action != null)
             Align(alignment: Alignment.centerRight, child: action!),
-          SizedBox(height: compactDesktopHeader ? 12 : 24),
+          if (showTopControlsRow)
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final narrowTopControls = constraints.maxWidth < 820;
+                if (narrowTopControls) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      if (showSearchBar) searchBar,
+                      if (showSearchBar && action != null)
+                        const SizedBox(height: 10),
+                      if (action != null)
+                        Align(alignment: Alignment.centerRight, child: action!),
+                    ],
+                  );
+                }
+                return Row(
+                  children: [
+                    if (showSearchBar) Expanded(child: searchBar),
+                    if (showSearchBar && action != null)
+                      const SizedBox(width: 12),
+                    if (action != null) action!,
+                  ],
+                );
+              },
+            ),
+          SizedBox(
+            height: showTitleSection
+                ? (compactDesktopHeader ? 12 : 24)
+                : (showTopControlsRow ? 12 : 8),
+          ),
           LayoutBuilder(
             builder: (context, constraints) {
               final narrow =
@@ -153,8 +197,10 @@ class ModernTableHeader extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     if (tabs != null) tabs!,
-                    if (tabs != null) const SizedBox(height: 10),
-                    SizedBox(width: double.infinity, child: searchBar),
+                    if (tabs != null && showSearchInTabsRow)
+                      const SizedBox(height: 10),
+                    if (showSearchInTabsRow)
+                      SizedBox(width: double.infinity, child: searchBar),
                   ],
                 );
               }
@@ -162,9 +208,11 @@ class ModernTableHeader extends StatelessWidget {
               return Row(
                 children: [
                   if (tabs != null) Expanded(child: tabs!),
-                  if (tabs == null) const Spacer(),
-                  const SizedBox(width: 20),
-                  SizedBox(width: 300, child: searchBar),
+                  if (tabs == null && showSearchInTabsRow) const Spacer(),
+                  if (showSearchInTabsRow) ...[
+                    const SizedBox(width: 20),
+                    SizedBox(width: 300, child: searchBar),
+                  ],
                 ],
               );
             },

@@ -6,10 +6,15 @@ import '../shared/handbook/hb_handbook_page.dart';
 import '../shared/notifications/app_notifications_ui.dart';
 import '../shared/profile/unified_profile_page.dart';
 import '../shared/welcome_screen_page.dart';
+import '../shared/widgets/app_branding.dart';
 import '../shared/widgets/app_theme_tokens.dart';
 import '../shared/widgets/logout_confirm_dialog.dart';
 import '../shared/widgets/responsive_layout_tokens.dart';
 import '../shared/widgets/role_shell_scaffold.dart';
+import '../professor/MySubmittedReportPage.dart';
+import '../professor/professor_counseling_page.dart';
+import '../professor/violation_report_page.dart';
+import '../osa_admin/counseling_setup_page.dart';
 import 'counseling_meeting_schedule_page.dart';
 import 'archive/counseling_appointments_page.dart';
 import 'archive/counseling_home_page.dart';
@@ -25,6 +30,7 @@ class _CounselingDashboardState extends State<CounselingDashboard> {
   int _currentIndex = 0;
   bool _settingsOpen = false;
   bool _showDesktopNotifications = false;
+  static const List<int> _mobileNavIndexes = <int>[0, 1, 2, 5, 6, 7];
 
   static const bg = AppColors.background;
   static const primary = AppColors.primary;
@@ -32,18 +38,32 @@ class _CounselingDashboardState extends State<CounselingDashboard> {
   static const textDark = AppColors.textDark;
   static const surface = AppColors.surface;
 
-  List<Widget> get _pages => const [
-    CounselingHomePage(),
-    HbHandbookPage(),
-    CounselingAppointmentsPage(),
-    CounselingMeetingSchedulePage(),
-    UnifiedProfilePage(),
+  List<Widget> get _pages => [
+    const CounselingHomePage(),
+    const HbHandbookPage(hideTopHeader: true),
+    const CounselingAppointmentsPage(),
+    const ProfessorCounselingPage(),
+    const ViolationReportPage(),
+    MySubmittedCasesPage(
+      onOpenViolationReport: _openViolationReportModal,
+      onOpenCounselingReferral: _openCounselingReferralModal,
+    ),
+    const _CounselingRecordsPlaceholderPage(),
+    const _CounselingAnalyticsPlaceholderPage(),
+    const CounselingMeetingSchedulePage(),
+    const CounselingSetupPage(),
+    const UnifiedProfilePage(),
   ];
 
   final List<_NavItem> _navItems = const [
     _NavItem(Icons.dashboard_rounded, 'Dashboard'),
     _NavItem(Icons.menu_book_rounded, 'Handbook'),
-    _NavItem(Icons.event_available_rounded, 'Appointments'),
+    _NavItem(Icons.event_available_rounded, 'Counseling Review'),
+    _NavItem(Icons.support_agent_rounded, 'Counselling Referral'),
+    _NavItem(Icons.report_rounded, 'Report Violation'),
+    _NavItem(Icons.assignment_rounded, 'My Reports'),
+    _NavItem(Icons.folder_open_rounded, 'Counselling Records'),
+    _NavItem(Icons.insights_rounded, 'Counselling Analytics'),
   ];
 
   String _pageTitle() {
@@ -53,17 +73,151 @@ class _CounselingDashboardState extends State<CounselingDashboard> {
       case 1:
         return 'Student Handbook';
       case 2:
-        return 'Appointments';
+        return 'Counseling Review';
       case 3:
-        return 'Meeting Schedule';
+        return 'Counselling Referral';
       case 4:
+        return 'Report Violation';
+      case 5:
+        return 'My Reports';
+      case 6:
+        return 'Counselling Records';
+      case 7:
+        return 'Counselling Analytics';
+      case 8:
+        return 'Meeting Schedule';
+      case 9:
+        return 'Counseling Setup';
+      case 10:
         return 'Profile';
       default:
         return 'Counseling Portal';
     }
   }
 
-  void _go(int i) => setState(() => _currentIndex = i);
+  void _go(int i) {
+    _goAsync(i);
+  }
+
+  Future<void> _goAsync(int i) async {
+    if (i == 3) {
+      await _openCounselingReferralModal();
+      return;
+    }
+    if (i == 4) {
+      await _openViolationReportModal();
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _currentIndex = i);
+  }
+
+  Future<void> _openFormModal({
+    required String title,
+    required Widget child,
+    String? subtitle,
+  }) async {
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        final isFlatHeaderModal =
+            title == 'Report Violation' || title == 'Counselling Referral';
+        final size = MediaQuery.of(dialogContext).size;
+        final isDesktop = size.width >= 900;
+        final maxWidth = isDesktop ? 1180.0 : size.width - 20;
+        final maxHeight = size.height * 0.92;
+        return Dialog(
+          insetPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+          clipBehavior: Clip.antiAlias,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          child: SizedBox(
+            width: maxWidth,
+            height: maxHeight,
+            child: Column(
+              children: [
+                Container(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 10, 10),
+                  decoration: BoxDecoration(
+                    color: isFlatHeaderModal ? Colors.white : surface,
+                    border: isFlatHeaderModal
+                        ? null
+                        : Border(
+                            bottom: BorderSide(
+                              color: Colors.black.withValues(alpha: 0.08),
+                            ),
+                          ),
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              title,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w900,
+                                color: textDark,
+                                fontSize: 16,
+                              ),
+                            ),
+                            if ((subtitle ?? '').trim().isNotEmpty) ...[
+                              const SizedBox(height: 4),
+                              Text(
+                                subtitle!.trim(),
+                                style: TextStyle(
+                                  color: hint.withValues(alpha: 0.95),
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 12.5,
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Close',
+                        onPressed: () => Navigator.of(dialogContext).pop(),
+                        icon: const Icon(Icons.close_rounded, size: 20),
+                        style: IconButton.styleFrom(
+                          backgroundColor: Colors.black.withValues(alpha: 0.06),
+                          visualDensity: VisualDensity.compact,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(child: child),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _openCounselingReferralModal() async {
+    await _openFormModal(
+      title: 'Counselling Referral',
+      child: const ProfessorCounselingPage(),
+    );
+  }
+
+  Future<void> _openViolationReportModal() async {
+    await _openFormModal(
+      title: 'Report Violation',
+      subtitle: 'Search a student, complete incident details, and submit.',
+      child: ViolationReportPage(
+        onOpenMyReportsInShell: () {
+          Navigator.of(context, rootNavigator: true).pop();
+          _go(5);
+        },
+      ),
+    );
+  }
 
   void _goSettings(int pageIndex) {
     setState(() {
@@ -84,9 +238,14 @@ class _CounselingDashboardState extends State<CounselingDashboard> {
 
   Future<void> _openNotificationsPage() async {
     _closeDesktopNotifications();
-    await Navigator.of(
-      context,
-    ).push(MaterialPageRoute(builder: (_) => const AppNotificationsPage()));
+    await Navigator.of(context).push(
+      PageRouteBuilder<void>(
+        pageBuilder: (context, animation, secondaryAnimation) =>
+            const AppNotificationsPage(),
+        transitionDuration: Duration.zero,
+        reverseTransitionDuration: Duration.zero,
+      ),
+    );
   }
 
   Future<void> _logout() async {
@@ -159,6 +318,7 @@ class _CounselingDashboardState extends State<CounselingDashboard> {
             final shell = ResponsiveLayoutTokens.resolveShellLayout(
               width: constraints.maxWidth,
               height: constraints.maxHeight,
+              allowCompactDesktopDrawer: true,
             );
 
             final menuPanel = _CounselMenuPanel(
@@ -169,7 +329,7 @@ class _CounselingDashboardState extends State<CounselingDashboard> {
               textDark: textDark,
               surface: surface,
               onSelect: _go,
-              onProfile: () => _go(4),
+              onProfile: () => _go(10),
               settingsOpen: _settingsOpen,
               onToggleSettings: () =>
                   setState(() => _settingsOpen = !_settingsOpen),
@@ -199,7 +359,7 @@ class _CounselingDashboardState extends State<CounselingDashboard> {
                   },
                   onProfile: () {
                     Navigator.of(context).maybePop();
-                    _go(4);
+                    _go(10);
                   },
                   settingsOpen: _settingsOpen,
                   onToggleSettings: () =>
@@ -226,6 +386,10 @@ class _CounselingDashboardState extends State<CounselingDashboard> {
                   _openNotificationsPage();
                 }
               },
+              notificationsUid: user.uid,
+              suppressIncomingNotificationToasts: _showDesktopNotifications,
+              hideNotificationsBadge: _showDesktopNotifications,
+              enableNotificationSound: false,
               showDesktopOverlay: shell.isDesktop && _showDesktopNotifications,
               onDismissDesktopOverlay: _closeDesktopNotifications,
               desktopOverlay: DesktopNotificationsPanel(
@@ -236,19 +400,19 @@ class _CounselingDashboardState extends State<CounselingDashboard> {
               bottomNavigationBar: shell.isDesktop
                   ? null
                   : BottomNavigationBar(
-                      currentIndex: _currentIndex < _navItems.length
-                          ? _currentIndex
+                      currentIndex: _mobileNavIndexes.contains(_currentIndex)
+                          ? _mobileNavIndexes.indexOf(_currentIndex)
                           : 0,
                       type: BottomNavigationBarType.fixed,
                       selectedItemColor: primary,
                       unselectedItemColor: hint,
                       backgroundColor: surface,
-                      onTap: _go,
-                      items: _navItems
+                      onTap: (index) => _go(_mobileNavIndexes[index]),
+                      items: _mobileNavIndexes
                           .map(
-                            (item) => BottomNavigationBarItem(
-                              icon: Icon(item.icon),
-                              label: item.label,
+                            (itemIndex) => BottomNavigationBarItem(
+                              icon: Icon(_navItems[itemIndex].icon),
+                              label: _navItems[itemIndex].label,
                             ),
                           )
                           .toList(),
@@ -312,55 +476,104 @@ class _CounselMenuPanel extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Container(
-            padding: const EdgeInsets.fromLTRB(16, 42, 16, 18),
-            width: double.infinity,
-            decoration: BoxDecoration(
-              color: surface,
-              border: Border(
-                bottom: BorderSide(color: primary.withValues(alpha: 0.12)),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 16, 12, 6),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  AppBranding.logo(width: 28, height: 28),
+                  const SizedBox(width: 8),
+                  Text(
+                    'BUDiscipLink',
+                    style: TextStyle(
+                      color: primary,
+                      fontWeight: FontWeight.w900,
+                      fontSize: 15,
+                      letterSpacing: 0.2,
+                    ),
+                  ),
+                ],
               ),
             ),
-            child: Row(
-              children: [
-                Icon(Icons.account_circle, size: 52, color: primary),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 14),
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(14),
+                onTap: onProfile,
+                child: Ink(
+                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+                  decoration: BoxDecoration(
+                    color: primary.withValues(alpha: 0.80),
+                    borderRadius: BorderRadius.circular(14),
+                    boxShadow: [
+                      BoxShadow(
+                        color: primary.withValues(alpha: 0.22),
+                        blurRadius: 10,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: Row(
                     children: [
-                      Text(
-                        accountName,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontWeight: FontWeight.w900,
-                          color: primary,
+                      Container(
+                        width: 44,
+                        height: 44,
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.16),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: const Icon(
+                          Icons.person_outline_rounded,
+                          size: 24,
+                          color: Colors.white,
                         ),
                       ),
-                      const SizedBox(height: 4),
-                      Text(
-                        accountEmail,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: hint,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        accountTitle,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: textDark.withValues(alpha: 0.70),
-                          fontWeight: FontWeight.w800,
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              accountName,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w900,
+                                color: Colors.white,
+                                fontSize: 14,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              accountEmail,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                color: Colors.white.withValues(alpha: 0.90),
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              accountTitle,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                color: Colors.white.withValues(alpha: 0.92),
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     ],
                   ),
                 ),
-              ],
+              ),
             ),
           ),
           Expanded(
@@ -371,6 +584,10 @@ class _CounselMenuPanel extends StatelessWidget {
                   ...navItems.asMap().entries.map((entry) {
                     final i = entry.key;
                     final item = entry.value;
+                    if (item.label == 'Report Violation' ||
+                        item.label == 'Counselling Referral') {
+                      return const SizedBox.shrink();
+                    }
                     final active = currentIndex == i;
 
                     final Color iconColor = active
@@ -417,58 +634,6 @@ class _CounselMenuPanel extends StatelessWidget {
                       ),
                     );
                   }),
-
-                  const SizedBox(height: 8),
-                  Divider(color: primary.withValues(alpha: 0.15), height: 18),
-
-                  Builder(
-                    builder: (_) {
-                      final profileActive = currentIndex == 4;
-                      final profileIconColor = profileActive
-                          ? primary
-                          : textDark.withValues(alpha: 0.85);
-                      final profileTextColor = profileActive
-                          ? primary
-                          : textDark.withValues(alpha: 0.92);
-                      return InkWell(
-                        onTap: onProfile,
-                        child: Container(
-                          margin: const EdgeInsets.symmetric(
-                            horizontal: 10,
-                            vertical: 4,
-                          ),
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 14,
-                            vertical: 12,
-                          ),
-                          decoration: BoxDecoration(
-                            color: profileActive
-                                ? primary.withValues(alpha: 0.10)
-                                : Colors.transparent,
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: Row(
-                            children: [
-                              Icon(
-                                Icons.person_outline_rounded,
-                                color: profileIconColor,
-                              ),
-                              const SizedBox(width: 12),
-                              Text(
-                                'Profile',
-                                style: TextStyle(
-                                  color: profileTextColor,
-                                  fontWeight: profileActive
-                                      ? FontWeight.w900
-                                      : FontWeight.w800,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      );
-                    },
-                  ),
 
                   InkWell(
                     onTap: onToggleSettings,
@@ -519,43 +684,51 @@ class _CounselMenuPanel extends StatelessWidget {
                     _CounselSubItem(
                       label: 'Meeting Schedule',
                       icon: Icons.calendar_month_rounded,
-                      active: currentIndex == 3,
+                      active: currentIndex == 8,
                       primary: primary,
                       textDark: textDark,
-                      onTap: () => onSelectSettingsItem(3),
+                      onTap: () => onSelectSettingsItem(8),
+                    ),
+                    _CounselSubItem(
+                      label: 'Counseling Setup',
+                      icon: Icons.support_agent_rounded,
+                      active: currentIndex == 9,
+                      primary: primary,
+                      textDark: textDark,
+                      onTap: () => onSelectSettingsItem(9),
                     ),
                     const SizedBox(height: 6),
                   ],
-
-                  Divider(color: primary.withValues(alpha: 0.15), height: 18),
-
-                  InkWell(
-                    onTap: onLogout,
-                    child: Container(
-                      margin: const EdgeInsets.fromLTRB(10, 4, 10, 0),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 14,
-                        vertical: 12,
-                      ),
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: const Row(
-                        children: [
-                          Icon(Icons.logout_rounded, color: Colors.red),
-                          SizedBox(width: 12),
-                          Text(
-                            'Logout',
-                            style: TextStyle(
-                              color: Colors.red,
-                              fontWeight: FontWeight.w900,
-                            ),
-                          ),
-                        ],
+                ],
+              ),
+            ),
+          ),
+          Divider(color: primary.withValues(alpha: 0.15), height: 1),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(10, 8, 10, 14),
+            child: InkWell(
+              onTap: onLogout,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 12,
+                ),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Row(
+                  children: [
+                    Icon(Icons.logout_rounded, color: Colors.red),
+                    SizedBox(width: 12),
+                    Text(
+                      'Logout',
+                      style: TextStyle(
+                        color: Colors.red,
+                        fontWeight: FontWeight.w900,
                       ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
@@ -608,6 +781,85 @@ class _CounselSubItem extends StatelessWidget {
                   fontWeight: active ? FontWeight.w900 : FontWeight.w700,
                   fontSize: 13,
                 ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CounselingRecordsPlaceholderPage extends StatelessWidget {
+  const _CounselingRecordsPlaceholderPage();
+
+  @override
+  Widget build(BuildContext context) {
+    return const _CounselingPlaceholderScaffold(
+      icon: Icons.folder_open_rounded,
+      title: 'Counselling Records',
+      subtitle: 'This module is not yet implemented.',
+    );
+  }
+}
+
+class _CounselingAnalyticsPlaceholderPage extends StatelessWidget {
+  const _CounselingAnalyticsPlaceholderPage();
+
+  @override
+  Widget build(BuildContext context) {
+    return const _CounselingPlaceholderScaffold(
+      icon: Icons.insights_rounded,
+      title: 'Counselling Analytics',
+      subtitle: 'This module is not yet implemented.',
+    );
+  }
+}
+
+class _CounselingPlaceholderScaffold extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+
+  const _CounselingPlaceholderScaffold({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 520),
+        margin: const EdgeInsets.all(20),
+        padding: const EdgeInsets.fromLTRB(18, 20, 18, 20),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 42, color: AppColors.primary),
+            const SizedBox(height: 10),
+            Text(
+              title,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: AppColors.textDark,
+                fontWeight: FontWeight.w900,
+                fontSize: 20,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              subtitle,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: AppColors.hint,
+                fontWeight: FontWeight.w700,
               ),
             ),
           ],

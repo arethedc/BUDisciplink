@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
 import '../shared/widgets/app_branding.dart';
+import 'package:apps/pages/shared/widgets/app_inline_notice.dart';
 
 class ForgotPasswordPage extends StatefulWidget {
   const ForgotPasswordPage({super.key});
@@ -16,7 +17,7 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
   bool _loading = false;
 
   // ===== THEME (match your green UI) =====
-  static const bg = Color(0xFFF6FAF6);
+  static const bg = Colors.white;
   static const primary = Color(0xFF1B5E20);
   static const hint = Color(0xFF6D7F62);
   static const textDark = Color(0xFF1F2A1F);
@@ -140,7 +141,7 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
             "Password reset link sent. Please check your email inbox.";
       });
 
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text("Password reset email sent."),
           backgroundColor: Colors.green,
@@ -158,7 +159,7 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
         _emailError = msg;
       });
 
-      ScaffoldMessenger.of(
+      AppScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text(msg), backgroundColor: Colors.red));
     } catch (e) {
@@ -168,7 +169,7 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
         _emailError = 'Error: $e';
       });
 
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
       );
     } finally {
@@ -417,3 +418,4 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
     );
   }
 }
+

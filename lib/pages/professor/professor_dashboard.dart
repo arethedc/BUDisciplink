@@ -1,6 +1,5 @@
 import 'package:apps/pages/professor/violation_report_page.dart';
 import 'package:apps/pages/professor/MySubmittedReportPage.dart';
-import 'package:apps/pages/shared/handbook/handbook_ai_assistant_sheet.dart';
 import 'package:apps/pages/shared/handbook/hb_handbook_page.dart';
 import 'package:apps/pages/shared/notifications/app_notifications_ui.dart';
 import 'package:apps/pages/shared/profile/unified_profile_page.dart';
@@ -17,6 +16,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 
 import 'professor_counseling_page.dart';
 import 'professor_home_page.dart';
+import 'package:apps/pages/shared/widgets/app_inline_notice.dart';
 
 class ProfessorDashboard extends StatefulWidget {
   const ProfessorDashboard({super.key});
@@ -27,9 +27,12 @@ class ProfessorDashboard extends StatefulWidget {
 
 class _ProfessorDashboardState extends State<ProfessorDashboard> {
   int _currentIndex = 0;
+  int _previousIndexBeforeNotifications = 0;
   bool _showDesktopNotifications = false;
   final _violationUnsaved = UnsavedChangesController();
   final _counselingUnsaved = UnsavedChangesController();
+  static const List<int> _mobileNavIndexes = <int>[0, 1, 3];
+  static const int _notificationsIndex = 6;
 
   // ================== THEME (same as StudentDashboard) ==================
   static const bg = AppColors.background;
@@ -41,13 +44,27 @@ class _ProfessorDashboardState extends State<ProfessorDashboard> {
   // ================== PAGES ==================
   List<Widget> get _pages => [
     const ProfessorHomePage(),
-    const HbHandbookPage(),
+    const HbHandbookPage(hideTopHeader: true),
     ViolationReportPage(
       onOpenMyReportsInShell: () => _go(3),
       unsavedChangesController: _violationUnsaved,
     ),
-    const MySubmittedCasesPage(),
+    MySubmittedCasesPage(
+      onOpenViolationReport: _openViolationReportModal,
+      onOpenCounselingReferral: _openCounselingReferralModal,
+    ),
     ProfessorCounselingPage(unsavedChangesController: _counselingUnsaved),
+    const UnifiedProfilePage(),
+    AppNotificationsContent(
+      onBack: () {
+        final backIndex =
+            _previousIndexBeforeNotifications == _notificationsIndex
+            ? 0
+            : _previousIndexBeforeNotifications;
+        _go(backIndex);
+      },
+      onViewNotification: _handleNotificationView,
+    ),
   ];
 
   final List<_NavItem> _navItems = const [
@@ -70,6 +87,10 @@ class _ProfessorDashboardState extends State<ProfessorDashboard> {
         return "My Submitted Reports";
       case 4:
         return "Counseling Referrals";
+      case 5:
+        return "Profile";
+      case _notificationsIndex:
+        return "Notifications";
       default:
         return "Professor Portal";
     }
@@ -117,23 +138,139 @@ class _ProfessorDashboardState extends State<ProfessorDashboard> {
     return leave;
   }
 
+  Future<void> _openFormModal({
+    required String title,
+    required Widget child,
+    String? subtitle,
+  }) async {
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        final isFlatHeaderModal =
+            title == 'Report Violation' || title == 'Counselling Referral';
+        final size = MediaQuery.of(dialogContext).size;
+        final isDesktop = size.width >= 900;
+        final maxWidth = isDesktop ? 1180.0 : size.width - 20;
+        final maxHeight = size.height * 0.92;
+        return Dialog(
+          insetPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+          clipBehavior: Clip.antiAlias,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          child: SizedBox(
+            width: maxWidth,
+            height: maxHeight,
+            child: Column(
+              children: [
+                Container(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 10, 10),
+                  decoration: BoxDecoration(
+                    color: isFlatHeaderModal ? Colors.white : surface,
+                    border: isFlatHeaderModal
+                        ? null
+                        : Border(
+                            bottom: BorderSide(
+                              color: Colors.black.withValues(alpha: 0.08),
+                            ),
+                          ),
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              title,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w900,
+                                color: textDark,
+                                fontSize: 16,
+                              ),
+                            ),
+                            if ((subtitle ?? '').trim().isNotEmpty) ...[
+                              const SizedBox(height: 4),
+                              Text(
+                                subtitle!.trim(),
+                                style: TextStyle(
+                                  color: hint.withValues(alpha: 0.95),
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 12.5,
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Close',
+                        onPressed: () => Navigator.of(dialogContext).pop(),
+                        icon: const Icon(Icons.close_rounded, size: 20),
+                        style: IconButton.styleFrom(
+                          backgroundColor: Colors.black.withValues(alpha: 0.06),
+                          visualDensity: VisualDensity.compact,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(child: child),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _openViolationReportModal() async {
+    final canLeave = await _confirmLeaveCurrentPage();
+    if (!mounted || !canLeave) return;
+    await _openFormModal(
+      title: 'Report Violation',
+      subtitle: 'Search a student, complete incident details, and submit.',
+      child: ViolationReportPage(
+        onOpenMyReportsInShell: () {
+          Navigator.of(context, rootNavigator: true).pop();
+          _go(3);
+        },
+      ),
+    );
+  }
+
+  Future<void> _openCounselingReferralModal() async {
+    final canLeave = await _confirmLeaveCurrentPage();
+    if (!mounted || !canLeave) return;
+    await _openFormModal(
+      title: 'Counselling Referral',
+      child: const ProfessorCounselingPage(),
+    );
+  }
+
   void _go(int i) {
     _goAsync(i);
   }
 
   Future<void> _goAsync(int i) async {
+    if (i == 2) {
+      await _openViolationReportModal();
+      return;
+    }
+    if (i == 4) {
+      await _openCounselingReferralModal();
+      return;
+    }
     if (i == _currentIndex) return;
     final canLeave = await _confirmLeaveCurrentPage();
     if (!mounted || !canLeave) return;
-    setState(() => _currentIndex = i);
-  }
-
-  Future<void> _openProfile() async {
-    final canLeave = await _confirmLeaveCurrentPage();
-    if (!mounted || !canLeave) return;
-    await Navigator.of(
-      context,
-    ).push(MaterialPageRoute(builder: (_) => const UnifiedProfilePage()));
+    setState(() {
+      _currentIndex = i;
+      if (i != _notificationsIndex) {
+        _previousIndexBeforeNotifications = i;
+      }
+    });
   }
 
   void _toggleDesktopNotifications() {
@@ -149,10 +286,24 @@ class _ProfessorDashboardState extends State<ProfessorDashboard> {
   Future<void> _openNotificationsPage() async {
     final canLeave = await _confirmLeaveCurrentPage();
     if (!mounted || !canLeave) return;
-    _closeDesktopNotifications();
-    await Navigator.of(
-      context,
-    ).push(MaterialPageRoute(builder: (_) => const AppNotificationsPage()));
+    setState(() {
+      if (_currentIndex != _notificationsIndex) {
+        _previousIndexBeforeNotifications = _currentIndex;
+      }
+      _showDesktopNotifications = false;
+      _currentIndex = _notificationsIndex;
+    });
+  }
+
+  Future<void> _handleNotificationView(AppNotificationViewIntent intent) async {
+    switch (intent.target) {
+      case AppNotificationViewTarget.pendingApproval:
+        _go(3);
+        break;
+      case AppNotificationViewTarget.violationAlert:
+        _go(3);
+        break;
+    }
   }
 
   String _displayName(Map<String, dynamic> data, User user) {
@@ -219,6 +370,7 @@ class _ProfessorDashboardState extends State<ProfessorDashboard> {
             final shell = ResponsiveLayoutTokens.resolveShellLayout(
               width: constraints.maxWidth,
               height: constraints.maxHeight,
+              allowCompactDesktopDrawer: true,
             );
 
             final menuPanel = _MenuPanel(
@@ -229,12 +381,7 @@ class _ProfessorDashboardState extends State<ProfessorDashboard> {
               textDark: textDark,
               surface: surface,
               onSelect: _go,
-              onProfile: _openProfile,
-              onSettings: () {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text("Settings tapped")),
-                );
-              },
+              onProfile: () => _go(5),
               onLogout: _logout,
               accountTitle: accountTitle,
               accountEmail: accountEmail,
@@ -260,13 +407,7 @@ class _ProfessorDashboardState extends State<ProfessorDashboard> {
                   },
                   onProfile: () {
                     Navigator.of(context).maybePop();
-                    _openProfile();
-                  },
-                  onSettings: () {
-                    Navigator.of(context).maybePop();
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text("Settings tapped")),
-                    );
+                    _go(5);
                   },
                   onLogout: () {
                     Navigator.of(context).maybePop();
@@ -283,40 +424,69 @@ class _ProfessorDashboardState extends State<ProfessorDashboard> {
                 if (shell.isDesktop) {
                   _toggleDesktopNotifications();
                 } else {
-                  _openNotificationsPage();
+                  if (_currentIndex == _notificationsIndex) {
+                    final backIndex =
+                        _previousIndexBeforeNotifications == _notificationsIndex
+                        ? 0
+                        : _previousIndexBeforeNotifications;
+                    _go(backIndex);
+                  } else {
+                    _openNotificationsPage();
+                  }
                 }
               },
+              notificationsUid: user.uid,
+              suppressIncomingNotificationToasts:
+                  _showDesktopNotifications ||
+                  _currentIndex == _notificationsIndex,
+              hideNotificationsBadge:
+                  _showDesktopNotifications ||
+                  _currentIndex == _notificationsIndex,
+              enableNotificationSound: false,
               showDesktopOverlay: shell.isDesktop && _showDesktopNotifications,
               onDismissDesktopOverlay: _closeDesktopNotifications,
               desktopOverlay: DesktopNotificationsPanel(
                 uid: user.uid,
                 onClose: _closeDesktopNotifications,
                 onSeeAll: _openNotificationsPage,
+                onViewNotification: (intent) async {
+                  _closeDesktopNotifications();
+                  await _handleNotificationView(intent);
+                },
               ),
+              showBackButton:
+                  shell.usesDrawerSidebar &&
+                  _currentIndex == _notificationsIndex,
+              onBackPressed: () {
+                final backIndex =
+                    _previousIndexBeforeNotifications == _notificationsIndex
+                    ? 0
+                    : _previousIndexBeforeNotifications;
+                _go(backIndex);
+              },
               bottomNavigationBar: shell.isDesktop
                   ? null
-                  : BottomNavigationBar(
-                      currentIndex: _currentIndex,
-                      type: BottomNavigationBarType.fixed,
-                      selectedItemColor: primary,
-                      unselectedItemColor: hint,
-                      backgroundColor: surface,
-                      onTap: _go,
-                      items: _navItems
-                          .map(
-                            (item) => BottomNavigationBarItem(
-                              icon: Icon(item.icon),
-                              label: item.label,
+                  : (_mobileNavIndexes.isEmpty ||
+                            !_mobileNavIndexes.contains(_currentIndex)
+                        ? null
+                        : BottomNavigationBar(
+                            currentIndex: _mobileNavIndexes.indexOf(
+                              _currentIndex,
                             ),
-                          )
-                          .toList(),
-                    ),
-              floatingActionButton: FloatingActionButton(
-                heroTag: null,
-                backgroundColor: primary,
-                onPressed: () => showHandbookAiAssistantSheet(context),
-                child: const Icon(Icons.chat, color: Colors.white),
-              ),
+                            type: BottomNavigationBarType.fixed,
+                            selectedItemColor: primary,
+                            unselectedItemColor: hint,
+                            backgroundColor: surface,
+                            onTap: (index) => _go(_mobileNavIndexes[index]),
+                            items: _mobileNavIndexes
+                                .map(
+                                  (itemIndex) => BottomNavigationBarItem(
+                                    icon: Icon(_navItems[itemIndex].icon),
+                                    label: _navItems[itemIndex].label,
+                                  ),
+                                )
+                                .toList(),
+                          )),
             );
           },
         );
@@ -346,7 +516,6 @@ class _MenuPanel extends StatelessWidget {
 
   final ValueChanged<int> onSelect;
   final VoidCallback onProfile;
-  final VoidCallback onSettings;
   final VoidCallback onLogout;
 
   final String accountTitle;
@@ -362,7 +531,6 @@ class _MenuPanel extends StatelessWidget {
     required this.surface,
     required this.onSelect,
     required this.onProfile,
-    required this.onSettings,
     required this.onLogout,
     required this.accountTitle,
     required this.accountEmail,
@@ -484,6 +652,10 @@ class _MenuPanel extends StatelessWidget {
                   ...navItems.asMap().entries.map((entry) {
                     final i = entry.key;
                     final item = entry.value;
+                    if (item.label == 'Report Violation' ||
+                        item.label == 'Counseling Referrals') {
+                      return const SizedBox.shrink();
+                    }
                     final active = currentIndex == i;
 
                     final Color iconColor = active
@@ -530,33 +702,6 @@ class _MenuPanel extends StatelessWidget {
                       ),
                     );
                   }),
-                ],
-              ),
-            ),
-          ),
-          Divider(color: primary.withValues(alpha: 0.15), height: 18),
-          InkWell(
-            onTap: onSettings,
-            child: Container(
-              margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Row(
-                children: [
-                  Icon(
-                    Icons.settings_outlined,
-                    color: textDark.withValues(alpha: 0.85),
-                  ),
-                  const SizedBox(width: 12),
-                  Text(
-                    'Settings',
-                    style: TextStyle(
-                      color: textDark.withValues(alpha: 0.92),
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
                 ],
               ),
             ),

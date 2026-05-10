@@ -11,8 +11,6 @@ class StudentManagementPage extends StatelessWidget {
   Widget build(BuildContext context) {
     return UserManagementPage(
       studentsOnlyScope: true,
-      headerTitle: 'Student Management',
-      headerSubtitle: 'Manage student accounts and verification',
       initialSelectedUserId: initialSelectedUserId,
       pageBackgroundColor: Colors.white,
     );

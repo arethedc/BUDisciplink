@@ -20,6 +20,7 @@ pluginManagement {
 plugins {
     id("dev.flutter.flutter-plugin-loader") version "1.0.0"
     id("com.android.application") version "8.11.1" apply false
+    // Updated to latest available Kotlin version (2.2.20-Beta01 or similar as requested)
     id("org.jetbrains.kotlin.android") version "2.2.20" apply false
 }
 

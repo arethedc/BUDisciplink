@@ -1,6 +1,9 @@
+import 'package:apps/services/notification_sound_service.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
+import 'package:apps/services/user_preferences_service.dart';
 
 class UnifiedProfilePage extends StatefulWidget {
   const UnifiedProfilePage({super.key});
@@ -10,7 +13,7 @@ class UnifiedProfilePage extends StatefulWidget {
 }
 
 class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
-  static const bg = Color(0xFFF6FAF6);
+  static const bg = Colors.white;
   static const primary = Color(0xFF1B5E20);
   static const textDark = Color(0xFF1F2A1F);
   static const hint = Color(0xFF6D7F62);
@@ -24,7 +27,6 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
   final _studentNoCtrl = TextEditingController();
   final _collegeCtrl = TextEditingController();
   final _programCtrl = TextEditingController();
-  final _yearLevelCtrl = TextEditingController();
   final _employeeNoCtrl = TextEditingController();
   final _departmentCtrl = TextEditingController();
 
@@ -33,6 +35,8 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
   String _accountStatus = '';
   String _studentVerificationStatus = '';
   Map<String, dynamic>? _latestData;
+  bool _notificationSoundEnabled = false;
+  bool _systemPrefsLoading = true;
 
   bool get _isStudent => _role == 'student';
   bool get _roleNeedsDepartment =>
@@ -40,6 +44,12 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
       _role != 'osa_admin' &&
       _role != 'counseling_admin' &&
       _role != 'super_admin';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSystemPreferences();
+  }
 
   @override
   void dispose() {
@@ -50,7 +60,6 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
     _studentNoCtrl.dispose();
     _collegeCtrl.dispose();
     _programCtrl.dispose();
-    _yearLevelCtrl.dispose();
     _employeeNoCtrl.dispose();
     _departmentCtrl.dispose();
     super.dispose();
@@ -107,11 +116,48 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
         (studentProfile['studentNo'] ?? data['studentNo'] ?? '').toString();
     _collegeCtrl.text = (studentProfile['collegeId'] ?? '').toString();
     _programCtrl.text = (studentProfile['programId'] ?? '').toString();
-    _yearLevelCtrl.text = (studentProfile['yearLevel'] ?? '').toString();
-
     _employeeNoCtrl.text =
         (employeeProfile['employeeNo'] ?? data['employeeNo'] ?? '').toString();
     _departmentCtrl.text = (employeeProfile['department'] ?? '').toString();
+  }
+
+  Future<void> _loadSystemPreferences() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid ?? '';
+    if (uid.trim().isEmpty) {
+      if (!mounted) return;
+      setState(() {
+        _notificationSoundEnabled = false;
+        _systemPrefsLoading = false;
+      });
+      return;
+    }
+    final enabled = await UserPreferencesService.getNotificationSoundEnabled(
+      uid,
+    );
+    if (!mounted) return;
+    setState(() {
+      _notificationSoundEnabled = enabled;
+      _systemPrefsLoading = false;
+    });
+  }
+
+  Future<void> _setNotificationSoundEnabled(bool enabled) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid ?? '';
+    if (uid.trim().isEmpty) return;
+    setState(() => _notificationSoundEnabled = enabled);
+    await UserPreferencesService.setNotificationSoundEnabled(uid, enabled);
+  }
+
+  Future<void> _testNotificationSound() async {
+    final ok = await NotificationSoundService.instance.play();
+    if (!mounted) return;
+    if (!ok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not play notification sound on this device.'),
+        ),
+      );
+    }
   }
 
   String _roleLabel(String role) {
@@ -157,6 +203,386 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
     return raw.replaceAll('_', ' ').toUpperCase();
   }
 
+  String _profilePhotoUrl(Map<String, dynamic> data) {
+    final direct = (data['photoUrl'] ?? '').toString().trim();
+    if (direct.isNotEmpty) return direct;
+    final profilePhoto = (data['profilePhotoUrl'] ?? '').toString().trim();
+    if (profilePhoto.isNotEmpty) return profilePhoto;
+
+    final studentProfile = data['studentProfile'] as Map<String, dynamic>?;
+    final nestedStudentPhoto = (studentProfile?['photoUrl'] ?? '')
+        .toString()
+        .trim();
+    if (nestedStudentPhoto.isNotEmpty) return nestedStudentPhoto;
+
+    final employeeProfile = data['employeeProfile'] as Map<String, dynamic>?;
+    final nestedEmployeePhoto = (employeeProfile?['photoUrl'] ?? '')
+        .toString()
+        .trim();
+    if (nestedEmployeePhoto.isNotEmpty) return nestedEmployeePhoto;
+
+    return '';
+  }
+
+  bool _isHttpPhotoUrl(String value) {
+    return value.startsWith('http://') || value.startsWith('https://');
+  }
+
+  Future<String> _resolvePhotoUrl(String source) async {
+    final value = source.trim();
+    if (value.isEmpty) return '';
+    if (_isHttpPhotoUrl(value)) return value;
+    try {
+      if (value.startsWith('gs://')) {
+        return await FirebaseStorage.instance
+            .refFromURL(value)
+            .getDownloadURL();
+      }
+      return await FirebaseStorage.instance.ref(value).getDownloadURL();
+    } catch (_) {
+      return '';
+    }
+  }
+
+  Widget _buildProfilePhotoAvatar(String sourceUrl) {
+    final source = sourceUrl.trim();
+    const fallback = Icon(Icons.person_rounded, color: hint, size: 30);
+
+    if (source.isEmpty) {
+      return CircleAvatar(
+        radius: 30,
+        backgroundColor: Color(0xFFF2F5F2),
+        child: fallback,
+      );
+    }
+
+    if (_isHttpPhotoUrl(source)) {
+      return CircleAvatar(
+        radius: 30,
+        backgroundColor: const Color(0xFFF2F5F2),
+        foregroundImage: NetworkImage(source),
+      );
+    }
+
+    return FutureBuilder<String>(
+      future: _resolvePhotoUrl(source),
+      builder: (context, snapshot) {
+        final resolved = (snapshot.data ?? '').trim();
+        return CircleAvatar(
+          radius: 30,
+          backgroundColor: const Color(0xFFF2F5F2),
+          foregroundImage: resolved.isEmpty ? null : NetworkImage(resolved),
+          child: resolved.isEmpty ? fallback : null,
+        );
+      },
+    );
+  }
+
+  DateTime? _asDate(dynamic value) {
+    if (value is Timestamp) return value.toDate();
+    if (value is DateTime) return value;
+    return null;
+  }
+
+  String _formatLogDateTime(DateTime? date) {
+    if (date == null) return '--';
+    final local = date.toLocal();
+    final yyyy = local.year.toString().padLeft(4, '0');
+    final mm = local.month.toString().padLeft(2, '0');
+    final dd = local.day.toString().padLeft(2, '0');
+    final hour = local.hour.toString().padLeft(2, '0');
+    final min = local.minute.toString().padLeft(2, '0');
+    return '$yyyy-$mm-$dd $hour:$min';
+  }
+
+  Widget _buildCombinedUserLogsList({required String uid}) {
+    final profileLogsStream = FirebaseFirestore.instance
+        .collection('users')
+        .doc(uid)
+        .collection('profile_logs')
+        .orderBy('createdAtEpochMs', descending: true)
+        .snapshots();
+    final authLogsStream = FirebaseFirestore.instance
+        .collection('users')
+        .doc(uid)
+        .collection('auth_logs')
+        .orderBy('createdAtEpochMs', descending: true)
+        .snapshots();
+
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: profileLogsStream,
+      builder: (context, profileSnap) {
+        if (profileSnap.hasError) {
+          return const Center(
+            child: Text(
+              'Could not load logs.',
+              style: TextStyle(
+                color: Colors.redAccent,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          );
+        }
+        return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+          stream: authLogsStream,
+          builder: (context, authSnap) {
+            if (authSnap.hasError) {
+              return const Center(
+                child: Text(
+                  'Could not load logs.',
+                  style: TextStyle(
+                    color: Colors.redAccent,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              );
+            }
+
+            final loading =
+                profileSnap.connectionState == ConnectionState.waiting &&
+                authSnap.connectionState == ConnectionState.waiting &&
+                !profileSnap.hasData &&
+                !authSnap.hasData;
+            if (loading) {
+              return const Center(
+                child: CircularProgressIndicator(color: primary),
+              );
+            }
+
+            final entries = <Map<String, dynamic>>[];
+            for (final doc in profileSnap.data?.docs ?? const []) {
+              entries.add({
+                'data': doc.data(),
+                'defaultTitle': 'Profile Update',
+              });
+            }
+            for (final doc in authSnap.data?.docs ?? const []) {
+              entries.add({
+                'data': doc.data(),
+                'defaultTitle': 'Session Activity',
+              });
+            }
+
+            DateTime _entryDate(Map<String, dynamic> entry) {
+              final data =
+                  (entry['data'] as Map<String, dynamic>?) ??
+                  <String, dynamic>{};
+              return _asDate(data['createdAt']) ??
+                  DateTime.fromMillisecondsSinceEpoch(
+                    (data['createdAtEpochMs'] as num?)?.toInt() ?? 0,
+                  );
+            }
+
+            entries.sort((a, b) => _entryDate(b).compareTo(_entryDate(a)));
+
+            if (entries.isEmpty) {
+              return const Center(
+                child: Text(
+                  'No activity logs yet.',
+                  style: TextStyle(color: hint, fontWeight: FontWeight.w700),
+                ),
+              );
+            }
+
+            return ListView.separated(
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+              itemCount: entries.length,
+              separatorBuilder: (_, index) => const SizedBox(height: 8),
+              itemBuilder: (_, index) {
+                final entry = entries[index];
+                final data =
+                    (entry['data'] as Map<String, dynamic>?) ??
+                    <String, dynamic>{};
+                final defaultTitle =
+                    (entry['defaultTitle'] as String?) ?? 'Activity';
+
+                final action = (data['action'] ?? data['event'] ?? '')
+                    .toString()
+                    .trim()
+                    .toLowerCase();
+                final title = (data['title'] ?? '').toString().trim();
+                final details = (data['details'] ?? data['description'] ?? '')
+                    .toString()
+                    .trim();
+                final actorName = (data['actorName'] ?? data['actor'] ?? 'System')
+                    .toString()
+                    .trim();
+                final actorRole = (data['actorRole'] ?? '').toString().trim();
+                final createdAt = _entryDate(entry);
+
+                Color chipColor = Colors.blueGrey;
+                switch (action) {
+                  case 'created':
+                  case 'create':
+                    chipColor = Colors.blue;
+                    break;
+                  case 'approved':
+                  case 'approve':
+                    chipColor = Colors.green;
+                    break;
+                  case 'rejected':
+                  case 'reject':
+                    chipColor = Colors.red;
+                    break;
+                  case 'edited':
+                  case 'edit':
+                  case 'updated':
+                    chipColor = Colors.orange;
+                    break;
+                  case 'logged_in':
+                  case 'login':
+                    chipColor = Colors.teal;
+                    break;
+                  case 'logged_out':
+                  case 'logout':
+                    chipColor = Colors.indigo;
+                    break;
+                }
+
+                final roleLabel = actorRole.isEmpty
+                    ? ''
+                    : actorRole.replaceAll('_', ' ').trim();
+
+                return Container(
+                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: Colors.black.withValues(alpha: 0.08),
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              title.isEmpty ? defaultTitle : title,
+                              style: const TextStyle(
+                                color: textDark,
+                                fontWeight: FontWeight.w900,
+                                fontSize: 13.5,
+                              ),
+                            ),
+                          ),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 3,
+                            ),
+                            decoration: BoxDecoration(
+                              color: chipColor.withValues(alpha: 0.12),
+                              borderRadius: BorderRadius.circular(999),
+                              border: Border.all(
+                                color: chipColor.withValues(alpha: 0.28),
+                              ),
+                            ),
+                            child: Text(
+                              action.isEmpty
+                                  ? 'update'
+                                  : action.replaceAll('_', ' '),
+                              style: TextStyle(
+                                color: chipColor,
+                                fontWeight: FontWeight.w900,
+                                fontSize: 11,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (details.isNotEmpty) ...[
+                        const SizedBox(height: 6),
+                        Text(
+                          details,
+                          style: const TextStyle(
+                            color: textDark,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 12.5,
+                            height: 1.35,
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 7),
+                      Text(
+                        '${_formatLogDateTime(createdAt)} - $actorName${roleLabel.isEmpty ? '' : ' ($roleLabel)'}',
+                        style: const TextStyle(
+                          color: hint,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 11.5,
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _showActivityLogsDialog({
+    required String uid,
+    required String displayName,
+  }) async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        return Dialog(
+          backgroundColor: bg,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 760, maxHeight: 620),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(18, 16, 18, 10),
+                  child: Row(
+                    children: [
+                      const Icon(
+                        Icons.history_rounded,
+                        color: primary,
+                        size: 20,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Activity Logs - $displayName',
+                          style: const TextStyle(
+                            color: primary,
+                            fontWeight: FontWeight.w900,
+                            fontSize: 17,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Close',
+                        onPressed: () => Navigator.pop(ctx),
+                        icon: const Icon(Icons.close_rounded, color: hint),
+                      ),
+                    ],
+                  ),
+                ),
+                const Divider(height: 1),
+                Expanded(
+                  child: _buildCombinedUserLogsList(uid: uid),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   InputDecoration _decor({
     required String label,
     required IconData icon,
@@ -165,9 +591,14 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
     return InputDecoration(
       labelText: label,
       labelStyle: const TextStyle(color: hint, fontWeight: FontWeight.w700),
-      prefixIcon: Icon(icon, color: primary.withValues(alpha: 0.85)),
+      prefixIcon: Icon(
+        icon,
+        color: enabled
+            ? primary.withValues(alpha: 0.85)
+            : primary.withValues(alpha: 0.65),
+      ),
       filled: true,
-      fillColor: enabled ? Colors.white : Colors.grey[100],
+      fillColor: Colors.white,
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(12),
         borderSide: BorderSide(color: Colors.grey[300]!),
@@ -276,6 +707,7 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
                   .toString()
                   .trim();
           final email = _emailCtrl.text.trim();
+          final profilePhotoUrl = _profilePhotoUrl(data);
 
           return SingleChildScrollView(
             padding: const EdgeInsets.all(20),
@@ -296,86 +728,95 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
                             color: Colors.black.withValues(alpha: 0.08),
                           ),
                         ),
-                        child: Row(
-                          children: [
-                            CircleAvatar(
-                              radius: 30,
-                              backgroundColor: primary.withValues(alpha: 0.12),
-                              child: const Icon(
-                                Icons.person_rounded,
-                                color: primary,
-                                size: 32,
+                        child: LayoutBuilder(
+                          builder: (context, constraints) {
+                            final compact = constraints.maxWidth < 720;
+                            final logsButton = OutlinedButton.icon(
+                              onPressed: () => _showActivityLogsDialog(
+                                uid: uid,
+                                displayName: displayName.isEmpty
+                                    ? email
+                                    : displayName,
                               ),
-                            ),
-                            const SizedBox(width: 14),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    displayName.isEmpty ? '--' : displayName,
-                                    style: const TextStyle(
-                                      color: textDark,
-                                      fontSize: 20,
-                                      fontWeight: FontWeight.w900,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    email.isEmpty ? '--' : email,
-                                    style: const TextStyle(
-                                      color: hint,
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  Wrap(
-                                    spacing: 8,
-                                    runSpacing: 8,
-                                    children: [
-                                      Chip(
-                                        label: Text(_roleLabel(_role)),
-                                        backgroundColor: primary.withValues(
-                                          alpha: 0.10,
-                                        ),
-                                        labelStyle: const TextStyle(
-                                          color: primary,
-                                          fontWeight: FontWeight.w700,
-                                        ),
-                                      ),
-                                      Chip(
-                                        label: Text(
-                                          'ACCOUNT: ${_statusLabel(_accountStatus)}',
-                                        ),
-                                        backgroundColor: _statusColor(
-                                          _accountStatus,
-                                        ).withValues(alpha: 0.12),
-                                        labelStyle: TextStyle(
-                                          color: _statusColor(_accountStatus),
-                                          fontWeight: FontWeight.w700,
-                                        ),
-                                      ),
-                                      if (_isStudent)
-                                        Chip(
-                                          label: Text(
-                                            'VERIFICATION: ${_statusLabel(_studentVerificationStatus)}',
-                                          ),
-                                          backgroundColor: _statusColor(
-                                            _studentVerificationStatus,
-                                          ).withValues(alpha: 0.12),
-                                          labelStyle: TextStyle(
-                                            color: _statusColor(
-                                              _studentVerificationStatus,
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: primary,
+                                side: BorderSide(
+                                  color: primary.withValues(alpha: 0.30),
+                                ),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 9,
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                              ),
+                              icon: const Icon(Icons.history_rounded, size: 17),
+                              label: const Text(
+                                'View Activity Logs',
+                                style: TextStyle(fontWeight: FontWeight.w800),
+                              ),
+                            );
+
+                            return Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  crossAxisAlignment: CrossAxisAlignment.center,
+                                  children: [
+                                    _buildProfilePhotoAvatar(profilePhotoUrl),
+                                    const SizedBox(width: 14),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            displayName.isEmpty
+                                                ? '--'
+                                                : displayName,
+                                            style: const TextStyle(
+                                              color: textDark,
+                                              fontSize: 20,
+                                              fontWeight: FontWeight.w900,
                                             ),
-                                            fontWeight: FontWeight.w700,
                                           ),
-                                        ),
+                                          const SizedBox(height: 4),
+                                          Text(
+                                            email.isEmpty ? '--' : email,
+                                            style: const TextStyle(
+                                              color: hint,
+                                              fontWeight: FontWeight.w700,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 3),
+                                          Text(
+                                            _roleLabel(_role),
+                                            style: const TextStyle(
+                                              color: hint,
+                                              fontWeight: FontWeight.w700,
+                                              fontSize: 13,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    if (!compact) ...[
+                                      const SizedBox(width: 12),
+                                      logsButton,
                                     ],
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
+                                  ],
+                                ),
+                                if (compact)
+                                  const SizedBox(height: 10),
+                                if (compact)
+                                  SizedBox(
+                                    width: double.infinity,
+                                    child: logsButton,
+                                  )
+                              ],
+                            );
+                          },
                         ),
                       ),
                       const SizedBox(height: 16),
@@ -466,27 +907,6 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
                                       color: textDark,
                                     ),
                                   ),
-                                  TextFormField(
-                                    controller: _yearLevelCtrl,
-                                    readOnly: !_editing,
-                                    keyboardType: TextInputType.number,
-                                    decoration: _decor(
-                                      label: 'Year Level',
-                                      icon: Icons.layers_outlined,
-                                      enabled: _editing,
-                                    ),
-                                    validator: (v) {
-                                      final value = (v ?? '').trim();
-                                      if (value.isEmpty) return null;
-                                      return int.tryParse(value) == null
-                                          ? 'Numbers only'
-                                          : null;
-                                    },
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.w700,
-                                      color: textDark,
-                                    ),
-                                  ),
                                 ]),
                                 const SizedBox(height: 12),
                                 _row([
@@ -566,6 +986,136 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
                               ],
                       ),
                       const SizedBox(height: 16),
+                      if (_isStudent) ...[
+                        _section(
+                          title: 'System Preferences',
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.fromLTRB(
+                                12,
+                                10,
+                                12,
+                                10,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: Colors.black.withValues(alpha: 0.08),
+                                ),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Container(
+                                        width: 36,
+                                        height: 36,
+                                        decoration: BoxDecoration(
+                                          color: primary.withValues(
+                                            alpha: 0.10,
+                                          ),
+                                          borderRadius: BorderRadius.circular(
+                                            10,
+                                          ),
+                                        ),
+                                        child: const Icon(
+                                          Icons.volume_up_rounded,
+                                          color: primary,
+                                          size: 20,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 10),
+                                      const Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              'Notification Sound',
+                                              style: TextStyle(
+                                                color: textDark,
+                                                fontWeight: FontWeight.w900,
+                                              ),
+                                            ),
+                                            SizedBox(height: 2),
+                                            Text(
+                                              'Play a short alert sound when a new notification arrives.',
+                                              style: TextStyle(
+                                                color: hint,
+                                                fontWeight: FontWeight.w700,
+                                                fontSize: 12,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      const SizedBox(width: 10),
+                                      if (_systemPrefsLoading)
+                                        const SizedBox(
+                                          width: 20,
+                                          height: 20,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                            color: primary,
+                                          ),
+                                        )
+                                      else
+                                        Switch.adaptive(
+                                          value: _notificationSoundEnabled,
+                                          activeThumbColor: primary,
+                                          activeTrackColor: primary.withValues(
+                                            alpha: 0.28,
+                                          ),
+                                          onChanged:
+                                              _setNotificationSoundEnabled,
+                                        ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 10),
+                                  Align(
+                                    alignment: Alignment.centerRight,
+                                    child: OutlinedButton.icon(
+                                      onPressed: _systemPrefsLoading
+                                          ? null
+                                          : _testNotificationSound,
+                                      style: OutlinedButton.styleFrom(
+                                        foregroundColor: primary,
+                                        side: BorderSide(
+                                          color: primary.withValues(
+                                            alpha: 0.28,
+                                          ),
+                                        ),
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 12,
+                                          vertical: 8,
+                                        ),
+                                        shape: RoundedRectangleBorder(
+                                          borderRadius: BorderRadius.circular(
+                                            10,
+                                          ),
+                                        ),
+                                      ),
+                                      icon: const Icon(
+                                        Icons.play_arrow_rounded,
+                                        size: 18,
+                                      ),
+                                      label: const Text(
+                                        'Test Sound',
+                                        style: TextStyle(
+                                          fontWeight: FontWeight.w800,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
+                      ],
                       Container(
                         padding: const EdgeInsets.all(14),
                         decoration: BoxDecoration(

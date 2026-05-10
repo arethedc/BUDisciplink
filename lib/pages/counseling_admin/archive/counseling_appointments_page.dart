@@ -3,6 +3,7 @@ import 'package:apps/services/counseling_case_workflow_service.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:apps/pages/shared/widgets/app_inline_notice.dart';
 
 class CounselingAppointmentsPage extends StatefulWidget {
   const CounselingAppointmentsPage({super.key});
@@ -17,14 +18,42 @@ class _CounselingAppointmentsPageState
   static const primary = Color(0xFF1B5E20);
   static const textDark = Color(0xFF1F2A1F);
   static const hint = Color(0xFF6D7F62);
+  static const List<_CounselingReviewTabConfig> _tabs = [
+    _CounselingReviewTabConfig(
+      tab: _CounselingReviewTab.all,
+      label: 'All',
+    ),
+    _CounselingReviewTabConfig(
+      tab: _CounselingReviewTab.awaitingCallSlip,
+      label: 'Awaiting Call Slip',
+    ),
+    _CounselingReviewTabConfig(
+      tab: _CounselingReviewTab.bookingRequired,
+      label: 'Booking Required',
+    ),
+    _CounselingReviewTabConfig(
+      tab: _CounselingReviewTab.scheduled,
+      label: 'Scheduled',
+    ),
+    _CounselingReviewTabConfig(
+      tab: _CounselingReviewTab.missed,
+      label: 'Missed',
+    ),
+    _CounselingReviewTabConfig(
+      tab: _CounselingReviewTab.completed,
+      label: 'Completed',
+    ),
+    _CounselingReviewTabConfig(
+      tab: _CounselingReviewTab.cancelled,
+      label: 'Cancelled',
+    ),
+  ];
 
   final TextEditingController _searchCtrl = TextEditingController();
   final CounselingCaseWorkflowService _workflowService =
       CounselingCaseWorkflowService();
 
-  int _tab = 0; // 0 queue, 1 closed
-  String _sourceFilter = 'all';
-  String _typeFilter = 'all';
+  _CounselingReviewTab _tab = _CounselingReviewTab.all;
   String _selectedId = '';
   String? _actionCaseId;
   bool _sweepRunning = false;
@@ -48,7 +77,7 @@ class _CounselingAppointmentsPageState
       final count = await _workflowService.expireOverdueScheduledMeetings();
       if (!mounted) return;
       if (count > 0) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        AppScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
               '$count overdue scheduled counseling appointment(s) were marked missed.',
@@ -57,7 +86,7 @@ class _CounselingAppointmentsPageState
           ),
         );
       } else if (showResult) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        AppScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
               'No overdue scheduled counseling appointments found.',
@@ -68,7 +97,7 @@ class _CounselingAppointmentsPageState
       }
     } catch (error) {
       if (mounted && showResult) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        AppScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Sweep failed: $error'),
             backgroundColor: Colors.red.shade700,
@@ -80,25 +109,142 @@ class _CounselingAppointmentsPageState
     }
   }
 
-  Widget _buildSweepActionButton() {
-    return OutlinedButton.icon(
-      onPressed: _sweepRunning ? null : () => _runExpirySweep(showResult: true),
-      icon: _sweepRunning
-          ? const SizedBox(
-              width: 15,
-              height: 15,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            )
-          : const Icon(Icons.refresh_rounded, size: 18),
-      label: Text(
-        _sweepRunning ? 'Running...' : 'Run Sweep',
-        style: const TextStyle(fontWeight: FontWeight.w800),
+  Future<void> _refreshCurrentTable() async {
+    if (_sweepRunning) return;
+    await _runExpirySweep(showResult: false);
+    if (!mounted) return;
+    setState(() {});
+  }
+
+  Widget _buildRefreshButton() {
+    return Tooltip(
+      message: 'Refresh table',
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: _sweepRunning ? null : _refreshCurrentTable,
+        child: Container(
+          width: 48,
+          height: 48,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: Colors.white.withValues(alpha: 0.75),
+            border: Border.all(color: Colors.black12),
+          ),
+          child: _sweepRunning
+              ? SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: primary,
+                  ),
+                )
+              : const Icon(Icons.refresh_rounded, color: hint, size: 20),
+        ),
       ),
-      style: OutlinedButton.styleFrom(
-        foregroundColor: primary,
-        side: BorderSide(color: primary.withValues(alpha: 0.50)),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      ),
+    );
+  }
+
+  Widget _buildSearchBar() {
+    final width = MediaQuery.sizeOf(context).width;
+    final isDesktop = width >= 1000;
+    final shouldConstrainWidth = width >= 900;
+    final constrainedWidth = width >= 1600
+        ? 640.0
+        : width >= 1300
+            ? 580.0
+            : 520.0;
+    final height = isDesktop ? 56.0 : 48.0;
+    final borderRadius = isDesktop ? 16.0 : 18.0;
+    final iconSize = isDesktop ? 24.0 : 22.0;
+    final fontSize = isDesktop ? 15.0 : 13.5;
+
+    final searchField = ValueListenableBuilder<TextEditingValue>(
+      valueListenable: _searchCtrl,
+      builder: (context, value, _) {
+        final hasText = value.text.trim().isNotEmpty;
+
+        return Container(
+          height: height,
+          padding: EdgeInsets.symmetric(horizontal: isDesktop ? 20 : 12),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.75),
+            borderRadius: BorderRadius.circular(borderRadius),
+            border: Border.all(color: Colors.black12),
+            boxShadow: isDesktop
+                ? [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.05),
+                      blurRadius: 10,
+                      offset: const Offset(0, 2),
+                    ),
+                  ]
+                : null,
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.search_rounded, color: hint, size: iconSize),
+              SizedBox(width: isDesktop ? 12 : 8),
+              Expanded(
+                child: TextField(
+                  controller: _searchCtrl,
+                  onChanged: (_) => setState(() {}),
+                  style: TextStyle(
+                    fontSize: fontSize,
+                    fontWeight: FontWeight.w600,
+                    color: textDark,
+                  ),
+                  decoration: InputDecoration(
+                    hintText: 'Search student, status, source, or type...',
+                    border: InputBorder.none,
+                    enabledBorder: InputBorder.none,
+                    focusedBorder: InputBorder.none,
+                    disabledBorder: InputBorder.none,
+                    filled: false,
+                    isDense: true,
+                    contentPadding: EdgeInsets.zero,
+                    hintStyle: TextStyle(
+                      color: hint,
+                      fontWeight: FontWeight.w600,
+                      fontSize: fontSize,
+                    ),
+                  ),
+                ),
+              ),
+              if (hasText)
+                IconButton(
+                  tooltip: 'Clear search',
+                  onPressed: () {
+                    _searchCtrl.clear();
+                    setState(() {});
+                  },
+                  icon: Icon(
+                    Icons.close_rounded,
+                    color: hint.withValues(alpha: 0.85),
+                    size: isDesktop ? 20 : 18,
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+
+    Widget searchWithRefresh() {
+      return Row(
+        children: [
+          Expanded(child: searchField),
+          const SizedBox(width: 8),
+          _buildRefreshButton(),
+        ],
+      );
+    }
+
+    if (!shouldConstrainWidth) return searchWithRefresh();
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: SizedBox(width: constrainedWidth, child: searchWithRefresh()),
     );
   }
 
@@ -109,6 +255,47 @@ class _CounselingAppointmentsPageState
   }
 
   String _safe(dynamic value) => (value ?? '').toString().trim();
+
+  bool _matchesTab(Map<String, dynamic> data) {
+    switch (_tab) {
+      case _CounselingReviewTab.all:
+        return true;
+      case _CounselingReviewTab.awaitingCallSlip:
+        return _isAwaitingCallSlip(data);
+      case _CounselingReviewTab.bookingRequired:
+        return _isBookingRequired(data);
+      case _CounselingReviewTab.scheduled:
+        return _isScheduled(data);
+      case _CounselingReviewTab.missed:
+        return _isMissed(data);
+      case _CounselingReviewTab.completed:
+        return _isCompleted(data);
+      case _CounselingReviewTab.cancelled:
+        return _isCancelled(data);
+    }
+  }
+
+  int _tabCount(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs, _CounselingReviewTab tab) {
+    return docs.where((doc) {
+      final data = doc.data();
+      switch (tab) {
+        case _CounselingReviewTab.all:
+          return true;
+        case _CounselingReviewTab.awaitingCallSlip:
+          return _isAwaitingCallSlip(data);
+        case _CounselingReviewTab.bookingRequired:
+          return _isBookingRequired(data);
+        case _CounselingReviewTab.scheduled:
+          return _isScheduled(data);
+        case _CounselingReviewTab.missed:
+          return _isMissed(data);
+        case _CounselingReviewTab.completed:
+          return _isCompleted(data);
+        case _CounselingReviewTab.cancelled:
+          return _isCancelled(data);
+      }
+    }).length;
+  }
 
   String _fmtDate(DateTime? value) {
     if (value == null) return '-';
@@ -319,12 +506,12 @@ class _CounselingAppointmentsPageState
     try {
       await action();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(successMessage), backgroundColor: primary),
       );
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(_friendlyError(error)),
           backgroundColor: Colors.red.shade700,
@@ -344,59 +531,6 @@ class _CounselingAppointmentsPageState
           .toList();
     }
     return const [];
-  }
-
-  Widget _buildFilterChip({
-    required String label,
-    required String current,
-    required List<Map<String, String>> options,
-    required ValueChanged<String> onSelected,
-  }) {
-    final currentLabel =
-        options.firstWhere(
-          (option) => option['value'] == current,
-          orElse: () => options.first,
-        )['label'] ??
-        current;
-    return PopupMenuButton<String>(
-      onSelected: onSelected,
-      itemBuilder: (context) => options
-          .map(
-            (option) => PopupMenuItem<String>(
-              value: option['value']!,
-              child: Text(option['label']!),
-            ),
-          )
-          .toList(),
-      child: Container(
-        margin: const EdgeInsets.only(right: 8),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        decoration: BoxDecoration(
-          color: current == 'all'
-              ? Colors.transparent
-              : primary.withValues(alpha: 0.10),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(
-            color: current == 'all' ? Colors.grey.shade300 : primary,
-          ),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              '$label: $currentLabel',
-              style: TextStyle(
-                color: current == 'all' ? textDark : primary,
-                fontWeight: FontWeight.w700,
-                fontSize: 13,
-              ),
-            ),
-            const SizedBox(width: 4),
-            const Icon(Icons.arrow_drop_down_rounded, size: 18),
-          ],
-        ),
-      ),
-    );
   }
 
   Widget _detailCard({required String title, required Widget child}) {
@@ -776,6 +910,9 @@ class _CounselingAppointmentsPageState
 
   Widget _buildDetailPane(QueryDocumentSnapshot<Map<String, dynamic>> doc) {
     final data = doc.data();
+    final source = _safe(data['referralSource']).toLowerCase();
+    final isSelfReferral =
+        source == CounselingCaseWorkflow.referralSourceStudent;
     final referralDate = _toDate(data['referralDate']);
     final createdAt = _toDate(data['createdAt']);
     final updatedAt = _toDate(data['updatedAt']);
@@ -786,106 +923,180 @@ class _CounselingAppointmentsPageState
 
     return Container(
       color: Colors.white,
-      padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
-      child: ListView(
+      child: Column(
         children: [
           Container(
-            padding: const EdgeInsets.fromLTRB(10, 10, 10, 10),
-            decoration: BoxDecoration(
-              color: const Color(0xFFF1F6F1),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: primary.withValues(alpha: 0.20)),
-            ),
+            padding: const EdgeInsets.fromLTRB(14, 14, 10, 8),
             child: Row(
               children: [
-                const Icon(Icons.badge_rounded, color: primary),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    _safe(data['studentName']).isEmpty
-                        ? 'Unknown Student'
-                        : _safe(data['studentName']),
-                    style: const TextStyle(
-                      color: textDark,
-                      fontWeight: FontWeight.w900,
-                      fontSize: 15,
-                    ),
+                const Expanded(
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.assignment_outlined,
+                        color: primary,
+                        size: 20,
+                      ),
+                      SizedBox(width: 8),
+                      Text(
+                        'Case Details',
+                        style: TextStyle(
+                          color: primary,
+                          fontWeight: FontWeight.w900,
+                          fontSize: 17,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ],
             ),
           ),
-          const SizedBox(height: 10),
-          _detailCard(
-            title: 'Case Information',
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _kv(
-                  'Case Code',
-                  _safe(data['caseCode']).isEmpty
-                      ? doc.id
-                      : _safe(data['caseCode']),
-                ),
-                _kv('Source', _prettySource(_safe(data['referralSource']))),
-                _kv('Type', _prettyType(_safe(data['counselingType']))),
-                _kv('Status', _statusText(data)),
-                _kv(
-                  'Meeting',
-                  _safe(data['meetingStatus']).isEmpty
-                      ? '-'
-                      : _titleCase(
-                          _safe(data['meetingStatus']).replaceAll('_', ' '),
+          const SizedBox(height: 8),
+          const Divider(height: 1),
+          Expanded(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
+              child: Column(
+                children: [
+                  _detailCard(
+                    title: 'Student Information',
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 46,
+                          height: 46,
+                          decoration: BoxDecoration(
+                            color: primary.withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: primary.withValues(alpha: 0.22),
+                            ),
+                          ),
+                          child: const Icon(
+                            Icons.person_rounded,
+                            color: primary,
+                            size: 24,
+                          ),
                         ),
-                ),
-                _kv(
-                  'Call Slip',
-                  _safe(data['callSlipStatus']).isEmpty
-                      ? '-'
-                      : _titleCase(
-                          _safe(data['callSlipStatus']).replaceAll('_', ' '),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                _safe(data['studentName']).isEmpty
+                                    ? 'Unknown Student'
+                                    : _safe(data['studentName']),
+                                style: const TextStyle(
+                                  color: textDark,
+                                  fontWeight: FontWeight.w900,
+                                  fontSize: 17,
+                                ),
+                              ),
+                              const SizedBox(height: 3),
+                              Text(
+                                'Student No: ${_safe(data['studentNo']).isEmpty ? '-' : _safe(data['studentNo'])}',
+                                style: const TextStyle(
+                                  color: hint,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                'Program: ${_safe(data['studentProgramId']).isEmpty ? '-' : _safe(data['studentProgramId'])}',
+                                style: const TextStyle(
+                                  color: hint,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
-                ),
-                _kv('Scheduled At', _fmtDateTime(scheduledAt)),
-                _kv(
-                  'Student No',
-                  _safe(data['studentNo']).isEmpty
-                      ? '-'
-                      : _safe(data['studentNo']),
-                ),
-                _kv(
-                  'Program',
-                  _safe(data['studentProgramId']).isEmpty
-                      ? '-'
-                      : _safe(data['studentProgramId']),
-                ),
-                _kv(
-                  'Referred By',
-                  _safe(data['referredBy']).isEmpty
-                      ? '-'
-                      : _safe(data['referredBy']),
-                ),
-                _kv('Referral Date', _fmtDate(referralDate)),
-                _kv('Created At', _fmtDateTime(createdAt)),
-                _kv('Updated At', _fmtDateTime(updatedAt)),
-              ],
-            ),
-          ),
-          _detailCard(title: 'Actions', child: _buildCaseActions(doc)),
-          _detailCard(
-            title: 'Activity Timeline',
-            child: _buildActivityTimeline(doc.id),
-          ),
-          _detailCard(title: 'Concerns', child: _reasonsSection(reasons)),
-          _detailCard(
-            title: 'Comments',
-            child: Text(
-              comments.isEmpty ? '-' : comments,
-              style: const TextStyle(
-                color: textDark,
-                fontWeight: FontWeight.w600,
-                fontSize: 12.5,
-                height: 1.4,
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  _detailCard(
+                    title: 'Referral Information',
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _kv(
+                          'Source',
+                          _prettySource(_safe(data['referralSource'])),
+                        ),
+                        _kv(
+                          'Referral Type',
+                          _prettyType(_safe(data['counselingType'])),
+                        ),
+                        _kv('Status', _statusText(data)),
+                        _kv(
+                          'Case Code',
+                          _safe(data['caseCode']).isEmpty
+                              ? doc.id
+                              : _safe(data['caseCode']),
+                        ),
+                        _kv(
+                          'Meeting',
+                          _safe(data['meetingStatus']).isEmpty
+                              ? '-'
+                              : _titleCase(
+                                  _safe(data['meetingStatus']).replaceAll(
+                                    '_',
+                                    ' ',
+                                  ),
+                                ),
+                        ),
+                        if (!isSelfReferral)
+                          _kv(
+                            'Call Slip',
+                            _safe(data['callSlipStatus']).isEmpty
+                                ? '-'
+                                : _titleCase(
+                                    _safe(data['callSlipStatus']).replaceAll(
+                                      '_',
+                                      ' ',
+                                    ),
+                                  ),
+                          ),
+                        _kv('Scheduled At', _fmtDateTime(scheduledAt)),
+                        if (!isSelfReferral)
+                          _kv(
+                            'Referred By',
+                            _safe(data['referredBy']).isEmpty
+                                ? '-'
+                                : _safe(data['referredBy']),
+                          ),
+                        _kv('Referral Date', _fmtDate(referralDate)),
+                        _kv('Created At', _fmtDateTime(createdAt)),
+                        _kv('Updated At', _fmtDateTime(updatedAt)),
+                      ],
+                    ),
+                  ),
+                  _detailCard(title: 'Actions', child: _buildCaseActions(doc)),
+                  _detailCard(
+                    title: 'Concerns',
+                    child: _reasonsSection(reasons),
+                  ),
+                  _detailCard(
+                    title: 'Comments',
+                    child: Text(
+                      comments.isEmpty ? '-' : comments,
+                      style: const TextStyle(
+                        color: textDark,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 12.5,
+                        height: 1.4,
+                      ),
+                    ),
+                  ),
+                  _detailCard(
+                    title: 'Activity Timeline',
+                    child: _buildActivityTimeline(doc.id),
+                  ),
+                  const SizedBox(height: 4),
+                ],
               ),
             ),
           ),
@@ -963,28 +1174,25 @@ class _CounselingAppointmentsPageState
           return const Center(child: CircularProgressIndicator());
         }
 
+        final allDocs = snap.data!.docs;
         final query = _searchCtrl.text.trim().toLowerCase();
-        final docs = snap.data!.docs.where((doc) {
+        final docs = allDocs.where((doc) {
           final data = doc.data();
-          final source = _safe(data['referralSource']).toLowerCase();
-          final type = _safe(data['counselingType']).toLowerCase();
           final student = _safe(data['studentName']).toLowerCase();
           final studentNo = _safe(data['studentNo']).toLowerCase();
           final program = _safe(data['studentProgramId']).toLowerCase();
           final statusLabel = _statusText(data).toLowerCase();
-
-          final closed = _isClosedCase(data);
-          if (_tab == 0 && closed) return false;
-          if (_tab == 1 && !closed) return false;
-
-          if (_sourceFilter != 'all' && source != _sourceFilter) return false;
-          if (_typeFilter != 'all' && type != _typeFilter) return false;
+          final source = _safe(data['referralSource']).toLowerCase();
+          final type = _safe(data['counselingType']).toLowerCase();
+          if (!_matchesTab(data)) return false;
 
           if (query.isNotEmpty &&
               !student.contains(query) &&
               !studentNo.contains(query) &&
               !program.contains(query) &&
-              !statusLabel.contains(query)) {
+              !statusLabel.contains(query) &&
+              !source.contains(query) &&
+              !type.contains(query)) {
             return false;
           }
           return true;
@@ -1006,184 +1214,88 @@ class _CounselingAppointmentsPageState
         return LayoutBuilder(
           builder: (context, constraints) {
             final isDesktop = constraints.maxWidth >= 1100;
+            final initialTabIndex = _tabs.indexWhere((item) => item.tab == _tab);
+            final tabBar = DefaultTabController(
+              length: _tabs.length,
+              initialIndex: initialTabIndex < 0 ? 0 : initialTabIndex,
+              child: Builder(
+                builder: (context) {
+                  return TabBar(
+                    isScrollable: true,
+                    tabAlignment: TabAlignment.start,
+                    labelColor: primary,
+                    indicatorColor: primary,
+                    dividerColor: Colors.transparent,
+                    onTap: (index) {
+                      final nextTab = _tabs[index].tab;
+                      if (nextTab == _tab) return;
+                      setState(() {
+                        _tab = nextTab;
+                        _selectedId = '';
+                      });
+                    },
+                    tabs: [
+                      for (final tab in _tabs)
+                        Tab(
+                          text:
+                              '${tab.label} (${_tabCount(allDocs, tab.tab)})',
+                        ),
+                    ],
+                  );
+                },
+              ),
+            );
+
             return ModernTableLayout(
               header: ModernTableHeader(
-                title: 'Counseling Queue',
-                subtitle:
-                    'Review referrals from students and professors and manage booking flow.',
-                action: _buildSweepActionButton(),
-                searchBar: TextField(
-                  controller: _searchCtrl,
-                  onChanged: (_) => setState(() {}),
-                  decoration: InputDecoration(
-                    hintText: 'Search student, status, or program',
-                    prefixIcon: const Icon(Icons.search_rounded),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 12,
-                    ),
-                  ),
-                ),
-                tabs: Row(
-                  children: [
-                    _TopTab(
-                      label: 'Queue',
-                      selected: _tab == 0,
-                      onTap: () => setState(() => _tab = 0),
-                    ),
-                    const SizedBox(width: 8),
-                    _TopTab(
-                      label: 'Closed',
-                      selected: _tab == 1,
-                      onTap: () => setState(() => _tab = 1),
-                    ),
-                  ],
-                ),
-                filters: [
-                  _buildFilterChip(
-                    label: 'Source',
-                    current: _sourceFilter,
-                    options: const [
-                      {'value': 'all', 'label': 'All'},
-                      {'value': 'student', 'label': 'Self-referral'},
-                      {'value': 'professor', 'label': 'Professor referral'},
-                    ],
-                    onSelected: (value) =>
-                        setState(() => _sourceFilter = value),
-                  ),
-                  _buildFilterChip(
-                    label: 'Type',
-                    current: _typeFilter,
-                    options: const [
-                      {'value': 'all', 'label': 'All'},
-                      {'value': 'academic', 'label': 'Academic'},
-                      {'value': 'personal', 'label': 'Personal'},
-                    ],
-                    onSelected: (value) => setState(() => _typeFilter = value),
-                  ),
-                ],
-              ),
+              showTitleSection: false,
+              showTopControlsWhenTitleHidden: true,
+              showSearchBar: true,
+              searchBar: _buildSearchBar(),
+              action: null,
+              tabs: tabBar,
+              filters: const [],
+            ),
               body: docs.isEmpty
-                  ? const Center(
-                      child: Text(
-                        'No referrals found.',
-                        style: TextStyle(
-                          color: hint,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                    )
-                  : ListView.separated(
-                      padding: const EdgeInsets.all(14),
-                      itemCount: docs.length,
-                      separatorBuilder: (context, index) =>
-                          const SizedBox(height: 8),
-                      itemBuilder: (context, index) {
-                        final doc = docs[index];
-                        final data = doc.data();
-                        final selected = _selectedId == doc.id;
-                        return InkWell(
-                          borderRadius: BorderRadius.circular(12),
-                          onTap: () {
-                            if (isDesktop) {
-                              setState(() {
-                                _selectedId = selected ? '' : doc.id;
-                              });
-                            } else {
-                              _openMobileDetails(doc);
-                            }
-                          },
-                          child: Container(
-                            padding: const EdgeInsets.fromLTRB(12, 11, 12, 11),
-                            decoration: BoxDecoration(
-                              color: selected
-                                  ? primary.withValues(alpha: 0.07)
-                                  : Colors.white,
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(
-                                color: selected
-                                    ? primary.withValues(alpha: 0.45)
-                                    : Colors.black.withValues(alpha: 0.10),
-                              ),
-                            ),
-                            child: Row(
-                              children: [
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        _safe(data['studentName']).isEmpty
-                                            ? 'Unknown Student'
-                                            : _safe(data['studentName']),
-                                        style: const TextStyle(
-                                          color: textDark,
-                                          fontWeight: FontWeight.w900,
-                                          fontSize: 14,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Wrap(
-                                        spacing: 8,
-                                        runSpacing: 6,
-                                        children: [
-                                          Text(
-                                            _prettySource(
-                                              _safe(data['referralSource']),
-                                            ),
-                                            style: const TextStyle(
-                                              color: hint,
-                                              fontWeight: FontWeight.w700,
-                                              fontSize: 12,
-                                            ),
-                                          ),
-                                          Text(
-                                            '|',
-                                            style: TextStyle(
-                                              color: Colors.grey.shade500,
-                                              fontWeight: FontWeight.w700,
-                                            ),
-                                          ),
-                                          Text(
-                                            _prettyType(
-                                              _safe(data['counselingType']),
-                                            ),
-                                            style: const TextStyle(
-                                              color: hint,
-                                              fontWeight: FontWeight.w700,
-                                              fontSize: 12,
-                                            ),
-                                          ),
-                                          Text(
-                                            '| ${_fmtDate(_toDate(data['createdAt']))}',
-                                            style: const TextStyle(
-                                              color: hint,
-                                              fontWeight: FontWeight.w700,
-                                              fontSize: 12,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                const SizedBox(width: 8),
-                                _buildStatusPill(data),
-                                const SizedBox(width: 4),
-                                const Icon(
-                                  Icons.chevron_right_rounded,
-                                  color: Colors.black45,
-                                ),
-                              ],
+                  ? Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.support_agent_outlined,
+                            size: 64,
+                            color: Colors.grey[300],
+                          ),
+                          SizedBox(height: 16),
+                          Text(
+                            'No referral found',
+                            style: TextStyle(
+                              color: hint,
+                              fontWeight: FontWeight.bold,
                             ),
                           ),
-                        );
-                      },
-                    ),
+                        ],
+                      ),
+                    )
+                  : isDesktop
+                      ? _buildDesktopTable(docs)
+                      : ListView.builder(
+                          padding: const EdgeInsets.all(14),
+                          itemCount: docs.length,
+                          itemBuilder: (context, index) {
+                            final doc = docs[index];
+                            final data = doc.data();
+                            final selected = _selectedId == doc.id;
+                            return _buildCaseCard(
+                              doc,
+                              data,
+                              selected,
+                              () {
+                                _openMobileDetails(doc);
+                              },
+                            );
+                          },
+                        ),
               showDetails: isDesktop && selectedDoc != null,
               details: selectedDoc == null
                   ? null
@@ -1195,43 +1307,414 @@ class _CounselingAppointmentsPageState
       },
     );
   }
-}
 
-class _TopTab extends StatelessWidget {
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
+  Widget _buildDesktopTable(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+  ) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
+      child: Container(
+        width: double.infinity,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(22),
+        ),
+        foregroundDecoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(22),
+          border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final tableWidth = constraints.maxWidth;
+            final detailsOpen = _selectedId.isNotEmpty;
+            final compactTable = detailsOpen || tableWidth < 1120;
+            final tableHorizontalMargin = compactTable ? 8.0 : 12.0;
+            final tableColumnSpacing = compactTable ? 12.0 : 18.0;
+            final usableWidth =
+                (tableWidth -
+                        (tableHorizontalMargin * 2) -
+                        (tableColumnSpacing * 4))
+                    .clamp(420.0, double.infinity)
+                    .toDouble();
+            final codeCellWidth = (usableWidth * 0.16).clamp(96.0, 128.0);
+            final studentCellWidth = (usableWidth * 0.28).clamp(180.0, 260.0);
+            final referralCellWidth = (usableWidth * 0.30).clamp(170.0, 260.0);
+            final dateCellWidth = (usableWidth * 0.14).clamp(104.0, 130.0);
+            final statusCellWidth = (usableWidth * 0.16).clamp(120.0, 170.0);
 
-  const _TopTab({
-    required this.label,
-    required this.selected,
-    required this.onTap,
-  });
+            return SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(minWidth: constraints.maxWidth),
+                child: DataTable(
+                  showCheckboxColumn: false,
+                  headingRowColor: WidgetStateProperty.all(Colors.white),
+                  horizontalMargin: tableHorizontalMargin,
+                  columnSpacing: tableColumnSpacing,
+                  dataRowMinHeight: 56,
+                  dataRowMaxHeight: 56,
+                  columns: [
+                    DataColumn(
+                      label: SizedBox(
+                        width: codeCellWidth,
+                        child: const Text(
+                          'CODE',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w900,
+                            color: hint,
+                            fontSize: 12,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                      ),
+                    ),
+                    DataColumn(
+                      label: SizedBox(
+                        width: studentCellWidth,
+                        child: const Text(
+                          'STUDENT',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w900,
+                            color: hint,
+                            fontSize: 12,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                      ),
+                    ),
+                    DataColumn(
+                      label: SizedBox(
+                        width: referralCellWidth,
+                        child: const Text(
+                          'REFERRAL',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w900,
+                            color: hint,
+                            fontSize: 12,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                      ),
+                    ),
+                    DataColumn(
+                      label: SizedBox(
+                        width: dateCellWidth,
+                        child: const Text(
+                          'DATE',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w900,
+                            color: hint,
+                            fontSize: 12,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                      ),
+                    ),
+                    DataColumn(
+                      label: SizedBox(
+                        width: statusCellWidth,
+                        child: const Text(
+                          'STATUS',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w900,
+                            color: hint,
+                            fontSize: 12,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                  rows: List.generate(docs.length, (i) {
+                    final doc = docs[i];
+                    final data = doc.data();
+                    final isSelected = _selectedId == doc.id;
+                    final caseCode = _safe(data['caseCode']).isEmpty
+                        ? doc.id.substring(0, 8)
+                        : _safe(data['caseCode']);
+                    final studentName = _safe(data['studentName']).isEmpty
+                        ? 'Unknown Student'
+                        : _safe(data['studentName']);
+                    final studentNo = _safe(data['studentNo']);
+                    final source = _prettySource(_safe(data['referralSource']));
+                    final type = _prettyType(_safe(data['counselingType']));
+                    final date = _toDate(data['createdAt']);
 
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: selected
-          ? const Color(0xFF1B5E20).withValues(alpha: 0.10)
-          : Colors.transparent,
-      borderRadius: BorderRadius.circular(10),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(10),
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          child: Text(
-            label,
-            style: TextStyle(
-              color: selected
-                  ? const Color(0xFF1B5E20)
-                  : const Color(0xFF6D7F62),
-              fontWeight: FontWeight.w900,
-              fontSize: 13,
-            ),
-          ),
+                    return DataRow(
+                      selected: isSelected,
+                      color: WidgetStateProperty.resolveWith<Color?>((states) {
+                        if (isSelected) {
+                          return primary.withValues(alpha: 0.08);
+                        }
+                        return null;
+                      }),
+                      onSelectChanged: (value) {
+                        setState(() {
+                          _selectedId = isSelected ? '' : doc.id;
+                        });
+                      },
+                      cells: [
+                        DataCell(
+                          SizedBox(
+                            width: codeCellWidth,
+                            child: Text(
+                              caseCode,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w900,
+                                color: primary,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ),
+                        ),
+                        DataCell(
+                          SizedBox(
+                            width: studentCellWidth,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Text(
+                                  studentName,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                    color: textDark,
+                                  ),
+                                ),
+                                if (studentNo.isNotEmpty)
+                                  Text(
+                                    studentNo,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: hint,
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 11.5,
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        DataCell(
+                          SizedBox(
+                            width: referralCellWidth,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Text(
+                                  source,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: textDark,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                Text(
+                                  type,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: hint,
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 11.5,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        DataCell(
+                          SizedBox(
+                            width: dateCellWidth,
+                            child: Text(
+                              _fmtDate(date),
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: hint,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ),
+                        DataCell(
+                          SizedBox(
+                            width: statusCellWidth,
+                            child: Align(
+                              alignment: Alignment.centerLeft,
+                              child: _buildStatusPill(data),
+                            ),
+                          ),
+                        ),
+                      ],
+                    );
+                  }),
+                ),
+              ),
+            );
+          },
         ),
       ),
     );
   }
+
+  Widget _buildCaseCard(
+    QueryDocumentSnapshot<Map<String, dynamic>> doc,
+    Map<String, dynamic> data,
+    bool isSelected,
+    VoidCallback onTap,
+  ) {
+    final caseCode = _safe(data['caseCode']).isEmpty
+        ? doc.id.substring(0, 8)
+        : _safe(data['caseCode']);
+    final studentName = _safe(data['studentName']).isEmpty
+        ? 'Unknown Student'
+        : _safe(data['studentName']);
+    final studentNo = _safe(data['studentNo']);
+    final source = _prettySource(_safe(data['referralSource']));
+    final type = _prettyType(_safe(data['counselingType']));
+    final createdAt = _fmtDate(_toDate(data['createdAt']));
+
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: isSelected ? primary.withValues(alpha: 0.05) : Colors.white,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(
+            color: isSelected
+                ? primary.withValues(alpha: 0.40)
+                : Colors.black.withValues(alpha: 0.08),
+            width: isSelected ? 1.5 : 1,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.02),
+              blurRadius: 10,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          caseCode,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w900,
+                            color: primary,
+                            fontSize: 14,
+                          ),
+                        ),
+                      ),
+                      Text(
+                        createdAt,
+                        style: const TextStyle(
+                          color: hint,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    studentName,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w900,
+                      fontSize: 16,
+                      color: textDark,
+                    ),
+                  ),
+                  if (studentNo.isNotEmpty)
+                    Text(
+                      studentNo,
+                      style: const TextStyle(
+                        color: hint,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 12,
+                      ),
+                    ),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 6,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      Text(
+                        source,
+                        style: const TextStyle(
+                          color: hint,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 12,
+                        ),
+                      ),
+                      Text(
+                        '|',
+                        style: TextStyle(
+                          color: Colors.grey.shade500,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      Text(
+                        type,
+                        style: const TextStyle(
+                          color: hint,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 12,
+                        ),
+                      ),
+                      Text(
+                        '|',
+                        style: TextStyle(
+                          color: Colors.grey.shade500,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      _buildStatusPill(data),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            const Icon(Icons.chevron_right_rounded, color: Colors.black45),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+enum _CounselingReviewTab {
+  all,
+  awaitingCallSlip,
+  bookingRequired,
+  scheduled,
+  missed,
+  completed,
+  cancelled,
+}
+
+class _CounselingReviewTabConfig {
+  final _CounselingReviewTab tab;
+  final String label;
+
+  const _CounselingReviewTabConfig({
+    required this.tab,
+    required this.label,
+  });
 }

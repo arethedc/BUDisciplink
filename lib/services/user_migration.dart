@@ -27,7 +27,6 @@ class UserMigration {
         'studentNo': data['studentNo'],
         'collegeId': data['collegeId'],
         'programId': data['programId'],
-        'yearLevel': data['yearLevel'],
       };
       updates['studentProfile'] = studentProfile;
 
@@ -43,7 +42,6 @@ class UserMigration {
       updates['employeeNo'] = FieldValue.delete();
       updates['collegeId'] = FieldValue.delete();
       updates['programId'] = FieldValue.delete();
-      updates['yearLevel'] = FieldValue.delete();
       updates['section'] = FieldValue.delete(); // Also cleanup section as requested
 
       batch.update(doc.reference, updates);

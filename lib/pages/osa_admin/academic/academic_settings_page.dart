@@ -1,8 +1,10 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:apps/services/academic_settings_service.dart';
 import '../../shared/widgets/app_layout_tokens.dart';
 import '../../shared/widgets/modern_table_layout.dart';
+import 'package:apps/pages/shared/widgets/app_inline_notice.dart';
 
 /// ============================================================
 /// ACADEMIC SETTINGS (ADMIN) — UI TEMPLATE ONLY
@@ -58,7 +60,7 @@ class _AcademicSettingsPageState extends State<AcademicSettingsPage> {
         child: ModernTableLayout(
           detailsWidth: detailsPaneWidth,
           header: ModernTableHeader(
-            title: 'Academic Settings',
+            title: 'School Year & Terms',
             subtitle:
                 'Create school years, configure 3 semesters, and set the active term.',
             action: Row(
@@ -95,7 +97,7 @@ class _AcademicSettingsPageState extends State<AcademicSettingsPage> {
                 hintText: 'Search school years...',
                 prefixIcon: const Icon(Icons.search_rounded),
                 filled: true,
-                fillColor: cs.surfaceContainerLowest,
+                fillColor: Colors.white,
                 contentPadding: const EdgeInsets.symmetric(horizontal: 16),
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(AppRadii.md),
@@ -161,7 +163,14 @@ class _AcademicSettingsPageState extends State<AcademicSettingsPage> {
           final status = _safeStr(d.data()['status']).toLowerCase();
           return label.contains(q) || status.contains(q);
         }).toList();
-        _visibleSyDocs.value = docs;
+        if (!listEquals(_visibleSyDocs.value, docs)) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            if (!listEquals(_visibleSyDocs.value, docs)) {
+              _visibleSyDocs.value = docs;
+            }
+          });
+        }
 
         if (_selectedSyId != null &&
             !docs.any((doc) => doc.id == _selectedSyId)) {
@@ -235,7 +244,7 @@ class _AcademicSettingsPageState extends State<AcademicSettingsPage> {
                     labelText: 'SY Label',
                     hintText: 'e.g. 2025-2026',
                     filled: true,
-                    fillColor: cs.surfaceContainerLowest,
+                    fillColor: Colors.white,
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(AppRadii.md),
                     ),
@@ -287,13 +296,13 @@ class _AcademicSettingsPageState extends State<AcademicSettingsPage> {
                     label: label,
                   );
                   if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
+                    AppScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(content: Text('School Year created.')),
                     );
                   }
                 } catch (e) {
                   if (context.mounted) {
-                    ScaffoldMessenger.of(
+                    AppScaffoldMessenger.of(
                       context,
                     ).showSnackBar(SnackBar(content: Text('Error: $e')));
                   }
@@ -375,27 +384,49 @@ class _SYTablePanel extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
 
     return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+      padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
       child: Container(
         width: double.infinity,
         decoration: BoxDecoration(
           color: Colors.white,
           borderRadius: BorderRadius.circular(AppRadii.xl),
+        ),
+        foregroundDecoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(AppRadii.xl),
           border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
         ),
+        clipBehavior: Clip.antiAlias,
         child: LayoutBuilder(
           builder: (context, constraints) {
             final tableWidth = constraints.maxWidth;
+            final detailsOpen = selectedSyId != null;
+            final compactTable = detailsOpen || tableWidth < 1080;
+            final tableHorizontalMargin = compactTable ? 8.0 : 12.0;
+            final tableColumnSpacing = compactTable ? 12.0 : 24.0;
+            const columnCount = 4;
             const totalWeight = 8.3;
-            double colWidth(double weight, double minWidth) {
-              final value = tableWidth * (weight / totalWeight);
-              return value < minWidth ? minWidth : value;
+            final usableWidth =
+                (tableWidth -
+                        (tableHorizontalMargin * 2) -
+                        (tableColumnSpacing * (columnCount - 1)))
+                    .clamp(380.0, double.infinity)
+                    .toDouble();
+            double colWidth(
+              double weight,
+              double minWidth, {
+              double? compactMinWidth,
+            }) {
+              final value = usableWidth * (weight / totalWeight);
+              final effectiveMin = compactTable
+                  ? (compactMinWidth ?? minWidth)
+                  : minWidth;
+              return value < effectiveMin ? effectiveMin : value;
             }
 
-            final schoolYearColWidth = colWidth(3.8, 220);
-            final statusColWidth = colWidth(1.6, 140);
-            final termColWidth = colWidth(2.1, 150);
-            final detailsColWidth = colWidth(0.8, 90);
+            final schoolYearColWidth = colWidth(3.8, 220, compactMinWidth: 170);
+            final statusColWidth = colWidth(1.6, 140, compactMinWidth: 110);
+            final termColWidth = colWidth(2.1, 150, compactMinWidth: 120);
+            final detailsColWidth = colWidth(0.8, 90, compactMinWidth: 76);
 
             return SingleChildScrollView(
               scrollDirection: Axis.horizontal,
@@ -406,7 +437,8 @@ class _SYTablePanel extends StatelessWidget {
                   headingRowColor: WidgetStateProperty.all(
                     cs.surfaceContainerLowest,
                   ),
-                  columnSpacing: 24,
+                  horizontalMargin: tableHorizontalMargin,
+                  columnSpacing: tableColumnSpacing,
                   dataRowMinHeight: 56,
                   dataRowMaxHeight: 56,
                   columns: [
@@ -767,7 +799,7 @@ class _ManageTermsPanelState extends State<_ManageTermsPanel> {
             onChanged: (v) => setState(() => _activeTermId = v ?? 'term1'),
             decoration: InputDecoration(
               filled: true,
-              fillColor: cs.surfaceContainerLowest,
+              fillColor: Colors.white,
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(AppRadii.md),
                 borderSide: BorderSide(color: cs.outlineVariant),
@@ -787,7 +819,7 @@ class _ManageTermsPanelState extends State<_ManageTermsPanel> {
                     onPressed: () async {
                       final err = _validateDates();
                       if (err != null) {
-                        ScaffoldMessenger.of(context).showSnackBar(
+                        AppScaffoldMessenger.of(context).showSnackBar(
                           SnackBar(content: Text('Cannot activate: $err')),
                         );
                         return;
@@ -817,7 +849,7 @@ class _ManageTermsPanelState extends State<_ManageTermsPanel> {
                           widget.syDoc.id,
                         );
                         if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
+                          AppScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(
                               content: Text('School Year set as active.'),
                             ),
@@ -825,7 +857,7 @@ class _ManageTermsPanelState extends State<_ManageTermsPanel> {
                         }
                       } catch (e) {
                         if (context.mounted) {
-                          ScaffoldMessenger.of(
+                          AppScaffoldMessenger.of(
                             context,
                           ).showSnackBar(SnackBar(content: Text('Error: $e')));
                         }
@@ -880,13 +912,13 @@ class _ManageTermsPanelState extends State<_ManageTermsPanel> {
                           },
                         );
                         if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
+                          AppScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(content: Text('Changes saved.')),
                           );
                         }
                       } catch (e) {
                         if (context.mounted) {
-                          ScaffoldMessenger.of(
+                          AppScaffoldMessenger.of(
                             context,
                           ).showSnackBar(SnackBar(content: Text('Error: $e')));
                         }

@@ -2,6 +2,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../../services/violation_case_service.dart';
+
 class DepartmentAdminHomePage extends StatelessWidget {
   final VoidCallback? onOpenUserManagement;
   final VoidCallback? onOpenViolationReview;
@@ -55,6 +57,28 @@ class DepartmentAdminHomePage extends StatelessWidget {
     return '${m[local.month - 1]} ${local.day}, $hh:$mm $ap';
   }
 
+  String _fmtCardDate(DateTime? date) {
+    if (date == null) return '--';
+    final local = date.toLocal();
+    const m = [
+      'January',
+      'February',
+      'March',
+      'April',
+      'May',
+      'June',
+      'July',
+      'August',
+      'September',
+      'October',
+      'November',
+      'December',
+    ];
+    final now = DateTime.now();
+    if (local.year == now.year) return '${m[local.month - 1]} ${local.day}';
+    return '${m[local.month - 1]} ${local.day}, ${local.year}';
+  }
+
   String _safe(dynamic v) => (v ?? '').toString().trim();
 
   String _studentName(Map<String, dynamic> userData) {
@@ -69,21 +93,22 @@ class DepartmentAdminHomePage extends StatelessWidget {
     return 'Student';
   }
 
-  String _statusLabel(String raw) {
-    final s = raw.toLowerCase().trim();
-    if (s == 'action set') return 'Monitoring';
-    if (s == 'under review') return 'Under Review';
-    if (s == 'submitted') return 'Submitted';
-    if (s == 'resolved') return 'Resolved';
-    return s.isEmpty ? 'Unknown' : s;
-  }
+  String _photoUrl(Map<String, dynamic> data) {
+    final direct = _safe(data['photoUrl']);
+    if (direct.isNotEmpty) return direct;
 
-  Color _statusColor(String raw) {
-    final s = raw.toLowerCase().trim();
-    if (s == 'action set') return const Color(0xFF0D47A1);
-    if (s == 'submitted' || s == 'under review') return const Color(0xFFF57C00);
-    if (s == 'resolved') return const Color(0xFF2E7D32);
-    return Colors.grey.shade700;
+    final profilePhoto = _safe(data['profilePhotoUrl']);
+    if (profilePhoto.isNotEmpty) return profilePhoto;
+
+    final studentProfile = data['studentProfile'] as Map<String, dynamic>?;
+    final nestedStudentPhoto = _safe(studentProfile?['photoUrl']);
+    if (nestedStudentPhoto.isNotEmpty) return nestedStudentPhoto;
+
+    final employeeProfile = data['employeeProfile'] as Map<String, dynamic>?;
+    final nestedEmployeePhoto = _safe(employeeProfile?['photoUrl']);
+    if (nestedEmployeePhoto.isNotEmpty) return nestedEmployeePhoto;
+
+    return '';
   }
 
   int _countByStatus(
@@ -236,17 +261,13 @@ class DepartmentAdminHomePage extends StatelessWidget {
           stream: FirebaseFirestore.instance
               .collection('users')
               .where('role', isEqualTo: 'student')
+              .where('studentProfile.collegeId', isEqualTo: dept)
               .snapshots(),
           builder: (context, studentsSnap) {
             if (!studentsSnap.hasData) {
               return const Center(child: CircularProgressIndicator());
             }
-            final deptStudents = studentsSnap.data!.docs.where((d) {
-              final college = (d.data()['studentProfile']?['collegeId'] ?? '')
-                  .toString()
-                  .trim();
-              return college == dept;
-            }).toList();
+            final deptStudents = studentsSnap.data!.docs;
 
             final approvedStudentUids = deptStudents
                 .where((d) => _isApprovedStudent(d.data()))
@@ -280,9 +301,9 @@ class DepartmentAdminHomePage extends StatelessWidget {
                   });
 
             return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              stream: FirebaseFirestore.instance
-                  .collection('violation_cases')
-                  .snapshots(),
+              stream: ViolationCaseService().streamDepartmentCases(
+                studentCollegeId: dept,
+              ),
               builder: (context, casesSnap) {
                 if (!casesSnap.hasData) {
                   return const Center(child: CircularProgressIndicator());
@@ -308,12 +329,8 @@ class DepartmentAdminHomePage extends StatelessWidget {
                           status == 'under review' ||
                           status == 'action set';
                     }).toList()..sort((a, b) {
-                      final ad =
-                          _toDate(a.data()['updatedAt']) ??
-                          _toDate(a.data()['createdAt']);
-                      final bd =
-                          _toDate(b.data()['updatedAt']) ??
-                          _toDate(b.data()['createdAt']);
+                      final ad = _toDate(a.data()['createdAt']);
+                      final bd = _toDate(b.data()['createdAt']);
                       if (ad == null && bd == null) return 0;
                       if (ad == null) return 1;
                       if (bd == null) return -1;
@@ -492,9 +509,7 @@ class DepartmentAdminHomePage extends StatelessWidget {
                                         final studentNo = _safe(
                                           data['studentProfile']?['studentNo'],
                                         );
-                                        final photoUrl = _safe(
-                                          data['photoUrl'],
-                                        );
+                                        final photoUrl = _photoUrl(data);
                                         final when = _fmtWhen(
                                           _toDate(data['updatedAt']) ??
                                               _toDate(data['createdAt']),
@@ -742,160 +757,136 @@ class DepartmentAdminHomePage extends StatelessWidget {
                                             _safe(d['caseId']).isEmpty
                                             ? doc.id
                                             : _safe(d['caseId']);
-                                        final statusRaw = _safe(d['status']);
-                                        final when = _fmtWhen(
-                                          _toDate(d['updatedAt']) ??
-                                              _toDate(d['createdAt']),
+                                        final violationCode = _safe(
+                                          d['caseCode'],
+                                        ).isNotEmpty
+                                            ? _safe(d['caseCode'])
+                                            : caseId;
+                                        final violationLabel = _safe(
+                                          d['violationTypeLabel'] ??
+                                              d['violationNameSnapshot'] ??
+                                              d['violationName'] ??
+                                              d['typeNameSnapshot'],
                                         );
-                                        return Container(
-                                          margin: const EdgeInsets.only(
-                                            bottom: 8,
-                                          ),
-                                          padding: const EdgeInsets.fromLTRB(
+                                        final displayDate = _fmtCardDate(
+                                          _toDate(d['createdAt']),
+                                        );
+                                        return InkWell(
+                                          borderRadius: BorderRadius.circular(
                                             10,
-                                            9,
-                                            10,
-                                            9,
                                           ),
-                                          decoration: BoxDecoration(
-                                            color: const Color(0xFFF8FBF8),
-                                            borderRadius: BorderRadius.circular(
+                                          onTap: () async {
+                                            await _markViolationNotificationsRead(
+                                              notifications: notificationDocs,
+                                              caseId: caseId,
+                                            );
+                                            if (onOpenViolationAlertCase !=
+                                                null) {
+                                              onOpenViolationAlertCase!(caseId);
+                                              return;
+                                            }
+                                            onOpenViolationReview?.call();
+                                          },
+                                          child: Container(
+                                            margin: const EdgeInsets.only(
+                                              bottom: 8,
+                                            ),
+                                            padding: const EdgeInsets.fromLTRB(
+                                              12,
+                                              9,
                                               10,
+                                              9,
                                             ),
-                                            border: Border.all(
-                                              color: Colors.black.withValues(
-                                                alpha: 0.08,
-                                              ),
-                                            ),
-                                          ),
-                                          child: Column(
-                                            crossAxisAlignment:
-                                                CrossAxisAlignment.start,
-                                            children: [
-                                              Row(
-                                                children: [
-                                                  Expanded(
-                                                    child: Text(
-                                                      caseId,
-                                                      maxLines: 1,
-                                                      overflow:
-                                                          TextOverflow.ellipsis,
-                                                      style: const TextStyle(
-                                                        color: textDark,
-                                                        fontWeight:
-                                                            FontWeight.w900,
-                                                        fontSize: 13,
-                                                      ),
-                                                    ),
-                                                  ),
-                                                  const SizedBox(width: 8),
-                                                  Container(
-                                                    padding:
-                                                        const EdgeInsets.symmetric(
-                                                          horizontal: 8,
-                                                          vertical: 2,
-                                                        ),
-                                                    decoration: BoxDecoration(
-                                                      color: _statusColor(
-                                                        statusRaw,
-                                                      ).withValues(alpha: 0.14),
-                                                      borderRadius:
-                                                          BorderRadius.circular(
-                                                            999,
-                                                          ),
-                                                    ),
-                                                    child: Text(
-                                                      _statusLabel(statusRaw),
-                                                      style: TextStyle(
-                                                        color: _statusColor(
-                                                          statusRaw,
-                                                        ),
-                                                        fontWeight:
-                                                            FontWeight.w900,
-                                                        fontSize: 11,
-                                                      ),
-                                                    ),
-                                                  ),
-                                                ],
-                                              ),
-                                              const SizedBox(height: 4),
-                                              Text(
-                                                studentName,
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                                style: const TextStyle(
-                                                  color: hint,
-                                                  fontWeight: FontWeight.w700,
-                                                  fontSize: 12,
+                                            decoration: BoxDecoration(
+                                              color: Colors.white,
+                                              borderRadius:
+                                                  BorderRadius.circular(10),
+                                              border: Border.all(
+                                                color: Colors.black.withValues(
+                                                  alpha: 0.09,
                                                 ),
                                               ),
-                                              const SizedBox(height: 2),
-                                              Row(
-                                                children: [
-                                                  Expanded(
-                                                    child: Text(
-                                                      when,
-                                                      style: const TextStyle(
-                                                        color: hint,
-                                                        fontWeight:
-                                                            FontWeight.w700,
-                                                        fontSize: 11.5,
-                                                      ),
-                                                    ),
-                                                  ),
-                                                  const SizedBox(width: 10),
-                                                  SizedBox(
-                                                    height: 32,
-                                                    child: OutlinedButton(
-                                                      onPressed: () async {
-                                                        await _markViolationNotificationsRead(
-                                                          notifications:
-                                                              notificationDocs,
-                                                          caseId: caseId,
-                                                        );
-                                                        if (onOpenViolationAlertCase !=
-                                                            null) {
-                                                          onOpenViolationAlertCase!(
-                                                            caseId,
-                                                          );
-                                                          return;
-                                                        }
-                                                        onOpenViolationReview
-                                                            ?.call();
-                                                      },
-                                                      style: OutlinedButton.styleFrom(
-                                                        foregroundColor:
-                                                            primary,
-                                                        side: BorderSide(
-                                                          color: primary
-                                                              .withValues(
-                                                                alpha: 0.35,
-                                                              ),
-                                                        ),
-                                                        padding:
-                                                            const EdgeInsets.symmetric(
-                                                              horizontal: 12,
+                                            ),
+                                            child: Row(
+                                              children: [
+                                                Expanded(
+                                                  child: Column(
+                                                    crossAxisAlignment:
+                                                        CrossAxisAlignment
+                                                            .start,
+                                                    children: [
+                                                      Row(
+                                                        children: [
+                                                          Expanded(
+                                                            child: Text(
+                                                              violationCode,
+                                                              maxLines: 1,
+                                                              overflow: TextOverflow
+                                                                  .ellipsis,
+                                                              style:
+                                                                  const TextStyle(
+                                                                    color:
+                                                                        primary,
+                                                                    fontWeight:
+                                                                        FontWeight
+                                                                            .w800,
+                                                                    fontSize:
+                                                                        11.2,
+                                                                    letterSpacing:
+                                                                        0.15,
+                                                                  ),
                                                             ),
-                                                        shape: RoundedRectangleBorder(
-                                                          borderRadius:
-                                                              BorderRadius.circular(
-                                                                8,
-                                                              ),
+                                                          ),
+                                                          const SizedBox(
+                                                            width: 8,
+                                                          ),
+                                                          Text(
+                                                            displayDate,
+                                                            style:
+                                                                const TextStyle(
+                                                                  color: hint,
+                                                                  fontWeight:
+                                                                      FontWeight
+                                                                          .w700,
+                                                                  fontSize:
+                                                                      11.2,
+                                                                ),
+                                                          ),
+                                                        ],
+                                                      ),
+                                                      const SizedBox(height: 5),
+                                                      Text(
+                                                        studentName,
+                                                        maxLines: 1,
+                                                        overflow: TextOverflow
+                                                            .ellipsis,
+                                                        style: const TextStyle(
+                                                          color: textDark,
+                                                          fontWeight:
+                                                              FontWeight.w900,
+                                                          fontSize: 13.3,
                                                         ),
                                                       ),
-                                                      child: const Text(
-                                                        'View',
-                                                        style: TextStyle(
+                                                      const SizedBox(height: 2),
+                                                      Text(
+                                                        violationLabel.isEmpty
+                                                            ? 'Violation'
+                                                            : violationLabel,
+                                                        maxLines: 1,
+                                                        overflow: TextOverflow
+                                                            .ellipsis,
+                                                        style: const TextStyle(
+                                                          color: hint,
                                                           fontWeight:
-                                                              FontWeight.w800,
+                                                              FontWeight.w700,
                                                           fontSize: 12,
                                                         ),
                                                       ),
-                                                    ),
+                                                    ],
                                                   ),
-                                                ],
-                                              ),
-                                            ],
+                                                ),
+                                              ],
+                                            ),
                                           ),
                                         );
                                       }),

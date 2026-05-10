@@ -172,7 +172,7 @@ class _OsaViolationAiAssistantSheetState
         maxHeight: desktop ? media.size.height - 24 : media.size.height * 0.92,
       ),
       child: Material(
-        color: const Color(0xFFF6FAF6),
+        color: Colors.white,
         borderRadius: BorderRadius.circular(desktop ? 18 : 16),
         clipBehavior: Clip.antiAlias,
         child: Column(
@@ -258,7 +258,7 @@ class _OsaViolationAiAssistantSheetState
                             hintText:
                                 'Ask about trends, unresolved cases, missed meetings...',
                             filled: true,
-                            fillColor: const Color(0xFFF4F7F4),
+                            fillColor: Colors.white,
                             contentPadding: const EdgeInsets.symmetric(
                               horizontal: 12,
                               vertical: 12,
