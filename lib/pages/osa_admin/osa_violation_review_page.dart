@@ -1935,32 +1935,24 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(AppRadii.xxl)),
       ),
-      builder: (sheetContext) {
-        final media = MediaQuery.of(sheetContext);
-        final reservedTop = media.padding.top + kToolbarHeight + 8;
-        final modalHeight = (media.size.height - reservedTop)
-            .clamp(420.0, media.size.height * 0.92)
-            .toDouble();
-        return SafeArea(
-          top: false,
-          child: SizedBox(
-            height: modalHeight,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-              child: _DetailsPanel(
-                doc: doc,
-                bestDate: _bestDate,
-                onClose: () => Navigator.of(context).pop(),
-                onOpenCase: (nextDoc) {
-                  if (nextDoc.id == doc.id) return;
-                  Navigator.of(context).pop();
-                  Future<void>.microtask(() {
-                    if (!mounted) return;
-                    setState(() => _selectedCaseId = nextDoc.id);
-                    _openDetailsPage(this.context, nextDoc);
-                  });
-                },
-              ),
+      builder: (_) {
+        return FractionallySizedBox(
+          heightFactor: 0.92,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+            child: _DetailsPanel(
+              doc: doc,
+              bestDate: _bestDate,
+              onClose: () => Navigator.of(context).pop(),
+              onOpenCase: (nextDoc) {
+                if (nextDoc.id == doc.id) return;
+                Navigator.of(context).pop();
+                Future<void>.microtask(() {
+                  if (!mounted) return;
+                  setState(() => _selectedCaseId = nextDoc.id);
+                  _openDetailsPage(this.context, nextDoc);
+                });
+              },
             ),
           ),
         );
@@ -2273,18 +2265,7 @@ class _DetailsPanel extends StatelessWidget {
     final svc = ViolationCaseService();
 
     return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(AppRadii.xl),
-        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.02),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
+      color: Colors.white,
       child: Column(
         children: [
           Container(
@@ -7416,11 +7397,11 @@ class _DetailCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: const Color(0xFFF8FBF8),
-        borderRadius: BorderRadius.circular(AppRadii.md),
-        border: Border.all(color: Colors.black.withValues(alpha: 0.06)),
+        color: const Color(0xFFF7FBF7),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -7433,7 +7414,7 @@ class _DetailCard extends StatelessWidget {
                   style: const TextStyle(
                     color: textDark,
                     fontWeight: FontWeight.w900,
-                    fontSize: 14.5,
+                    fontSize: 13.5,
                   ),
                 ),
               ),

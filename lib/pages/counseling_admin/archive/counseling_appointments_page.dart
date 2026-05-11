@@ -1,9 +1,12 @@
 import 'package:apps/pages/shared/widgets/modern_table_layout.dart';
+import 'package:apps/pages/shared/widgets/app_layout_tokens.dart';
 import 'package:apps/services/counseling_case_workflow_service.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:apps/pages/shared/widgets/app_inline_notice.dart';
+import 'package:apps/pages/professor/professor_counseling_page.dart';
 
 class CounselingAppointmentsPage extends StatefulWidget {
   const CounselingAppointmentsPage({super.key});
@@ -11,6 +14,26 @@ class CounselingAppointmentsPage extends StatefulWidget {
   @override
   State<CounselingAppointmentsPage> createState() =>
       _CounselingAppointmentsPageState();
+}
+
+enum _CounselingActionKind {
+  sendCallSlip,
+  completeMeeting,
+  cancelCase,
+}
+
+class _CounselingMenuAction {
+  final String label;
+  final IconData icon;
+  final bool danger;
+  final VoidCallback onTap;
+
+  const _CounselingMenuAction({
+    required this.label,
+    required this.icon,
+    required this.danger,
+    required this.onTap,
+  });
 }
 
 class _CounselingAppointmentsPageState
@@ -52,6 +75,8 @@ class _CounselingAppointmentsPageState
   final TextEditingController _searchCtrl = TextEditingController();
   final CounselingCaseWorkflowService _workflowService =
       CounselingCaseWorkflowService();
+  final Map<String, Future<String>> _studentPhotoFutureCache =
+      <String, Future<String>>{};
 
   _CounselingReviewTab _tab = _CounselingReviewTab.all;
   String _selectedId = '';
@@ -335,16 +360,6 @@ class _CounselingAppointmentsPageState
     return CounselingCaseState.isClosed(data);
   }
 
-  bool _canSendCallSlip(Map<String, dynamic> data) => _isAwaitingCallSlip(data);
-
-  bool _canMarkScheduledOutcome(Map<String, dynamic> data) {
-    return _isScheduled(data) && !_isCompleted(data) && !_isCancelled(data);
-  }
-
-  bool _canReopenBooking(Map<String, dynamic> data) {
-    return _isMissed(data) && !_isCompleted(data) && !_isCancelled(data);
-  }
-
   String _titleCase(String value) {
     final parts = value.trim().split(RegExp(r'\s+')).where((p) => p.isNotEmpty);
     return parts
@@ -401,6 +416,208 @@ class _CounselingAppointmentsPageState
         ),
       ),
     );
+  }
+
+  List<String> _reasonList(Map<String, dynamic> reasons, String key) {
+    final raw = reasons[key];
+    if (raw is List) {
+      return raw
+          .map((e) => e.toString())
+          .where((e) => e.trim().isNotEmpty)
+          .toList();
+    }
+    return const [];
+  }
+
+  List<Map<String, dynamic>> _referralEntryList(dynamic raw) {
+    if (raw is Iterable) {
+      return raw
+          .whereType<Map>()
+          .map(
+            (item) => item.map(
+              (key, value) => MapEntry(key.toString(), value),
+            ),
+          )
+          .toList();
+    }
+    return const <Map<String, dynamic>>[];
+  }
+
+  String _concernGroupLabel(String key) {
+    switch (key.trim()) {
+      case 'moodsBehaviors':
+        return 'Moods / Behaviors';
+      case 'schoolConcerns':
+        return 'School Concerns';
+      case 'relationships':
+        return 'Relationships';
+      case 'homeConcerns':
+        return 'Home Concerns';
+      default:
+        return _titleCase(key.replaceAll('_', ' '));
+    }
+  }
+
+  Widget _buildConcernList(Map<String, dynamic> reasons) {
+    final items = <Widget>[];
+    for (final entry in reasons.entries) {
+      final label = _concernGroupLabel(entry.key.toString());
+      final raw = entry.value;
+      final values = <String>[];
+      if (raw is List) {
+        values.addAll(
+          raw.map((value) => _safe(value)).where((value) => value.isNotEmpty),
+        );
+      } else {
+        final single = _safe(raw);
+        if (single.isNotEmpty) values.add(single);
+      }
+
+      if (values.isEmpty) continue;
+
+      items.add(
+        Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: const TextStyle(
+                  color: textDark,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 12.5,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  for (final value in values)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 2),
+                      child: Text(
+                        '- $value',
+                        style: const TextStyle(
+                          color: textDark,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 12.5,
+                          height: 1.35,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (items.isEmpty) {
+      return const Text(
+        '-',
+        style: TextStyle(
+          color: textDark,
+          fontWeight: FontWeight.w600,
+          fontSize: 12.5,
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: items,
+    );
+  }
+
+  Widget _buildConcernSection(Map<String, dynamic> reasons) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 104,
+            child: Text(
+              'Concern',
+              style: const TextStyle(
+                color: hint,
+                fontWeight: FontWeight.w800,
+                fontSize: 12.5,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.only(top: 1),
+              child: _buildConcernList(reasons),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  bool _canSendCallSlipAction(Map<String, dynamic> data) {
+    final source = _safe(data['referralSource']).toLowerCase();
+    return source == CounselingCaseWorkflow.referralSourceProfessor &&
+        _isAwaitingCallSlip(data) &&
+        !_isCompleted(data) &&
+        !_isCancelled(data);
+  }
+
+  bool _canCompleteMeetingAction(Map<String, dynamic> data) {
+    return (_isScheduled(data) ||
+            _isBookingRequired(data) ||
+            _safe(data['workflowStatus']).toLowerCase() ==
+                CounselingCaseWorkflow.workflowBooked) &&
+        !_isCompleted(data) &&
+        !_isCancelled(data);
+  }
+
+  bool _canCancelCaseAction(Map<String, dynamic> data) {
+    return !_isCompleted(data) && !_isCancelled(data);
+  }
+
+  _CounselingActionKind? _primaryActionFor(Map<String, dynamic> data) {
+    if (_canSendCallSlipAction(data)) return _CounselingActionKind.sendCallSlip;
+    if (_canCompleteMeetingAction(data)) {
+      return _CounselingActionKind.completeMeeting;
+    }
+    if (_canCancelCaseAction(data)) return _CounselingActionKind.cancelCase;
+    return null;
+  }
+
+  String _actionLabel(_CounselingActionKind action) {
+    switch (action) {
+      case _CounselingActionKind.sendCallSlip:
+        return 'Send Call Slip';
+      case _CounselingActionKind.completeMeeting:
+        return 'Complete Meeting';
+      case _CounselingActionKind.cancelCase:
+        return 'Cancel Case';
+    }
+  }
+
+  bool _actionIsDanger(_CounselingActionKind action) {
+    return action == _CounselingActionKind.cancelCase;
+  }
+
+  bool _actionIsPrimary(_CounselingActionKind action) {
+    return action == _CounselingActionKind.sendCallSlip ||
+        action == _CounselingActionKind.completeMeeting;
+  }
+
+  IconData _actionIcon(_CounselingActionKind action) {
+    switch (action) {
+      case _CounselingActionKind.sendCallSlip:
+        return Icons.mark_email_unread_outlined;
+      case _CounselingActionKind.completeMeeting:
+        return Icons.check_circle_outline_rounded;
+      case _CounselingActionKind.cancelCase:
+        return Icons.cancel_outlined;
+    }
   }
 
   bool _isActionBusy(String caseId) => _actionCaseId == caseId;
@@ -509,6 +726,7 @@ class _CounselingAppointmentsPageState
       AppScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(successMessage), backgroundColor: primary),
       );
+      setState(() {});
     } catch (error) {
       if (!mounted) return;
       AppScaffoldMessenger.of(context).showSnackBar(
@@ -522,18 +740,320 @@ class _CounselingAppointmentsPageState
     }
   }
 
-  List<String> _reasonList(Map<String, dynamic> reasons, String key) {
-    final raw = reasons[key];
-    if (raw is List) {
-      return raw
-          .map((e) => e.toString())
-          .where((e) => e.trim().isNotEmpty)
-          .toList();
-    }
-    return const [];
+  Widget _buildActionButton({
+    required String label,
+    required VoidCallback? onPressed,
+    bool primaryButton = false,
+    bool dangerButton = false,
+    bool loading = false,
+  }) {
+    final foreground = dangerButton
+        ? Colors.red.shade700
+        : primaryButton
+            ? Colors.white
+            : primary;
+    final background = dangerButton
+        ? Colors.white
+        : primaryButton
+            ? primary
+            : Colors.white;
+    final borderColor = dangerButton
+        ? Colors.red.withValues(alpha: 0.35)
+        : primaryButton
+            ? primary
+            : primary.withValues(alpha: 0.35);
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(AppRadii.md),
+      onTap: onPressed,
+      child: Container(
+        width: double.infinity,
+        height: 44,
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        decoration: BoxDecoration(
+          color: background,
+          borderRadius: BorderRadius.circular(AppRadii.md),
+          border: Border.all(color: borderColor),
+        ),
+        child: Center(
+          child: loading
+              ? SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    valueColor: AlwaysStoppedAnimation<Color>(foreground),
+                  ),
+                )
+              : Text(
+                  label,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: foreground,
+                    fontWeight: FontWeight.w900,
+                    fontSize: 13,
+                  ),
+                ),
+        ),
+      ),
+    );
   }
 
-  Widget _detailCard({required String title, required Widget child}) {
+  Widget _buildCaseActions(QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+    final data = doc.data();
+    final caseId = doc.id;
+    final busy = _isActionBusy(caseId);
+    final isAwaitingCallSlip = _isAwaitingCallSlip(data);
+
+    final canSendCallSlip = _canSendCallSlipAction(data);
+    final canCompleteMeeting = _canCompleteMeetingAction(data);
+    final canCancelCase = _canCancelCaseAction(data);
+    final primaryAction = _primaryActionFor(data);
+    final menuItems = <_CounselingMenuAction>[
+      if (canCancelCase && primaryAction != _CounselingActionKind.cancelCase)
+        _CounselingMenuAction(
+          label: 'Cancel Case',
+          icon: Icons.cancel_outlined,
+          danger: true,
+          onTap: () => _runCaseAction(
+            caseId: caseId,
+            title: 'Cancel counseling case?',
+            message:
+                'This will cancel the case and write a case log for the action.',
+            successMessage: 'Counseling case cancelled.',
+            confirmLabel: 'Cancel Case',
+            action: () => _workflowService.cancelCase(caseId: caseId),
+          ),
+        ),
+      _CounselingMenuAction(
+        label: 'Case Logs',
+        icon: Icons.receipt_long_rounded,
+        danger: false,
+        onTap: () => _openCaseLogsDialog(doc),
+      ),
+    ];
+
+    if (!canSendCallSlip && !canCompleteMeeting && !canCancelCase) {
+      return const Text(
+        'No admin actions available for the current case status.',
+        style: TextStyle(
+          color: hint,
+          fontWeight: FontWeight.w700,
+          fontSize: 12.5,
+          height: 1.35,
+        ),
+      );
+    }
+
+    if (primaryAction == null) {
+      return const SizedBox.shrink();
+    }
+
+    VoidCallback primaryOnTap() {
+      switch (primaryAction) {
+        case _CounselingActionKind.sendCallSlip:
+          return () => _runCaseAction(
+                caseId: caseId,
+                title: 'Send counseling call slip?',
+                message:
+                    'The student will be notified and can start booking an appointment.',
+                successMessage:
+                    'Call slip sent. Student can now book an appointment.',
+                confirmLabel: 'Send Slip',
+                action: () => _workflowService.sendCallSlip(caseId: caseId),
+              );
+        case _CounselingActionKind.completeMeeting:
+          return () => _runCaseAction(
+                caseId: caseId,
+                title: 'Mark meeting completed?',
+                message:
+                    'This will close the case as completed and notify the student.',
+                successMessage: 'Meeting marked as completed.',
+                confirmLabel: 'Complete',
+                action: () =>
+                    _workflowService.markAppointmentCompleted(caseId: caseId),
+              );
+        case _CounselingActionKind.cancelCase:
+          return () => _runCaseAction(
+                caseId: caseId,
+                title: 'Cancel counseling case?',
+                message:
+                    'This will cancel the case and write a case log for the action.',
+                successMessage: 'Counseling case cancelled.',
+                confirmLabel: 'Cancel Case',
+                action: () => _workflowService.cancelCase(caseId: caseId),
+              );
+      }
+    }
+
+    if (isAwaitingCallSlip || menuItems.isNotEmpty) {
+      final useFilledPrimary = isAwaitingCallSlip;
+      return Row(
+        children: [
+          Expanded(
+            child: _buildActionButton(
+              label: _actionLabel(primaryAction),
+              primaryButton: useFilledPrimary &&
+                  _actionIsPrimary(primaryAction),
+              dangerButton: _actionIsDanger(primaryAction),
+              loading: busy,
+              onPressed: busy ? null : primaryOnTap(),
+            ),
+          ),
+          const SizedBox(width: 10),
+          PopupMenuButton<_CounselingMenuAction>(
+            tooltip: 'More actions',
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(AppRadii.md),
+            ),
+            color: Colors.white,
+            enabled: !busy && menuItems.isNotEmpty,
+            onSelected: (action) => action.onTap(),
+            child: Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(AppRadii.md),
+                border: Border.all(
+                  color: primary.withValues(alpha: 0.25),
+                ),
+              ),
+              child: const Icon(
+                Icons.more_vert_rounded,
+                color: primary,
+              ),
+            ),
+            itemBuilder: (context) => [
+              for (final action in menuItems)
+                PopupMenuItem<_CounselingMenuAction>(
+                  value: action,
+                  child: Row(
+                    children: [
+                      Icon(
+                        action.icon,
+                        size: 18,
+                        color: action.danger ? Colors.red.shade700 : primary,
+                      ),
+                      const SizedBox(width: 10),
+                      Text(
+                        action.label,
+                        style: TextStyle(
+                          color: action.danger ? Colors.red.shade700 : textDark,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        ],
+      );
+    }
+
+    return _buildActionButton(
+      label: _actionLabel(primaryAction),
+      primaryButton: _actionIsPrimary(primaryAction),
+      dangerButton: _actionIsDanger(primaryAction),
+      loading: busy,
+      onPressed: busy ? null : primaryOnTap(),
+    );
+  }
+
+  Future<void> _openCaseLogsDialog(
+    QueryDocumentSnapshot<Map<String, dynamic>> doc,
+  ) async {
+    await showDialog<void>(
+      context: context,
+      builder: (_) => _CounselingCaseLogsDialog(caseDoc: doc),
+    );
+  }
+
+  Future<void> _openCounselingReferralModal() async {
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        final media = MediaQuery.of(dialogContext);
+        final width = media.size.width > 1000
+            ? 980.0
+            : media.size.width > 760
+                ? media.size.width * 0.96
+                : media.size.width * 0.98;
+        final height = media.size.height > 640
+            ? media.size.height * 0.92
+            : media.size.height * 0.96;
+
+        return Dialog(
+          insetPadding: const EdgeInsets.all(16),
+          backgroundColor: Colors.white,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+          ),
+          child: SizedBox(
+            width: width.clamp(320.0, 980.0),
+            height: height.clamp(520.0, media.size.height * 0.98),
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 14, 10, 10),
+                  child: Row(
+                    children: [
+                      const Expanded(
+                        child: Text(
+                          'Counselling Referral',
+                          style: TextStyle(
+                            color: textDark,
+                            fontWeight: FontWeight.w900,
+                            fontSize: 18,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Close',
+                        onPressed: () => Navigator.of(dialogContext).pop(),
+                        icon: const Icon(Icons.close_rounded, color: hint),
+                      ),
+                    ],
+                  ),
+                ),
+                const Divider(height: 1),
+                const Expanded(
+                  child: ProfessorCounselingPage(),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildCounselingReferralButton() {
+    final wide = MediaQuery.sizeOf(context).width >= 820;
+    return FilledButton.icon(
+      onPressed: _openCounselingReferralModal,
+      style: FilledButton.styleFrom(
+        backgroundColor: primary,
+        foregroundColor: Colors.white,
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AppRadii.md),
+        ),
+      ),
+      icon: const Icon(Icons.support_agent_rounded, size: 18),
+      label: Text(
+        wide ? 'Counselling Referral' : 'Referral',
+        style: const TextStyle(fontWeight: FontWeight.w900),
+      ),
+    );
+  }
+
+  Widget _detailCard({
+    required String title,
+    required Widget child,
+  }) {
     return Container(
       width: double.infinity,
       margin: const EdgeInsets.only(bottom: 10),
@@ -554,372 +1074,22 @@ class _CounselingAppointmentsPageState
               fontSize: 13.5,
             ),
           ),
-          const SizedBox(height: 8),
-          child,
+          if (child is! SizedBox) ...[
+            const SizedBox(height: 8),
+            child,
+          ] else ...[
+            const SizedBox(height: 2),
+          ],
         ],
       ),
     );
   }
 
-  Widget _buildActionButton({
-    required IconData icon,
-    required String label,
-    required VoidCallback? onPressed,
-    bool primaryButton = false,
-    bool dangerButton = false,
-    bool loading = false,
-  }) {
-    final foreground = dangerButton ? Colors.red.shade700 : primary;
-
-    if (primaryButton) {
-      return FilledButton.icon(
-        onPressed: onPressed,
-        style: FilledButton.styleFrom(
-          backgroundColor: dangerButton ? Colors.red.shade700 : primary,
-          foregroundColor: Colors.white,
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        ),
-        icon: loading
-            ? const SizedBox(
-                width: 16,
-                height: 16,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                ),
-              )
-            : Icon(icon, size: 18),
-        label: Text(
-          loading ? 'Processing...' : label,
-          style: const TextStyle(fontWeight: FontWeight.w800),
-        ),
-      );
-    }
-
-    return OutlinedButton.icon(
-      onPressed: onPressed,
-      style: OutlinedButton.styleFrom(
-        foregroundColor: foreground,
-        side: BorderSide(color: foreground.withValues(alpha: 0.60)),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      ),
-      icon: loading
-          ? SizedBox(
-              width: 16,
-              height: 16,
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                valueColor: AlwaysStoppedAnimation<Color>(foreground),
-              ),
-            )
-          : Icon(icon, size: 18),
-      label: Text(
-        loading ? 'Processing...' : label,
-        style: const TextStyle(fontWeight: FontWeight.w800),
-      ),
-    );
-  }
-
-  Widget _buildCaseActions(QueryDocumentSnapshot<Map<String, dynamic>> doc) {
-    final data = doc.data();
-    final caseId = doc.id;
-    final busy = _isActionBusy(caseId);
-
-    final canSendCallSlip = _canSendCallSlip(data);
-    final canMarkOutcome = _canMarkScheduledOutcome(data);
-    final canReopen = _canReopenBooking(data);
-
-    if (!canSendCallSlip && !canMarkOutcome && !canReopen) {
-      return const Text(
-        'No admin actions available for the current case status.',
-        style: TextStyle(
-          color: hint,
-          fontWeight: FontWeight.w700,
-          fontSize: 12.5,
-          height: 1.35,
-        ),
-      );
-    }
-
-    return Wrap(
-      spacing: 8,
-      runSpacing: 8,
-      children: [
-        if (canSendCallSlip)
-          _buildActionButton(
-            icon: Icons.mark_email_unread_outlined,
-            label: 'Send Call Slip',
-            primaryButton: true,
-            loading: busy,
-            onPressed: busy
-                ? null
-                : () => _runCaseAction(
-                    caseId: caseId,
-                    title: 'Send counseling call slip?',
-                    message:
-                        'The student will be notified and can start booking an appointment.',
-                    successMessage:
-                        'Call slip sent. Student can now book an appointment.',
-                    confirmLabel: 'Send Slip',
-                    action: () => _workflowService.sendCallSlip(caseId: caseId),
-                  ),
-          ),
-        if (canMarkOutcome)
-          _buildActionButton(
-            icon: Icons.check_circle_outline_rounded,
-            label: 'Mark Completed',
-            primaryButton: true,
-            loading: busy,
-            onPressed: busy
-                ? null
-                : () => _runCaseAction(
-                    caseId: caseId,
-                    title: 'Mark appointment completed?',
-                    message:
-                        'This will close the case as completed and move it to Closed.',
-                    successMessage: 'Appointment marked as completed.',
-                    confirmLabel: 'Mark Completed',
-                    action: () => _workflowService.markAppointmentCompleted(
-                      caseId: caseId,
-                    ),
-                  ),
-          ),
-        if (canMarkOutcome)
-          _buildActionButton(
-            icon: Icons.event_busy_rounded,
-            label: 'Mark Missed',
-            dangerButton: true,
-            loading: busy,
-            onPressed: busy
-                ? null
-                : () => _runCaseAction(
-                    caseId: caseId,
-                    title: 'Mark appointment as missed?',
-                    message:
-                        'The case will move to missed status and can be reopened for rebooking.',
-                    successMessage: 'Appointment marked as missed.',
-                    confirmLabel: 'Mark Missed',
-                    action: () =>
-                        _workflowService.markAppointmentMissed(caseId: caseId),
-                  ),
-          ),
-        if (canReopen)
-          _buildActionButton(
-            icon: Icons.restart_alt_rounded,
-            label: 'Reopen Booking',
-            loading: busy,
-            onPressed: busy
-                ? null
-                : () => _runCaseAction(
-                    caseId: caseId,
-                    title: 'Reopen booking for student?',
-                    message:
-                        'The student will be allowed to book a new counseling appointment.',
-                    successMessage: 'Booking reopened for this case.',
-                    confirmLabel: 'Reopen',
-                    action: () => _workflowService.reopenBookingAfterMissed(
-                      caseId: caseId,
-                    ),
-                  ),
-          ),
-      ],
-    );
-  }
-
-  Widget _reasonsSection(Map<String, dynamic> reasons) {
-    Widget listBlock(String label, List<String> values) {
-      return Padding(
-        padding: const EdgeInsets.only(bottom: 8),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              label,
-              style: const TextStyle(
-                color: hint,
-                fontWeight: FontWeight.w900,
-                fontSize: 12,
-              ),
-            ),
-            const SizedBox(height: 4),
-            if (values.isEmpty)
-              const Text(
-                '-',
-                style: TextStyle(
-                  color: textDark,
-                  fontWeight: FontWeight.w600,
-                  fontSize: 12.5,
-                ),
-              )
-            else
-              ...values.map(
-                (value) => Text(
-                  '- $value',
-                  style: const TextStyle(
-                    color: textDark,
-                    fontWeight: FontWeight.w600,
-                    fontSize: 12.5,
-                  ),
-                ),
-              ),
-          ],
-        ),
-      );
-    }
-
-    final mood = _reasonList(reasons, 'moodsBehaviors');
-    final school = _reasonList(reasons, 'schoolConcerns');
-    final relationships = _reasonList(reasons, 'relationships');
-    final home = _reasonList(reasons, 'homeConcerns');
-
-    final otherMood = _safe(reasons['otherMood']);
-    final otherSchool = _safe(reasons['otherSchool']);
-    final otherRelationship = _safe(reasons['otherRelationship']);
-    final otherHome = _safe(reasons['otherHome']);
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        listBlock(
-          'Moods / Behaviors',
-          otherMood.isEmpty ? mood : [...mood, 'Other: $otherMood'],
-        ),
-        listBlock(
-          'School Concerns',
-          otherSchool.isEmpty ? school : [...school, 'Other: $otherSchool'],
-        ),
-        listBlock(
-          'Relationships',
-          otherRelationship.isEmpty
-              ? relationships
-              : [...relationships, 'Other: $otherRelationship'],
-        ),
-        listBlock(
-          'Home Concerns',
-          otherHome.isEmpty ? home : [...home, 'Other: $otherHome'],
-        ),
-      ],
-    );
-  }
-
-  DateTime? _activityDate(Map<String, dynamic> data) {
-    final createdAt = _toDate(data['createdAt']);
-    if (createdAt != null) return createdAt;
-    final epoch = (data['createdAtEpochMs'] as num?)?.toInt();
-    if (epoch == null || epoch <= 0) return null;
-    return DateTime.fromMillisecondsSinceEpoch(epoch);
-  }
-
-  Widget _buildActivityTimeline(String caseId) {
-    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance
-          .collection('counseling_cases')
-          .doc(caseId)
-          .collection('activity')
-          .orderBy('createdAtEpochMs', descending: true)
-          .limit(20)
-          .snapshots(),
-      builder: (context, snapshot) {
-        if (snapshot.hasError) {
-          return const Text(
-            'Could not load activity timeline.',
-            style: TextStyle(
-              color: hint,
-              fontWeight: FontWeight.w700,
-              fontSize: 12.5,
-            ),
-          );
-        }
-        if (!snapshot.hasData) {
-          return const Padding(
-            padding: EdgeInsets.symmetric(vertical: 8),
-            child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
-          );
-        }
-
-        final docs = snapshot.data!.docs;
-        if (docs.isEmpty) {
-          return const Text(
-            'No activity logs yet.',
-            style: TextStyle(
-              color: hint,
-              fontWeight: FontWeight.w700,
-              fontSize: 12.5,
-            ),
-          );
-        }
-
-        return Column(
-          children: docs.map((doc) {
-            final data = doc.data();
-            final title = _safe(data['title']).isEmpty
-                ? _safe(data['event'])
-                : _safe(data['title']);
-            final description = _safe(data['description']);
-            final actorRole = _safe(data['actorRole']);
-            final when = _activityDate(data);
-            return Container(
-              width: double.infinity,
-              margin: const EdgeInsets.only(bottom: 8),
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title.isEmpty ? 'Activity' : title,
-                    style: const TextStyle(
-                      color: textDark,
-                      fontWeight: FontWeight.w900,
-                      fontSize: 12.8,
-                    ),
-                  ),
-                  if (description.isNotEmpty) ...[
-                    const SizedBox(height: 3),
-                    Text(
-                      description,
-                      style: const TextStyle(
-                        color: hint,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 12.2,
-                        height: 1.35,
-                      ),
-                    ),
-                  ],
-                  const SizedBox(height: 4),
-                  Text(
-                    '${actorRole.isEmpty ? 'system' : actorRole} | ${_fmtDateTime(when)}',
-                    style: const TextStyle(
-                      color: hint,
-                      fontWeight: FontWeight.w700,
-                      fontSize: 11.5,
-                    ),
-                  ),
-                ],
-              ),
-            );
-          }).toList(),
-        );
-      },
-    );
-  }
-
   Widget _buildDetailPane(QueryDocumentSnapshot<Map<String, dynamic>> doc) {
     final data = doc.data();
-    final source = _safe(data['referralSource']).toLowerCase();
-    final isSelfReferral =
-        source == CounselingCaseWorkflow.referralSourceStudent;
-    final referralDate = _toDate(data['referralDate']);
-    final createdAt = _toDate(data['createdAt']);
-    final updatedAt = _toDate(data['updatedAt']);
+    final studentUid = _safe(data['studentUid']);
+    final referralEntries = _referralEntryList(data['referralEntries']);
     final scheduledAt = _toDate(data['scheduledAt']);
-    final reasons =
-        (data['reasons'] as Map<String, dynamic>?) ?? <String, dynamic>{};
-    final comments = _safe(data['comments']);
 
     return Container(
       color: Colors.white,
@@ -963,21 +1133,89 @@ class _CounselingAppointmentsPageState
                     title: 'Student Information',
                     child: Row(
                       children: [
-                        Container(
-                          width: 46,
-                          height: 46,
-                          decoration: BoxDecoration(
-                            color: primary.withValues(alpha: 0.12),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(
-                              color: primary.withValues(alpha: 0.22),
-                            ),
-                          ),
-                          child: const Icon(
-                            Icons.person_rounded,
-                            color: primary,
-                            size: 24,
-                          ),
+                        FutureBuilder<String>(
+                          future: _resolveStudentPhotoUrl(studentUid),
+                          initialData: '',
+                          builder: (context, snapshot) {
+                            final photoUrl = _safe(snapshot.data);
+                            return MouseRegion(
+                              cursor: photoUrl.isEmpty
+                                  ? SystemMouseCursors.basic
+                                  : SystemMouseCursors.click,
+                              child: GestureDetector(
+                                onTap: photoUrl.isEmpty
+                                    ? null
+                                    : () => _openProfilePhotoViewer(
+                                        context: context,
+                                        sourceUrl: photoUrl,
+                                        studentName: _safe(data['studentName']),
+                                      ),
+                                child: Stack(
+                                  clipBehavior: Clip.none,
+                                  children: [
+                                    Container(
+                                      width: 46,
+                                      height: 46,
+                                      decoration: BoxDecoration(
+                                        color: primary.withValues(alpha: 0.12),
+                                        borderRadius: BorderRadius.circular(12),
+                                        border: Border.all(
+                                          color: primary.withValues(
+                                            alpha: 0.22,
+                                          ),
+                                        ),
+                                      ),
+                                      child: photoUrl.isEmpty
+                                          ? const Icon(
+                                              Icons.person_rounded,
+                                              color: primary,
+                                              size: 24,
+                                            )
+                                          : ClipRRect(
+                                              borderRadius:
+                                                  BorderRadius.circular(11),
+                                              child: Image.network(
+                                                photoUrl,
+                                                fit: BoxFit.cover,
+                                                errorBuilder:
+                                                    (context, error, stackTrace) =>
+                                                        const Icon(
+                                                          Icons.person_rounded,
+                                                          color: primary,
+                                                          size: 24,
+                                                        ),
+                                              ),
+                                            ),
+                                    ),
+                                    if (photoUrl.isNotEmpty)
+                                      Positioned(
+                                        right: -4,
+                                        bottom: -4,
+                                        child: Container(
+                                          width: 17,
+                                          height: 17,
+                                          decoration: BoxDecoration(
+                                            color: primary,
+                                            borderRadius: BorderRadius.circular(
+                                              999,
+                                            ),
+                                            border: Border.all(
+                                              color: Colors.white,
+                                              width: 1.3,
+                                            ),
+                                          ),
+                                          child: const Icon(
+                                            Icons.open_in_full_rounded,
+                                            color: Colors.white,
+                                            size: 10,
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
                         ),
                         const SizedBox(width: 12),
                         Expanded(
@@ -1018,18 +1256,10 @@ class _CounselingAppointmentsPageState
                   ),
                   const SizedBox(height: 12),
                   _detailCard(
-                    title: 'Referral Information',
+                    title: 'Case Information',
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        _kv(
-                          'Source',
-                          _prettySource(_safe(data['referralSource'])),
-                        ),
-                        _kv(
-                          'Referral Type',
-                          _prettyType(_safe(data['counselingType'])),
-                        ),
                         _kv('Status', _statusText(data)),
                         _kv(
                           'Case Code',
@@ -1048,59 +1278,199 @@ class _CounselingAppointmentsPageState
                                   ),
                                 ),
                         ),
-                        if (!isSelfReferral)
+                        if (_safe(data['callSlipStatus']).isNotEmpty)
                           _kv(
                             'Call Slip',
-                            _safe(data['callSlipStatus']).isEmpty
-                                ? '-'
-                                : _titleCase(
-                                    _safe(data['callSlipStatus']).replaceAll(
-                                      '_',
-                                      ' ',
-                                    ),
-                                  ),
+                            _titleCase(
+                              _safe(data['callSlipStatus']).replaceAll(
+                                '_',
+                                ' ',
+                              ),
+                            ),
                           ),
+                        if (!_isBookingRequired(data))
                         _kv('Scheduled At', _fmtDateTime(scheduledAt)),
-                        if (!isSelfReferral)
-                          _kv(
-                            'Referred By',
-                            _safe(data['referredBy']).isEmpty
-                                ? '-'
-                                : _safe(data['referredBy']),
-                          ),
-                        _kv('Referral Date', _fmtDate(referralDate)),
-                        _kv('Created At', _fmtDateTime(createdAt)),
-                        _kv('Updated At', _fmtDateTime(updatedAt)),
                       ],
                     ),
                   ),
-                  _detailCard(title: 'Actions', child: _buildCaseActions(doc)),
-                  _detailCard(
-                    title: 'Concerns',
-                    child: _reasonsSection(reasons),
-                  ),
-                  _detailCard(
-                    title: 'Comments',
-                    child: Text(
-                      comments.isEmpty ? '-' : comments,
-                      style: const TextStyle(
-                        color: textDark,
-                        fontWeight: FontWeight.w600,
-                        fontSize: 12.5,
-                        height: 1.4,
-                      ),
-                    ),
-                  ),
-                  _detailCard(
-                    title: 'Activity Timeline',
-                    child: _buildActivityTimeline(doc.id),
-                  ),
+                  _buildReferralHistoryCard(referralEntries),
                   const SizedBox(height: 4),
                 ],
               ),
             ),
           ),
+          Container(
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+            decoration: BoxDecoration(
+              border: Border(
+                top: BorderSide(color: Colors.black.withValues(alpha: 0.08)),
+              ),
+            ),
+            child: _buildCaseActions(doc),
+          ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildReferralEntryCard(
+    Map<String, dynamic> entry, {
+    bool isPrimary = false,
+  }) {
+    final source = _prettySource(_safe(entry['source']));
+    final isSelfReferral =
+        _safe(entry['source']).toLowerCase() ==
+        CounselingCaseWorkflow.referralSourceStudent;
+    final type = _prettyType(_safe(entry['counselingType']));
+    final referredBy = _safe(entry['referredBy']).isEmpty
+        ? '-'
+        : _safe(entry['referredBy']);
+    final submittedAt = _toDate(entry['submittedAt']);
+    final comments = _safe(entry['comments']);
+    final reasons = entry['reasons'] is Map<String, dynamic>
+        ? entry['reasons'] as Map<String, dynamic>
+        : <String, dynamic>{};
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  source,
+                  style: const TextStyle(
+                    color: textDark,
+                    fontWeight: FontWeight.w900,
+                    fontSize: 13.5,
+                  ),
+                ),
+              ),
+              if (isPrimary)
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 3,
+                  ),
+                  decoration: BoxDecoration(
+                    color: primary.withValues(alpha: 0.10),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: const Text(
+                    'Primary',
+                    style: TextStyle(
+                      color: primary,
+                      fontWeight: FontWeight.w800,
+                      fontSize: 11,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          _kv('Type', type),
+          if (!isSelfReferral) _kv('Submitted By', referredBy),
+          _kv('Submitted At', _fmtDateTime(submittedAt)),
+          _buildConcernSection(reasons),
+          if (comments.isNotEmpty) _kv('Comments', comments),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildReferralHistoryCard(List<Map<String, dynamic>> entries) {
+    if (entries.isEmpty) return const SizedBox.shrink();
+    return _detailCard(
+      title: 'Referral History',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (var i = 0; i < entries.length; i++)
+            _buildReferralEntryCard(entries[i], isPrimary: i == 0),
+        ],
+      ),
+    );
+  }
+
+  Future<String> _resolveStudentPhotoUrl(String studentUid) {
+    final uid = studentUid.trim();
+    if (uid.isEmpty) return Future<String>.value('');
+
+    return _studentPhotoFutureCache.putIfAbsent(uid, () async {
+      final userDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid)
+          .get();
+      final userData = userDoc.data() ?? const <String, dynamic>{};
+      final studentProfile =
+          userData['studentProfile'] as Map<String, dynamic>? ??
+          const <String, dynamic>{};
+      final employeeProfile =
+          userData['employeeProfile'] as Map<String, dynamic>? ??
+          const <String, dynamic>{};
+
+      final source = _safe(
+        userData['photoUrl'] ??
+            userData['profilePhotoUrl'] ??
+            studentProfile['photoUrl'] ??
+            studentProfile['profilePhotoUrl'] ??
+            employeeProfile['photoUrl'] ??
+            employeeProfile['profilePhotoUrl'],
+      );
+      return _resolveImageSourceUrl(source);
+    });
+  }
+
+  Future<String> _resolveImageSourceUrl(String source) async {
+    final value = source.trim();
+    if (value.isEmpty) return '';
+    if (value.startsWith('http://') || value.startsWith('https://')) {
+      return value;
+    }
+    try {
+      if (value.startsWith('gs://')) {
+        return await FirebaseStorage.instance.refFromURL(value).getDownloadURL();
+      }
+      return await FirebaseStorage.instance.ref(value).getDownloadURL();
+    } catch (_) {
+      return '';
+    }
+  }
+
+  Future<void> _openProfilePhotoViewer({
+    required BuildContext context,
+    required String sourceUrl,
+    required String studentName,
+  }) async {
+    final resolvedUrl = await _resolveImageSourceUrl(sourceUrl);
+    if (resolvedUrl.isEmpty) {
+      if (context.mounted) {
+        AppScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No profile photo available.'),
+            backgroundColor: primary,
+          ),
+        );
+      }
+      return;
+    }
+
+    if (!context.mounted) return;
+    showDialog<void>(
+      context: context,
+      barrierColor: Colors.black.withValues(alpha: 0.72),
+      builder: (_) => _ProfilePhotoViewerDialog(
+        photoUrl: resolvedUrl,
+        studentName: studentName,
       ),
     );
   }
@@ -1143,15 +1513,16 @@ class _CounselingAppointmentsPageState
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      backgroundColor: Colors.transparent,
+      showDragHandle: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
       builder: (_) {
         return FractionallySizedBox(
           heightFactor: 0.92,
-          child: Container(
-            decoration: const BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-            ),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
             child: _buildDetailPane(doc),
           ),
         );
@@ -1252,7 +1623,7 @@ class _CounselingAppointmentsPageState
               showTopControlsWhenTitleHidden: true,
               showSearchBar: true,
               searchBar: _buildSearchBar(),
-              action: null,
+              action: _buildCounselingReferralButton(),
               tabs: tabBar,
               filters: const [],
             ),
@@ -1300,7 +1671,7 @@ class _CounselingAppointmentsPageState
               details: selectedDoc == null
                   ? null
                   : _buildDetailPane(selectedDoc),
-              detailsWidth: (constraints.maxWidth * 0.40).clamp(390.0, 520.0),
+              detailsWidth: (constraints.maxWidth * 0.33).clamp(320.0, 420.0),
             );
           },
         );
@@ -1692,6 +2063,288 @@ class _CounselingAppointmentsPageState
             ),
             const SizedBox(width: 8),
             const Icon(Icons.chevron_right_rounded, color: Colors.black45),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ProfilePhotoViewerDialog extends StatelessWidget {
+  final String photoUrl;
+  final String studentName;
+
+  const _ProfilePhotoViewerDialog({
+    required this.photoUrl,
+    required this.studentName,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final size = MediaQuery.of(context).size;
+    final dialogWidth = size.width > 760 ? 640.0 : size.width * 0.94;
+    final dialogHeight = size.height > 620 ? 560.0 : size.height * 0.88;
+
+    return Dialog(
+      backgroundColor: Colors.black,
+      insetPadding: const EdgeInsets.all(16),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(24),
+      ),
+      child: SizedBox(
+        width: dialogWidth,
+        height: dialogHeight,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 10, 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      studentName.isEmpty ? 'Profile Photo' : studentName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close_rounded, color: Colors.white),
+                    style: IconButton.styleFrom(
+                      backgroundColor: Colors.white.withValues(alpha: 0.14),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(10, 4, 10, 10),
+                child: InteractiveViewer(
+                  minScale: 0.8,
+                  maxScale: 4.0,
+                  child: Center(
+                    child: Image.network(
+                      photoUrl,
+                      fit: BoxFit.contain,
+                      loadingBuilder: (context, child, progress) {
+                        if (progress == null) return child;
+                        return const Center(
+                          child: CircularProgressIndicator(color: Colors.white),
+                        );
+                      },
+                      errorBuilder: (context, error, stackTrace) =>
+                          const Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                Icons.broken_image_outlined,
+                                color: Colors.white70,
+                                size: 42,
+                              ),
+                              SizedBox(height: 8),
+                              Text(
+                                'Failed to load profile photo',
+                                style: TextStyle(
+                                  color: Colors.white70,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ],
+                          ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CounselingCaseLogsDialog extends StatelessWidget {
+  final QueryDocumentSnapshot<Map<String, dynamic>> caseDoc;
+
+  const _CounselingCaseLogsDialog({required this.caseDoc});
+
+  static const Color _textDark = Color(0xFF1F2A1F);
+  static const Color _hint = Color(0xFF6D7F62);
+
+  String _safe(dynamic value) => (value ?? '').toString().trim();
+
+  String _fmtTs(dynamic value) {
+    if (value is Timestamp) {
+      return DateFormat('MMM d, yyyy • h:mm a').format(value.toDate());
+    }
+    if (value is DateTime) {
+      return DateFormat('MMM d, yyyy • h:mm a').format(value);
+    }
+    return '--';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final logsRef = caseDoc.reference
+        .collection('activity')
+        .orderBy('createdAtEpochMs', descending: true);
+
+    return Dialog(
+      insetPadding: const EdgeInsets.all(16),
+      backgroundColor: Colors.white,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 720, maxHeight: 640),
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 14, 10, 10),
+              child: Row(
+                children: [
+                  const Expanded(
+                  child: Text(
+                      'Case Logs',
+                      style: TextStyle(
+                        color: _textDark,
+                        fontWeight: FontWeight.w900,
+                        fontSize: 18,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close_rounded, color: _hint),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                stream: logsRef.snapshots(),
+                builder: (context, snap) {
+                  if (snap.hasError) {
+                    return Center(
+                      child: Text(
+                        'Could not load case logs.',
+                        style: TextStyle(
+                          color: Colors.red.shade700,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    );
+                  }
+                  if (!snap.hasData) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+
+                  final docs = snap.data!.docs;
+                  if (docs.isEmpty) {
+                    return const Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.receipt_long_outlined,
+                            size: 42,
+                            color: _hint,
+                          ),
+                          SizedBox(height: 8),
+                          Text(
+                            'No case logs yet.',
+                            style: TextStyle(
+                              color: _hint,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  }
+
+                  return ListView.separated(
+                    padding: const EdgeInsets.all(16),
+                    itemCount: docs.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 10),
+                    itemBuilder: (context, index) {
+                      final data = docs[index].data();
+                      final title = _safe(data['title']).isEmpty
+                          ? 'Log Entry'
+                          : _safe(data['title']);
+                      final description = _safe(data['description']);
+                      final actorRole = _safe(data['actorRole']).isEmpty
+                          ? 'system'
+                          : _safe(data['actorRole']);
+                      final createdAt = _fmtTs(data['createdAt']);
+
+                      return Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF7FBF7),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: Colors.black.withValues(alpha: 0.08),
+                          ),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    title,
+                                    style: const TextStyle(
+                                      color: _textDark,
+                                      fontWeight: FontWeight.w900,
+                                      fontSize: 13.5,
+                                    ),
+                                  ),
+                                ),
+                                Text(
+                                  actorRole,
+                                  style: const TextStyle(
+                                    color: _hint,
+                                    fontWeight: FontWeight.w800,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              description.isEmpty ? '--' : description,
+                              style: const TextStyle(
+                                color: _textDark,
+                                fontWeight: FontWeight.w600,
+                                fontSize: 12.5,
+                                height: 1.4,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              createdAt,
+                              style: const TextStyle(
+                                color: _hint,
+                                fontWeight: FontWeight.w700,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  );
+                },
+              ),
+            ),
           ],
         ),
       ),

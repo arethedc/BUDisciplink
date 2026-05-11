@@ -713,12 +713,18 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
       final referredByName = _teacherName.isNotEmpty
           ? _teacherName
           : (_teacherEmail.isNotEmpty ? _teacherEmail : 'Professor');
+      final reporterUid = _teacherUid.trim().isNotEmpty
+          ? _teacherUid.trim()
+          : (FirebaseAuth.instance.currentUser?.uid.trim() ?? '');
+      if (reporterUid.isEmpty) {
+        throw Exception('Reporter account not found. Please login again.');
+      }
       final caseId = await _workflowService.submitProfessorReferral(
         studentUid: _studentUid ?? '',
         studentName: _studentName ?? '',
         studentNo: _studentNo ?? '',
         studentProgramId: _studentProgram ?? '',
-        professorUid: _teacherUid,
+        professorUid: reporterUid,
         professorName: referredByName,
         counselingType: _counselingType,
         reasons: {
@@ -733,6 +739,19 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
         },
         comments: _commentsCtrl.text.trim(),
       );
+
+      try {
+        await FirebaseFirestore.instance
+            .collection('counseling_cases')
+            .doc(caseId)
+            .set({
+              'referredByUid': reporterUid,
+              'referralReporterUids': FieldValue.arrayUnion([reporterUid]),
+            }, SetOptions(merge: true));
+      } catch (_) {
+        // The workflow service already writes these fields; this is just a
+        // best-effort repair for older linked cases.
+      }
 
       final caseDoc = await FirebaseFirestore.instance
           .collection('counseling_cases')

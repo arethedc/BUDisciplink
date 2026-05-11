@@ -45,6 +45,12 @@ Assessment / meeting fields:
 - `officialRemarks`
 - `internalNotes`
 
+### Concern handling
+- Keep each concern dimension separate in storage and UI.
+- Do not collapse distinct concern items into one combined free-text blob.
+- When a case receives another referral, append new concern items instead of overwriting or merging them into one string.
+- Counseling concern groups should remain separate lists per area, such as mood/behavior, school, relationship, and home.
+
 ### Correction history
 Subcollection: `violation_cases/{caseId}/correction_history/{historyId}`
 
@@ -112,4 +118,3 @@ Create these Firestore composite indexes:
    - `caseId` Asc
    - `status` Asc
    - `startAt` Desc
-

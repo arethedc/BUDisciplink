@@ -289,6 +289,13 @@ class CounselingCaseWorkflowService {
     required Map<String, dynamic> reasons,
     required String comments,
   }) async {
+    final reporterUid = professorUid.trim().isNotEmpty
+        ? professorUid.trim()
+        : (FirebaseAuth.instance.currentUser?.uid.trim() ?? '');
+    if (reporterUid.isEmpty) {
+      throw Exception('Reporter account not found. Please login again.');
+    }
+
     final existingCase = await _findActiveCaseForStudent(studentUid);
     if (existingCase != null) {
       await _attachReferralToExistingCase(
@@ -298,7 +305,7 @@ class CounselingCaseWorkflowService {
         counselingType: counselingType,
         reasons: reasons,
         comments: comments,
-        referredByUid: professorUid,
+        referredByUid: reporterUid,
         referredByRole: 'professor',
         referredBy: professorName,
       );
@@ -339,14 +346,14 @@ class CounselingCaseWorkflowService {
       'studentName': studentName.trim(),
       'studentNo': studentNo.trim(),
       'studentProgramId': studentProgramId.trim(),
-      'referredByUid': professorUid.trim(),
+      'referredByUid': reporterUid,
       'referredByRole': 'professor',
       'classroomTeacher': referredBy,
       'referredBy': referredBy,
       'studentReferralSubmitted': false,
       'professorReferralSubmitted': true,
       'referralSources': const [CounselingCaseWorkflow.referralSourceProfessor],
-      'referralReporterUids': [professorUid.trim()],
+      'referralReporterUids': [reporterUid],
       'latestReferralSource': CounselingCaseWorkflow.referralSourceProfessor,
       'latestReferralAt': Timestamp.fromDate(now),
       'referralEntries': [
@@ -355,7 +362,7 @@ class CounselingCaseWorkflowService {
           counselingType: counselingType,
           reasons: reasons,
           comments: comments,
-          referredByUid: professorUid,
+          referredByUid: reporterUid,
           referredByRole: 'professor',
           referredBy: referredBy,
           submittedAt: now,
@@ -373,7 +380,7 @@ class CounselingCaseWorkflowService {
       event: 'case_submitted',
       title: 'Professor referral submitted',
       description: '$referredBy submitted a counseling referral.',
-      actorUid: professorUid.trim(),
+      actorUid: reporterUid,
       actorRole: 'professor',
       meta: {
         'workflowStatus': CounselingCaseWorkflow.workflowSubmitted,
@@ -797,9 +804,13 @@ class CounselingCaseWorkflowService {
       final meetingStatus = _safe(data['meetingStatus']).toLowerCase();
       final canComplete =
           workflowStatus == CounselingCaseWorkflow.workflowBooked ||
-          meetingStatus == CounselingCaseWorkflow.meetingScheduled;
+          workflowStatus == CounselingCaseWorkflow.workflowBookingRequired ||
+          meetingStatus == CounselingCaseWorkflow.meetingScheduled ||
+          meetingStatus == CounselingCaseWorkflow.meetingPendingStudentBooking;
       if (!canComplete) {
-        throw Exception('Only booked appointments can be completed.');
+        throw Exception(
+          'Only booked or booking-required counseling cases can be completed.',
+        );
       }
 
       studentUid = _safe(data['studentUid']);
@@ -1221,16 +1232,24 @@ class CounselingCaseWorkflowService {
         merged[key] = values;
         continue;
       }
-      final existingText = _safe(existingValue);
       final incomingText = _safe(incomingValue);
       if (incomingText.isEmpty) {
-        merged[key] = existingValue;
-      } else if (existingText.isEmpty) {
-        merged[key] = incomingText;
-      } else if (existingText.contains(incomingText)) {
-        merged[key] = existingText;
+        if (!merged.containsKey(key)) {
+          merged[key] = existingValue;
+        }
+        continue;
+      }
+
+      final existingItems = _stringList(existingValue);
+      if (existingItems.isNotEmpty) {
+        final mergedItems = <String>{
+          ...existingItems.map((item) => item.trim()).where((item) => item.isNotEmpty),
+          incomingText,
+        }.toList()
+          ..sort();
+        merged[key] = mergedItems;
       } else {
-        merged[key] = '$existingText | $incomingText';
+        merged[key] = [incomingText];
       }
     }
     return merged;
