@@ -1,24 +1,14 @@
-﻿import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import '../auth/login_page.dart';
-import '../auth/sign_up_page.dart';
-import '../counseling_admin/counseling_dashboard.dart';
-import '../guard/guard_dashboard.dart';
-import '../osa_admin/osa_dashboard.dart';
-import '../professor/professor_dashboard.dart';
-import '../student/student_dashboard.dart';
-import '../super_admin/super_admin_dashboard.dart';
+import 'package:go_router/go_router.dart';
 import 'widgets/app_branding.dart';
 
 class WelcomeScreen extends StatelessWidget {
   const WelcomeScreen({super.key});
 
-
   Widget _devNavButton(BuildContext context, String label, Widget page) {
     return OutlinedButton(
       onPressed: () {
-        Navigator.push(context, MaterialPageRoute(builder: (_) => page));
+        context.go('/welcome');
       },
       style: OutlinedButton.styleFrom(
         foregroundColor: const Color(0xFF1B5E20),
@@ -77,7 +67,6 @@ class WelcomeScreen extends StatelessWidget {
                         child: AppBranding.logo(fit: BoxFit.contain),
                       ),
 
-
                       Transform.translate(
                         offset: const Offset(0, -30),
                         child: Text(
@@ -100,14 +89,12 @@ class WelcomeScreen extends StatelessWidget {
                         ),
                       ),
 
-        
                       const SizedBox(height: 2),
 
-
                       Text(
-                     "Your unified platform for student discipline,\n"
-                      "counseling referrals, appointments, and case tracking\n"
-                      "at Baliuag University.",
+                        "Your unified platform for student discipline,\n"
+                        "counseling referrals, appointments, and case tracking\n"
+                        "at Baliuag University.",
                         textAlign: TextAlign.center,
                         style: TextStyle(
                           fontSize: bodySize,
@@ -124,12 +111,7 @@ class WelcomeScreen extends StatelessWidget {
                         height: buttonHeight,
                         child: ElevatedButton.icon(
                           onPressed: () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) => const SignUpPage(),
-                              ),
-                            );
+                            context.go('/signup');
                           },
                           icon: const Icon(Icons.group_add, size: 20),
                           label: const Text(
@@ -158,12 +140,7 @@ class WelcomeScreen extends StatelessWidget {
                         height: buttonHeight,
                         child: OutlinedButton.icon(
                           onPressed: () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) => const LoginPage(),
-                              ),
-                            );
+                            context.go('/login');
                           },
                           icon: const Icon(
                             Icons.login,
@@ -190,7 +167,6 @@ class WelcomeScreen extends StatelessWidget {
                         ),
                       ),
                       const SizedBox(height: 14),
-
                     ],
                   ),
                 ),

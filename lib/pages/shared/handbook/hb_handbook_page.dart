@@ -9,6 +9,7 @@ import 'package:flutter_quill_extensions/flutter_quill_extensions.dart'
     as quill_ext;
 
 import 'handbook_ai_assistant_sheet.dart';
+import 'package:apps/services/app_firestore.dart';
 
 const String _hbTableEmbedType = 'x-embed-table';
 
@@ -25,9 +26,7 @@ Map<String, dynamic> _normalizeHbTablePayload(String raw) {
   Map<String, dynamic>? decodeMap(dynamic value) {
     if (value is Map<String, dynamic>) return value;
     if (value is Map) {
-      return value.map(
-        (key, data) => MapEntry(key.toString(), data),
-      );
+      return value.map((key, data) => MapEntry(key.toString(), data));
     }
     return null;
   }
@@ -64,7 +63,10 @@ Map<String, dynamic> _normalizeHbTablePayload(String raw) {
       if (row is! List) continue;
       final cells = row.map((e) => e?.toString() ?? '').toList(growable: false);
       if (cells.length < columns) {
-        rows.add([...cells, ...List<String>.filled(columns - cells.length, '')]);
+        rows.add([
+          ...cells,
+          ...List<String>.filled(columns - cells.length, ''),
+        ]);
       } else if (cells.length > columns) {
         rows.add(cells.sublist(0, columns));
       } else {
@@ -231,7 +233,8 @@ class _HbReadOnlyTable extends StatelessWidget {
         .map((e) => e is num ? e.toDouble() : 0.0)
         .toList(growable: false);
     final stylesRaw =
-        payload['cellStyles'] as Map<String, dynamic>? ?? const <String, dynamic>{};
+        payload['cellStyles'] as Map<String, dynamic>? ??
+        const <String, dynamic>{};
     final styles = stylesRaw.map(
       (key, value) => MapEntry(
         key,
@@ -245,17 +248,17 @@ class _HbReadOnlyTable extends StatelessWidget {
     final safeRows = rows.isEmpty
         ? <List<String>>[List<String>.filled(safeHeaders.length, '')]
         : rows
-            .map((row) {
-              if (row.length == safeHeaders.length) return row;
-              if (row.length < safeHeaders.length) {
-                return [
-                  ...row,
-                  ...List<String>.filled(safeHeaders.length - row.length, ''),
-                ];
-              }
-              return row.sublist(0, safeHeaders.length);
-            })
-            .toList(growable: false);
+              .map((row) {
+                if (row.length == safeHeaders.length) return row;
+                if (row.length < safeHeaders.length) {
+                  return [
+                    ...row,
+                    ...List<String>.filled(safeHeaders.length - row.length, ''),
+                  ];
+                }
+                return row.sublist(0, safeHeaders.length);
+              })
+              .toList(growable: false);
 
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 8),
@@ -314,8 +317,12 @@ class _HbReadOnlyTable extends StatelessWidget {
                             color: const Color(0xFF1F2A1F),
                             height: 1.35,
                             fontSize: size.clamp(10, 32),
-                            fontWeight: bold ? FontWeight.w700 : FontWeight.w500,
-                            fontStyle: italic ? FontStyle.italic : FontStyle.normal,
+                            fontWeight: bold
+                                ? FontWeight.w700
+                                : FontWeight.w500,
+                            fontStyle: italic
+                                ? FontStyle.italic
+                                : FontStyle.normal,
                             fontFamily: _fontFamily(style),
                           ),
                         ),
@@ -368,7 +375,7 @@ class _HbHandbookPageState extends State<HbHandbookPage> {
   static const _colHbSection = 'hb_section';
   static const _colHbContents = 'hb_contents';
 
-  final FirebaseFirestore _db = FirebaseFirestore.instance;
+  final FirebaseFirestore _db = AppFirestore.instance;
   final TextEditingController _searchCtrl = TextEditingController();
   final FocusNode _searchFocusNode = FocusNode();
 
@@ -1463,6 +1470,230 @@ class _HbHandbookPageState extends State<HbHandbookPage> {
     );
   }
 
+  Widget _buildNoActiveSectionsPanel({required bool isDesktop}) {
+    final height = isDesktop ? 56.0 : 48.0;
+    final borderRadius = isDesktop ? 16.0 : 18.0;
+    final iconSize = isDesktop ? 24.0 : 22.0;
+    final fontSize = isDesktop ? 15.0 : 13.5;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: EdgeInsets.fromLTRB(
+              isDesktop ? 10 : 14,
+              isDesktop ? 10 : 14,
+              isDesktop ? 10 : 14,
+              isDesktop ? 8 : 10,
+            ),
+            child: Opacity(
+              opacity: 0.55,
+              child: Container(
+                height: height,
+                padding: EdgeInsets.symmetric(horizontal: isDesktop ? 20 : 12),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.75),
+                  borderRadius: BorderRadius.circular(borderRadius),
+                  border: Border.all(color: Colors.black12),
+                  boxShadow: isDesktop
+                      ? [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.04),
+                            blurRadius: 12,
+                            offset: const Offset(0, 2),
+                          ),
+                        ]
+                      : null,
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.search_rounded, size: iconSize, color: _muted),
+                    const SizedBox(width: 10),
+                    Text(
+                      'Search',
+                      style: TextStyle(
+                        color: _muted,
+                        fontSize: fontSize,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 2, 16, 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: const [
+                Text(
+                  'Sections',
+                  style: TextStyle(
+                    color: _text,
+                    fontWeight: FontWeight.w900,
+                    fontSize: 16,
+                  ),
+                ),
+                SizedBox(height: 4),
+                Text(
+                  'Section navigation will appear here when handbook entries are available.',
+                  style: TextStyle(
+                    color: _muted,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 12.5,
+                    height: 1.35,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: const Padding(
+              padding: EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: Center(
+                child: Text(
+                  'No handbook sections available yet.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: _primary,
+                    fontWeight: FontWeight.w900,
+                    fontSize: 16,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildNoActiveContentPanel() {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.fromLTRB(18, 16, 18, 14),
+            decoration: BoxDecoration(
+              border: Border(
+                bottom: BorderSide(color: Colors.black.withValues(alpha: 0.08)),
+              ),
+            ),
+            child: const Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Handbook Content',
+                  style: TextStyle(
+                    color: _text,
+                    fontWeight: FontWeight.w900,
+                    fontSize: 18,
+                  ),
+                ),
+                SizedBox(height: 4),
+                Text(
+                  'Selected handbook section content will appear here.',
+                  style: TextStyle(
+                    color: _muted,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 12.8,
+                    height: 1.35,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: Center(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 420),
+                  child: const Text(
+                    'No handbook content is available yet.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: _muted,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 13,
+                      height: 1.45,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildNoActiveHandbookLayout({
+    required bool isDesktop,
+    required double width,
+    required double desktopMaxContentWidth,
+  }) {
+    final sectionsPanel = _buildNoActiveSectionsPanel(isDesktop: isDesktop);
+    final contentPanel = _buildNoActiveContentPanel();
+
+    return Container(
+      color: _bg,
+      child: Column(
+        children: [
+          if (!widget.hideTopHeader) ...[
+            _buildHeader(
+              isDesktop: isDesktop,
+              activeVersionLabel: 'No active handbook',
+            ),
+            const Divider(height: 1),
+          ],
+          Expanded(
+            child: Align(
+              alignment: Alignment.topCenter,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxWidth: isDesktop ? desktopMaxContentWidth : width,
+                ),
+                child: Padding(
+                  padding: EdgeInsets.all(isDesktop ? 14 : 12),
+                  child: isDesktop
+                      ? Row(
+                          children: [
+                            SizedBox(width: 400, child: sectionsPanel),
+                            const SizedBox(width: 12),
+                            Expanded(child: contentPanel),
+                          ],
+                        )
+                      : Column(
+                          children: [
+                            SizedBox(height: 260, child: sectionsPanel),
+                            const SizedBox(height: 12),
+                            Expanded(child: contentPanel),
+                          ],
+                        ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildExternalOutlinePanel({required _HbSection? selectedSection}) {
     if (selectedSection == null) {
       return const SizedBox.shrink();
@@ -1719,11 +1950,10 @@ class _HbHandbookPageState extends State<HbHandbookPage> {
               (meta['activeVersionLabel'] ?? activeVersionId).toString().trim();
 
           if (activeVersionId.isEmpty) {
-            return const Center(
-              child: Text(
-                'No active handbook version found.',
-                style: TextStyle(color: _muted, fontWeight: FontWeight.w800),
-              ),
+            return _buildNoActiveHandbookLayout(
+              isDesktop: isDesktop,
+              width: width,
+              desktopMaxContentWidth: desktopMaxContentWidth,
             );
           }
 

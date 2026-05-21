@@ -1,8 +1,9 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
 import 'widgets/logout_confirm_dialog.dart';
+import 'package:apps/services/app_firestore.dart';
 
 class PendingApprovalPage extends StatefulWidget {
   const PendingApprovalPage({super.key});
@@ -31,7 +32,7 @@ class _PendingApprovalPageState extends State<PendingApprovalPage> {
     if (!context.mounted || !confirmed) return;
     await FirebaseAuth.instance.signOut();
     if (!context.mounted) return;
-    Navigator.pushNamedAndRemoveUntil(context, '/welcome', (r) => false);
+    context.go('/welcome');
   }
 
   String _valueOrDash(String? value) {
@@ -57,16 +58,25 @@ class _PendingApprovalPageState extends State<PendingApprovalPage> {
   ) async {
     if (docId.trim().isEmpty) return '-';
     try {
-      final doc = await FirebaseFirestore.instance
+      final doc = await AppFirestore.instance
           .collection(collection)
           .doc(docId)
           .get();
       final data = doc.data();
       if (data == null) return '-';
-      final rawName = data['name'];
-      if (rawName is String && rawName.trim().isNotEmpty) {
-        return rawName.trim();
-      }
+      final codeField = collection == 'colleges'
+          ? 'collegeCode'
+          : 'programCode';
+      final nameField = collection == 'colleges'
+          ? 'collegeName'
+          : 'programName';
+      final code = (data[codeField] ?? docId).toString().trim();
+      final name = (data['name'] ?? data[nameField] ?? data['title'] ?? '')
+          .toString()
+          .trim();
+      if (code.isEmpty) return name.isEmpty ? '-' : name;
+      if (name.isEmpty || name == code) return code;
+      return '$code - $name';
     } catch (_) {
       // Keep summary resilient if lookup fails.
     }
@@ -77,7 +87,7 @@ class _PendingApprovalPageState extends State<PendingApprovalPage> {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return const _PendingProfileSummary.empty();
 
-    final userDoc = await FirebaseFirestore.instance
+    final userDoc = await AppFirestore.instance
         .collection('users')
         .doc(uid)
         .get();

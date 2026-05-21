@@ -1,27 +1,57 @@
 import 'package:apps/pages/shared/handbook/hb_handbook_page.dart';
 import 'package:apps/pages/shared/notifications/app_notifications_ui.dart';
 import 'package:apps/pages/shared/profile/unified_profile_page.dart';
-import 'package:apps/pages/shared/welcome_screen_page.dart';
 import 'package:apps/pages/shared/widgets/app_branding.dart';
 import 'package:apps/pages/shared/widgets/app_theme_tokens.dart';
 import 'package:apps/pages/shared/widgets/logout_confirm_dialog.dart';
 import 'package:apps/pages/shared/widgets/responsive_layout_tokens.dart';
 import 'package:apps/pages/shared/widgets/role_shell_scaffold.dart';
+import 'package:apps/services/app_router.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import '../professor/MySubmittedReportPage.dart';
 import '../professor/violation_report_page.dart';
+import 'package:apps/services/app_firestore.dart';
 
 class GuardDashboard extends StatefulWidget {
-  const GuardDashboard({super.key});
+  final String section;
+
+  const GuardDashboard({super.key, this.section = 'home'});
+
+  static const _sectionToIndex = <String, int>{
+    'home': 0,
+    'handbook': 1,
+    'report': 2,
+    'my-reports': 3,
+    'profile': 4,
+    'notifications': 5,
+  };
+
+  static const _indexToSection = <int, String>{
+    0: 'home',
+    1: 'handbook',
+    2: 'report',
+    3: 'my-reports',
+    4: 'profile',
+    5: 'notifications',
+  };
+
+  static int indexForSection(String section) => _sectionToIndex[section] ?? 0;
+
+  static String sectionForIndex(int index) => _indexToSection[index] ?? 'home';
+
+  static String pathForSection(String section) =>
+      AppRoutes.withSection(AppRoutes.guard, section);
 
   @override
   State<GuardDashboard> createState() => _GuardDashboardState();
 }
 
 class _GuardDashboardState extends State<GuardDashboard> {
-  int _currentIndex = 0;
+  late int _currentIndex;
   int _previousIndexBeforeNotifications = 0;
   bool _showDesktopNotifications = false;
   static const List<int> _mobileNavIndexes = <int>[0, 1, 3];
@@ -39,7 +69,7 @@ class _GuardDashboardState extends State<GuardDashboard> {
     ViolationReportPage(onOpenMyReportsInShell: () => _go(3)),
     MySubmittedCasesPage(
       showCounselingTab: false,
-      onOpenViolationReport: _openViolationReportModal,
+      onOpenViolationReport: () => _go(2),
     ),
     const UnifiedProfilePage(),
     AppNotificationsContent(
@@ -61,6 +91,21 @@ class _GuardDashboardState extends State<GuardDashboard> {
     _NavItem(Icons.assignment_rounded, 'My Reports'),
   ];
 
+  @override
+  void initState() {
+    super.initState();
+    _currentIndex = GuardDashboard.indexForSection(widget.section);
+  }
+
+  @override
+  void didUpdateWidget(covariant GuardDashboard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final nextIndex = GuardDashboard.indexForSection(widget.section);
+    if (_currentIndex != nextIndex) {
+      setState(() => _currentIndex = nextIndex);
+    }
+  }
+
   String _pageTitle() {
     switch (_currentIndex) {
       case 0:
@@ -80,95 +125,14 @@ class _GuardDashboardState extends State<GuardDashboard> {
     }
   }
 
-  Future<void> _openViolationReportModal() async {
-    await showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) {
-        final size = MediaQuery.of(dialogContext).size;
-        final isDesktop = size.width >= 900;
-        final maxWidth = isDesktop ? 1180.0 : size.width - 20;
-        final maxHeight = size.height * 0.92;
-        return Dialog(
-          insetPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
-          clipBehavior: Clip.antiAlias,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          child: SizedBox(
-            width: maxWidth,
-            height: maxHeight,
-            child: Column(
-              children: [
-                Container(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 10, 10),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                  ),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Text(
-                              'Report Violation',
-                              style: TextStyle(
-                                fontWeight: FontWeight.w900,
-                                color: textDark,
-                                fontSize: 16,
-                              ),
-                            ),
-                            Text(
-                              'Search a student, complete incident details, and submit.',
-                              style: TextStyle(
-                                color: hint.withValues(alpha: 0.95),
-                                fontWeight: FontWeight.w700,
-                                fontSize: 12.5,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      IconButton(
-                        tooltip: 'Close',
-                        onPressed: () => Navigator.of(dialogContext).pop(),
-                        icon: const Icon(Icons.close_rounded, size: 20),
-                        style: IconButton.styleFrom(
-                          backgroundColor: Colors.black.withValues(alpha: 0.06),
-                          visualDensity: VisualDensity.compact,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                Expanded(
-                  child: ViolationReportPage(
-                    onOpenMyReportsInShell: () {
-                      Navigator.of(context, rootNavigator: true).pop();
-                      _go(3);
-                    },
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-
   void _go(int i) {
-    if (i == 2) {
-      _openViolationReportModal();
-      return;
+    if (i != _notificationsIndex) {
+      _previousIndexBeforeNotifications = i;
     }
-    setState(() {
-      _currentIndex = i;
-      if (i != _notificationsIndex) {
-        _previousIndexBeforeNotifications = i;
-      }
-    });
+    final section = GuardDashboard.sectionForIndex(i);
+    final target = GuardDashboard.pathForSection(section);
+    if (GoRouterState.of(context).uri.path == target) return;
+    context.go(target);
   }
 
   void _toggleDesktopNotifications() {
@@ -182,13 +146,11 @@ class _GuardDashboardState extends State<GuardDashboard> {
   }
 
   Future<void> _openNotificationsPage() async {
-    setState(() {
-      if (_currentIndex != _notificationsIndex) {
-        _previousIndexBeforeNotifications = _currentIndex;
-      }
-      _showDesktopNotifications = false;
-      _currentIndex = _notificationsIndex;
-    });
+    if (_currentIndex != _notificationsIndex) {
+      _previousIndexBeforeNotifications = _currentIndex;
+    }
+    _showDesktopNotifications = false;
+    _go(_notificationsIndex);
   }
 
   Future<void> _handleNotificationView(AppNotificationViewIntent intent) async {
@@ -207,12 +169,7 @@ class _GuardDashboardState extends State<GuardDashboard> {
     if (!mounted || !confirmed) return;
     await FirebaseAuth.instance.signOut();
     if (!mounted) return;
-
-    Navigator.pushAndRemoveUntil(
-      context,
-      MaterialPageRoute(builder: (_) => const WelcomeScreen()),
-      (route) => false,
-    );
+    context.go('/welcome');
   }
 
   String _displayName(Map<String, dynamic> data, User user) {
@@ -230,6 +187,24 @@ class _GuardDashboardState extends State<GuardDashboard> {
   String _email(Map<String, dynamic> data, User user) {
     final e = (data['email'] ?? user.email ?? '').toString().trim();
     return e.isEmpty ? '--' : e;
+  }
+
+  String _profilePhotoUrl(Map<String, dynamic> data) {
+    final direct = (data['photoUrl'] ?? '').toString().trim();
+    if (direct.isNotEmpty) return direct;
+    final profilePhoto = (data['profilePhotoUrl'] ?? '').toString().trim();
+    if (profilePhoto.isNotEmpty) return profilePhoto;
+    final studentProfile = data['studentProfile'] as Map<String, dynamic>?;
+    final nestedStudentPhoto = (studentProfile?['photoUrl'] ?? '')
+        .toString()
+        .trim();
+    if (nestedStudentPhoto.isNotEmpty) return nestedStudentPhoto;
+    final employeeProfile = data['employeeProfile'] as Map<String, dynamic>?;
+    final nestedEmployeePhoto = (employeeProfile?['photoUrl'] ?? '')
+        .toString()
+        .trim();
+    if (nestedEmployeePhoto.isNotEmpty) return nestedEmployeePhoto;
+    return '';
   }
 
   String _title(Map<String, dynamic> data) {
@@ -257,7 +232,7 @@ class _GuardDashboardState extends State<GuardDashboard> {
     }
 
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance
+      stream: AppFirestore.instance
           .collection('users')
           .doc(user.uid)
           .snapshots(),
@@ -266,6 +241,7 @@ class _GuardDashboardState extends State<GuardDashboard> {
         final accountName = _displayName(data, user);
         final accountEmail = _email(data, user);
         final accountTitle = _title(data);
+        final profilePhotoUrl = _profilePhotoUrl(data);
 
         return LayoutBuilder(
           builder: (context, constraints) {
@@ -288,6 +264,7 @@ class _GuardDashboardState extends State<GuardDashboard> {
               accountTitle: accountTitle,
               accountEmail: accountEmail,
               accountName: accountName,
+              profilePhotoUrl: profilePhotoUrl,
             );
 
             return RoleShellScaffold(
@@ -318,6 +295,7 @@ class _GuardDashboardState extends State<GuardDashboard> {
                   accountTitle: accountTitle,
                   accountEmail: accountEmail,
                   accountName: accountName,
+                  profilePhotoUrl: profilePhotoUrl,
                 ),
               ),
               sidebar: menuPanel,
@@ -419,6 +397,7 @@ class _MenuPanel extends StatelessWidget {
   final String accountTitle;
   final String accountEmail;
   final String accountName;
+  final String profilePhotoUrl;
 
   const _MenuPanel({
     required this.currentIndex,
@@ -433,7 +412,84 @@ class _MenuPanel extends StatelessWidget {
     required this.accountTitle,
     required this.accountEmail,
     required this.accountName,
+    required this.profilePhotoUrl,
   });
+
+  bool _isHttpPhotoUrl(String value) {
+    return value.startsWith('http://') || value.startsWith('https://');
+  }
+
+  Future<String> _resolvePhotoUrl(String source) async {
+    final value = source.trim();
+    if (value.isEmpty) return '';
+    if (_isHttpPhotoUrl(value)) {
+      if (value.contains('firebasestorage.googleapis.com') ||
+          value.contains('firebasestorage.app')) {
+        try {
+          return await FirebaseStorage.instance
+              .refFromURL(value)
+              .getDownloadURL();
+        } catch (_) {
+          return value;
+        }
+      }
+      return value;
+    }
+    try {
+      if (value.startsWith('gs://')) {
+        return await FirebaseStorage.instance
+            .refFromURL(value)
+            .getDownloadURL();
+      }
+      return await FirebaseStorage.instance.ref(value).getDownloadURL();
+    } catch (_) {
+      return '';
+    }
+  }
+
+  Widget _buildProfileAvatar() {
+    final source = profilePhotoUrl.trim();
+    const fallback = Icon(
+      Icons.person_outline_rounded,
+      size: 24,
+      color: Colors.white,
+    );
+    final fallbackAvatar = const CircleAvatar(
+      backgroundColor: Colors.white24,
+      child: fallback,
+    );
+
+    Widget photoAvatar(String url) {
+      return ClipOval(
+        child: Image.network(
+          url,
+          width: 40,
+          height: 40,
+          fit: BoxFit.cover,
+          webHtmlElementStrategy: WebHtmlElementStrategy.prefer,
+          errorBuilder: (_, _, _) => fallbackAvatar,
+        ),
+      );
+    }
+
+    if (source.isEmpty) return fallbackAvatar;
+    if (_isHttpPhotoUrl(source)) {
+      return FutureBuilder<String>(
+        future: _resolvePhotoUrl(source),
+        builder: (context, snapshot) {
+          final resolved = (snapshot.data ?? source).trim();
+          return resolved.isEmpty ? fallbackAvatar : photoAvatar(resolved);
+        },
+      );
+    }
+    return FutureBuilder<String>(
+      future: _resolvePhotoUrl(source),
+      builder: (context, snapshot) {
+        final resolved = (snapshot.data ?? '').trim();
+        return resolved.isEmpty ? fallbackAvatar : photoAvatar(resolved);
+      },
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -493,11 +549,7 @@ class _MenuPanel extends StatelessWidget {
                           color: Colors.white.withValues(alpha: 0.16),
                           borderRadius: BorderRadius.circular(10),
                         ),
-                        child: const Icon(
-                          Icons.person_outline_rounded,
-                          size: 24,
-                          color: Colors.white,
-                        ),
+                        child: _buildProfileAvatar(),
                       ),
                       const SizedBox(width: 10),
                       Expanded(

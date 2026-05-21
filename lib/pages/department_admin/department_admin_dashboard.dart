@@ -1,27 +1,76 @@
 import 'package:apps/pages/shared/handbook/hb_handbook_page.dart';
 import 'package:apps/pages/shared/notifications/app_notifications_ui.dart';
 import 'package:apps/pages/shared/profile/unified_profile_page.dart';
-import 'package:apps/pages/shared/welcome_screen_page.dart';
 import 'package:apps/pages/shared/widgets/app_theme_tokens.dart';
 import 'package:apps/pages/shared/widgets/app_branding.dart';
 import 'package:apps/pages/shared/widgets/logout_confirm_dialog.dart';
 import 'package:apps/pages/shared/widgets/responsive_layout_tokens.dart';
 import 'package:apps/pages/shared/widgets/role_shell_scaffold.dart';
 import 'package:apps/pages/shared/widgets/unsaved_changes_guard.dart';
+import 'package:apps/services/app_router.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
-import '../osa_admin/user_management_page.dart';
+import '../super_admin/user_management_page.dart';
 import '../professor/MySubmittedReportPage.dart';
 import '../professor/professor_counseling_page.dart';
 import '../professor/violation_report_page.dart';
 import 'department_admin_home_page.dart';
 import 'department_violation_alerts_page.dart';
 import 'professor_management_page.dart';
+import 'package:apps/services/app_firestore.dart';
 
 class DepartmentAdminDashboard extends StatefulWidget {
-  const DepartmentAdminDashboard({super.key});
+  final String section;
+  final String? initialSelectedUserId;
+  final String? initialSelectedCaseId;
+
+  const DepartmentAdminDashboard({
+    super.key,
+    this.section = 'dashboard',
+    this.initialSelectedUserId,
+    this.initialSelectedCaseId,
+  });
+
+  static const _sectionToIndex = <String, int>{
+    'dashboard': 0,
+    'handbook': 1,
+    'alerts': 2,
+    'report': 3,
+    'counseling': 4,
+    'my-reports': 5,
+    'students': 6,
+    'professors': 7,
+    'profile': 8,
+    'notifications': 9,
+  };
+
+  static const _indexToSection = <int, String>{
+    0: 'dashboard',
+    1: 'handbook',
+    2: 'alerts',
+    3: 'report',
+    4: 'counseling',
+    5: 'my-reports',
+    6: 'students',
+    7: 'professors',
+    8: 'profile',
+    9: 'notifications',
+  };
+
+  static int indexForSection(String section) => _sectionToIndex[section] ?? 0;
+
+  static String sectionForIndex(int index) =>
+      _indexToSection[index] ?? 'dashboard';
+
+  static String pathForSection(String section, {Map<String, String>? query}) {
+    final base = AppRoutes.withSection(AppRoutes.departmentAdmin, section);
+    if (query == null || query.isEmpty) return base;
+    return Uri(path: base, queryParameters: query).toString();
+  }
 
   @override
   State<DepartmentAdminDashboard> createState() =>
@@ -29,7 +78,7 @@ class DepartmentAdminDashboard extends StatefulWidget {
 }
 
 class _DepartmentAdminDashboardState extends State<DepartmentAdminDashboard> {
-  int _currentIndex = 0;
+  late int _currentIndex;
   int _previousIndexBeforeNotifications = 0;
   bool _settingsOpen = false;
   bool _showDesktopNotifications = false;
@@ -44,6 +93,37 @@ class _DepartmentAdminDashboardState extends State<DepartmentAdminDashboard> {
   static const hint = AppColors.hint;
   static const textDark = AppColors.textDark;
   static const surface = AppColors.surface;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentIndex = DepartmentAdminDashboard.indexForSection(widget.section);
+    _preselectedStudentUid = (widget.initialSelectedUserId ?? '').trim().isEmpty
+        ? null
+        : widget.initialSelectedUserId!.trim();
+    _preselectedViolationCaseId =
+        (widget.initialSelectedCaseId ?? '').trim().isEmpty
+        ? null
+        : widget.initialSelectedCaseId!.trim();
+  }
+
+  @override
+  void didUpdateWidget(covariant DepartmentAdminDashboard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final nextIndex = DepartmentAdminDashboard.indexForSection(widget.section);
+    final nextStudentUid = (widget.initialSelectedUserId ?? '').trim();
+    final nextCaseId = (widget.initialSelectedCaseId ?? '').trim();
+    if (_currentIndex != nextIndex ||
+        (_preselectedStudentUid ?? '') != nextStudentUid ||
+        (_preselectedViolationCaseId ?? '') != nextCaseId) {
+      setState(() {
+        _currentIndex = nextIndex;
+        _preselectedStudentUid = nextStudentUid.isEmpty ? null : nextStudentUid;
+        _preselectedViolationCaseId = nextCaseId.isEmpty ? null : nextCaseId;
+        _settingsOpen = nextIndex == 6 || nextIndex == 7;
+      });
+    }
+  }
 
   List<Widget> get _pages => [
     DepartmentAdminHomePage(
@@ -64,8 +144,8 @@ class _DepartmentAdminDashboardState extends State<DepartmentAdminDashboard> {
     ),
     ProfessorCounselingPage(unsavedChangesController: _counselingUnsaved),
     MySubmittedCasesPage(
-      onOpenViolationReport: _openViolationReportModal,
-      onOpenCounselingReferral: _openCounselingReferralModal,
+      onOpenViolationReport: () => _go(3),
+      onOpenCounselingReferral: () => _go(4),
     ),
     UserManagementPage(
       studentsOnlyScope: true,
@@ -131,11 +211,7 @@ class _DepartmentAdminDashboardState extends State<DepartmentAdminDashboard> {
     if (!mounted || !confirmed) return;
     await FirebaseAuth.instance.signOut();
     if (!mounted) return;
-    Navigator.pushAndRemoveUntil(
-      context,
-      MaterialPageRoute(builder: (_) => const WelcomeScreen()),
-      (route) => false,
-    );
+    context.go('/welcome');
   }
 
   String _displayName(Map<String, dynamic> data, User user) {
@@ -155,11 +231,48 @@ class _DepartmentAdminDashboardState extends State<DepartmentAdminDashboard> {
     return e.isEmpty ? '--' : e;
   }
 
-  String _subtitle(Map<String, dynamic> data) {
-    final dept = (data['employeeProfile']?['department'] ?? '')
+  String _profilePhotoUrl(Map<String, dynamic> data) {
+    final direct = (data['photoUrl'] ?? '').toString().trim();
+    if (direct.isNotEmpty) return direct;
+    final profilePhoto = (data['profilePhotoUrl'] ?? '').toString().trim();
+    if (profilePhoto.isNotEmpty) return profilePhoto;
+    final studentProfile = data['studentProfile'] as Map<String, dynamic>?;
+    final nestedStudentPhoto = (studentProfile?['photoUrl'] ?? '')
         .toString()
         .trim();
-    return dept.isEmpty ? 'Department Admin' : 'Department: $dept';
+    if (nestedStudentPhoto.isNotEmpty) return nestedStudentPhoto;
+    final employeeProfile = data['employeeProfile'] as Map<String, dynamic>?;
+    final nestedEmployeePhoto = (employeeProfile?['photoUrl'] ?? '')
+        .toString()
+        .trim();
+    if (nestedEmployeePhoto.isNotEmpty) return nestedEmployeePhoto;
+    return '';
+  }
+
+  String _departmentLabelFromDocs(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> colleges,
+    String collegeId,
+  ) {
+    final id = collegeId.trim();
+    if (id.isEmpty) return '-';
+    for (final doc in colleges) {
+      if (doc.id != id) continue;
+      final data = doc.data();
+      final code = (data['collegeCode'] ?? '').toString().trim();
+      final name = (data['name'] ?? data['collegeName'] ?? data['title'] ?? '')
+          .toString()
+          .trim();
+      if (code.isEmpty && name.isEmpty) return '--';
+      if (name.isEmpty || name == code) return code.isEmpty ? name : code;
+      return '${code.isEmpty ? name : code} - $name';
+    }
+    return '--';
+  }
+
+  String _subtitle(String departmentLabel) {
+    return departmentLabel.trim().isEmpty
+        ? 'Department Admin'
+        : 'Department: $departmentLabel';
   }
 
   UnsavedChangesController? _controllerForIndex(int index) {
@@ -194,136 +307,16 @@ class _DepartmentAdminDashboardState extends State<DepartmentAdminDashboard> {
   }
 
   Future<void> _goAsync(int i) async {
-    if (i == 3) {
-      await _openViolationReportModal();
-      return;
-    }
-    if (i == 4) {
-      await _openCounselingReferralModal();
-      return;
-    }
     if (i == _currentIndex) return;
     final canLeave = await _confirmLeaveCurrentPage();
     if (!mounted || !canLeave) return;
-    setState(() {
-      _currentIndex = i;
-      if (i != 6) _preselectedStudentUid = null;
-      if (i != 2) _preselectedViolationCaseId = null;
-      if (i != _notificationsIndex) {
-        _previousIndexBeforeNotifications = i;
-      }
-    });
-  }
-
-  Future<void> _openFormModal({
-    required String title,
-    required Widget child,
-    String? subtitle,
-  }) async {
-    await showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) {
-        final isFlatHeaderModal =
-            title == 'Report Violation' || title == 'Counselling Referral';
-        final size = MediaQuery.of(dialogContext).size;
-        final isDesktop = size.width >= 900;
-        final maxWidth = isDesktop ? 1180.0 : size.width - 20;
-        final maxHeight = size.height * 0.92;
-        return Dialog(
-          insetPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
-          clipBehavior: Clip.antiAlias,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          child: SizedBox(
-            width: maxWidth,
-            height: maxHeight,
-            child: Column(
-              children: [
-                Container(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 10, 10),
-                  decoration: BoxDecoration(
-                    color: isFlatHeaderModal ? Colors.white : surface,
-                    border: isFlatHeaderModal
-                        ? null
-                        : Border(
-                            bottom: BorderSide(
-                              color: Colors.black.withValues(alpha: 0.08),
-                            ),
-                          ),
-                  ),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(
-                              title,
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w900,
-                                color: textDark,
-                                fontSize: 16,
-                              ),
-                            ),
-                            if ((subtitle ?? '').trim().isNotEmpty) ...[
-                              const SizedBox(height: 4),
-                              Text(
-                                subtitle!.trim(),
-                                style: TextStyle(
-                                  color: hint.withValues(alpha: 0.95),
-                                  fontWeight: FontWeight.w700,
-                                  fontSize: 12.5,
-                                ),
-                              ),
-                            ],
-                          ],
-                        ),
-                      ),
-                      IconButton(
-                        tooltip: 'Close',
-                        onPressed: () => Navigator.of(dialogContext).pop(),
-                        icon: const Icon(Icons.close_rounded, size: 20),
-                        style: IconButton.styleFrom(
-                          backgroundColor: Colors.black.withValues(alpha: 0.06),
-                          visualDensity: VisualDensity.compact,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                Expanded(child: child),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  Future<void> _openViolationReportModal() async {
-    final canLeave = await _confirmLeaveCurrentPage();
-    if (!mounted || !canLeave) return;
-    await _openFormModal(
-      title: 'Report Violation',
-      subtitle: 'Search a student, complete incident details, and submit.',
-      child: ViolationReportPage(
-        onOpenMyReportsInShell: () {
-          Navigator.of(context, rootNavigator: true).pop();
-          _go(5);
-        },
-      ),
-    );
-  }
-
-  Future<void> _openCounselingReferralModal() async {
-    final canLeave = await _confirmLeaveCurrentPage();
-    if (!mounted || !canLeave) return;
-    await _openFormModal(
-      title: 'Counselling Referral',
-      child: const ProfessorCounselingPage(),
-    );
+    if (i != _notificationsIndex) {
+      _previousIndexBeforeNotifications = i;
+    }
+    final section = DepartmentAdminDashboard.sectionForIndex(i);
+    final target = DepartmentAdminDashboard.pathForSection(section);
+    if (GoRouterState.of(context).uri.toString() == target) return;
+    context.go(target);
   }
 
   void _goSettings(int pageIndex) {
@@ -333,12 +326,9 @@ class _DepartmentAdminDashboardState extends State<DepartmentAdminDashboard> {
   Future<void> _goSettingsAsync(int pageIndex) async {
     final canLeave = await _confirmLeaveCurrentPage();
     if (!mounted || !canLeave) return;
-    setState(() {
-      _settingsOpen = true;
-      _currentIndex = pageIndex;
-      if (pageIndex != 6) _preselectedStudentUid = null;
-      if (pageIndex != 2) _preselectedViolationCaseId = null;
-    });
+    final section = DepartmentAdminDashboard.sectionForIndex(pageIndex);
+    final target = DepartmentAdminDashboard.pathForSection(section);
+    context.go(target);
   }
 
   void _openStudentManagement({String? preselectUserId}) {
@@ -348,13 +338,12 @@ class _DepartmentAdminDashboardState extends State<DepartmentAdminDashboard> {
   Future<void> _openStudentManagementAsync({String? preselectUserId}) async {
     final canLeave = await _confirmLeaveCurrentPage();
     if (!mounted || !canLeave) return;
-    setState(() {
-      _settingsOpen = true;
-      _currentIndex = 6;
-      final uid = (preselectUserId ?? '').trim();
-      _preselectedStudentUid = uid.isEmpty ? null : uid;
-      _preselectedViolationCaseId = null;
-    });
+    final uid = (preselectUserId ?? '').trim();
+    final target = DepartmentAdminDashboard.pathForSection(
+      'students',
+      query: uid.isEmpty ? null : <String, String>{'studentUid': uid},
+    );
+    context.go(target);
   }
 
   void _openViolationAlerts({String? preselectCaseId}) {
@@ -364,13 +353,12 @@ class _DepartmentAdminDashboardState extends State<DepartmentAdminDashboard> {
   Future<void> _openViolationAlertsAsync({String? preselectCaseId}) async {
     final canLeave = await _confirmLeaveCurrentPage();
     if (!mounted || !canLeave) return;
-    setState(() {
-      _currentIndex = 2;
-      final caseId = (preselectCaseId ?? '').trim();
-      _preselectedViolationCaseId = caseId.isEmpty ? null : caseId;
-      _preselectedStudentUid = null;
-      _settingsOpen = false;
-    });
+    final caseId = (preselectCaseId ?? '').trim();
+    final target = DepartmentAdminDashboard.pathForSection(
+      'alerts',
+      query: caseId.isEmpty ? null : <String, String>{'caseId': caseId},
+    );
+    context.go(target);
   }
 
   Future<void> _handleNotificationView(AppNotificationViewIntent intent) async {
@@ -400,13 +388,11 @@ class _DepartmentAdminDashboardState extends State<DepartmentAdminDashboard> {
   Future<void> _openNotificationsPage() async {
     final canLeave = await _confirmLeaveCurrentPage();
     if (!mounted || !canLeave) return;
-    setState(() {
-      if (_currentIndex != _notificationsIndex) {
-        _previousIndexBeforeNotifications = _currentIndex;
-      }
-      _showDesktopNotifications = false;
-      _currentIndex = _notificationsIndex;
-    });
+    if (_currentIndex != _notificationsIndex) {
+      _previousIndexBeforeNotifications = _currentIndex;
+    }
+    _showDesktopNotifications = false;
+    _go(_notificationsIndex);
   }
 
   @override
@@ -431,7 +417,7 @@ class _DepartmentAdminDashboardState extends State<DepartmentAdminDashboard> {
     }
 
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance
+      stream: AppFirestore.instance
           .collection('users')
           .doc(user.uid)
           .snapshots(),
@@ -439,126 +425,145 @@ class _DepartmentAdminDashboardState extends State<DepartmentAdminDashboard> {
         final data = snap.data?.data() ?? <String, dynamic>{};
         final accountName = _displayName(data, user);
         final accountEmail = _email(data, user);
-        final accountSubtitle = _subtitle(data);
+        final profilePhotoUrl = _profilePhotoUrl(data);
 
-        return LayoutBuilder(
-          builder: (context, constraints) {
-            final shell = ResponsiveLayoutTokens.resolveShellLayout(
-              width: constraints.maxWidth,
-              height: constraints.maxHeight,
-              allowCompactDesktopDrawer: true,
+        final dept = (data['employeeProfile']?['department'] ?? '')
+            .toString()
+            .trim();
+
+        return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+          stream: AppFirestore.instance.collection('colleges').snapshots(),
+          builder: (context, collegeSnap) {
+            final departmentLabel = _departmentLabelFromDocs(
+              collegeSnap.data?.docs ?? const [],
+              dept,
             );
+            final accountSubtitle = _subtitle(departmentLabel);
 
-            final menuPanel = _DeptMenuPanel(
-              currentIndex: _currentIndex,
-              navItems: _navItems,
-              primary: primary,
-              hint: hint,
-              textDark: textDark,
-              surface: surface,
-              onSelect: _go,
-              onProfile: () => _go(8),
-              settingsOpen: _settingsOpen,
-              onToggleSettings: () =>
-                  setState(() => _settingsOpen = !_settingsOpen),
-              onSelectSettingsItem: _goSettings,
-              onLogout: _logout,
-              accountName: accountName,
-              accountEmail: accountEmail,
-              accountSubtitle: accountSubtitle,
-            );
+            return LayoutBuilder(
+              builder: (context, constraints) {
+                final shell = ResponsiveLayoutTokens.resolveShellLayout(
+                  width: constraints.maxWidth,
+                  height: constraints.maxHeight,
+                  allowCompactDesktopDrawer: true,
+                );
 
-            return RoleShellScaffold(
-              backgroundColor: bg,
-              title: _pageTitle(),
-              usesDrawerSidebar: shell.usesDrawerSidebar,
-              showPermanentSidebar: shell.showPermanentSidebar,
-              drawer: Drawer(
-                child: _DeptMenuPanel(
+                final menuPanel = _DeptMenuPanel(
                   currentIndex: _currentIndex,
                   navItems: _navItems,
                   primary: primary,
                   hint: hint,
                   textDark: textDark,
                   surface: surface,
-                  onSelect: (i) {
-                    Navigator.of(context).maybePop();
-                    _go(i);
-                  },
-                  onProfile: () {
-                    Navigator.of(context).maybePop();
-                    _go(8);
-                  },
+                  onSelect: _go,
+                  onProfile: () => _go(8),
                   settingsOpen: _settingsOpen,
-                  onToggleSettings: () {
-                    setState(() => _settingsOpen = !_settingsOpen);
-                  },
-                  onSelectSettingsItem: (pageIndex) {
-                    Navigator.of(context).maybePop();
-                    _goSettings(pageIndex);
-                  },
-                  onLogout: () {
-                    Navigator.of(context).maybePop();
-                    _logout();
-                  },
+                  onToggleSettings: () =>
+                      setState(() => _settingsOpen = !_settingsOpen),
+                  onSelectSettingsItem: _goSettings,
+                  onLogout: _logout,
                   accountName: accountName,
                   accountEmail: accountEmail,
                   accountSubtitle: accountSubtitle,
-                ),
-              ),
-              sidebar: menuPanel,
-              content: IndexedStack(
-                index: _currentIndex,
-                children: List<Widget>.generate(_pages.length, (index) {
-                  return HeroMode(
-                    enabled: index == _currentIndex,
-                    child: _pages[index],
-                  );
-                }),
-              ),
-              onNotificationsTap: () {
-                if (shell.isDesktop) {
-                  _toggleDesktopNotifications();
-                } else {
-                  if (_currentIndex == _notificationsIndex) {
+                  profilePhotoUrl: profilePhotoUrl,
+                );
+
+                return RoleShellScaffold(
+                  backgroundColor: bg,
+                  title: _pageTitle(),
+                  usesDrawerSidebar: shell.usesDrawerSidebar,
+                  showPermanentSidebar: shell.showPermanentSidebar,
+                  drawer: Drawer(
+                    child: _DeptMenuPanel(
+                      currentIndex: _currentIndex,
+                      navItems: _navItems,
+                      primary: primary,
+                      hint: hint,
+                      textDark: textDark,
+                      surface: surface,
+                      onSelect: (i) {
+                        Navigator.of(context).maybePop();
+                        _go(i);
+                      },
+                      onProfile: () {
+                        Navigator.of(context).maybePop();
+                        _go(8);
+                      },
+                      settingsOpen: _settingsOpen,
+                      onToggleSettings: () {
+                        setState(() => _settingsOpen = !_settingsOpen);
+                      },
+                      onSelectSettingsItem: (pageIndex) {
+                        Navigator.of(context).maybePop();
+                        _goSettings(pageIndex);
+                      },
+                      onLogout: () {
+                        Navigator.of(context).maybePop();
+                        _logout();
+                      },
+                      accountName: accountName,
+                      accountEmail: accountEmail,
+                      accountSubtitle: accountSubtitle,
+                      profilePhotoUrl: profilePhotoUrl,
+                    ),
+                  ),
+                  sidebar: menuPanel,
+                  content: IndexedStack(
+                    index: _currentIndex,
+                    children: List<Widget>.generate(_pages.length, (index) {
+                      return HeroMode(
+                        enabled: index == _currentIndex,
+                        child: _pages[index],
+                      );
+                    }),
+                  ),
+                  onNotificationsTap: () {
+                    if (shell.isDesktop) {
+                      _toggleDesktopNotifications();
+                    } else {
+                      if (_currentIndex == _notificationsIndex) {
+                        final backIndex =
+                            _previousIndexBeforeNotifications ==
+                                _notificationsIndex
+                            ? 0
+                            : _previousIndexBeforeNotifications;
+                        _go(backIndex);
+                      } else {
+                        _openNotificationsPage();
+                      }
+                    }
+                  },
+                  notificationsUid: user.uid,
+                  suppressIncomingNotificationToasts:
+                      _showDesktopNotifications ||
+                      _currentIndex == _notificationsIndex,
+                  hideNotificationsBadge:
+                      _showDesktopNotifications ||
+                      _currentIndex == _notificationsIndex,
+                  enableNotificationSound: false,
+                  showDesktopOverlay:
+                      shell.isDesktop && _showDesktopNotifications,
+                  onDismissDesktopOverlay: _closeDesktopNotifications,
+                  desktopOverlay: DesktopNotificationsPanel(
+                    uid: user.uid,
+                    onClose: _closeDesktopNotifications,
+                    onSeeAll: _openNotificationsPage,
+                    onViewNotification: (intent) async {
+                      _closeDesktopNotifications();
+                      await _handleNotificationView(intent);
+                    },
+                  ),
+                  showBackButton:
+                      shell.usesDrawerSidebar &&
+                      _currentIndex == _notificationsIndex,
+                  onBackPressed: () {
                     final backIndex =
                         _previousIndexBeforeNotifications == _notificationsIndex
                         ? 0
                         : _previousIndexBeforeNotifications;
                     _go(backIndex);
-                  } else {
-                    _openNotificationsPage();
-                  }
-                }
-              },
-              notificationsUid: user.uid,
-              suppressIncomingNotificationToasts:
-                  _showDesktopNotifications ||
-                  _currentIndex == _notificationsIndex,
-              hideNotificationsBadge:
-                  _showDesktopNotifications ||
-                  _currentIndex == _notificationsIndex,
-              enableNotificationSound: false,
-              showDesktopOverlay: shell.isDesktop && _showDesktopNotifications,
-              onDismissDesktopOverlay: _closeDesktopNotifications,
-              desktopOverlay: DesktopNotificationsPanel(
-                uid: user.uid,
-                onClose: _closeDesktopNotifications,
-                onSeeAll: _openNotificationsPage,
-                onViewNotification: (intent) async {
-                  _closeDesktopNotifications();
-                  await _handleNotificationView(intent);
-                },
-              ),
-              showBackButton:
-                  shell.usesDrawerSidebar &&
-                  _currentIndex == _notificationsIndex,
-              onBackPressed: () {
-                final backIndex =
-                    _previousIndexBeforeNotifications == _notificationsIndex
-                    ? 0
-                    : _previousIndexBeforeNotifications;
-                _go(backIndex);
+                  },
+                );
               },
             );
           },
@@ -593,6 +598,7 @@ class _DeptMenuPanel extends StatelessWidget {
   final String accountName;
   final String accountEmail;
   final String accountSubtitle;
+  final String profilePhotoUrl;
 
   const _DeptMenuPanel({
     required this.currentIndex,
@@ -610,7 +616,84 @@ class _DeptMenuPanel extends StatelessWidget {
     required this.accountName,
     required this.accountEmail,
     required this.accountSubtitle,
+    required this.profilePhotoUrl,
   });
+
+  bool _isHttpPhotoUrl(String value) {
+    return value.startsWith('http://') || value.startsWith('https://');
+  }
+
+  Future<String> _resolvePhotoUrl(String source) async {
+    final value = source.trim();
+    if (value.isEmpty) return '';
+    if (_isHttpPhotoUrl(value)) {
+      if (value.contains('firebasestorage.googleapis.com') ||
+          value.contains('firebasestorage.app')) {
+        try {
+          return await FirebaseStorage.instance
+              .refFromURL(value)
+              .getDownloadURL();
+        } catch (_) {
+          return value;
+        }
+      }
+      return value;
+    }
+    try {
+      if (value.startsWith('gs://')) {
+        return await FirebaseStorage.instance
+            .refFromURL(value)
+            .getDownloadURL();
+      }
+      return await FirebaseStorage.instance.ref(value).getDownloadURL();
+    } catch (_) {
+      return '';
+    }
+  }
+
+  Widget _buildProfileAvatar() {
+    final source = profilePhotoUrl.trim();
+    const fallback = Icon(
+      Icons.person_outline_rounded,
+      size: 24,
+      color: Colors.white,
+    );
+    final fallbackAvatar = const CircleAvatar(
+      backgroundColor: Colors.white24,
+      child: fallback,
+    );
+
+    Widget photoAvatar(String url) {
+      return ClipOval(
+        child: Image.network(
+          url,
+          width: 40,
+          height: 40,
+          fit: BoxFit.cover,
+          webHtmlElementStrategy: WebHtmlElementStrategy.prefer,
+          errorBuilder: (_, _, _) => fallbackAvatar,
+        ),
+      );
+    }
+
+    if (source.isEmpty) return fallbackAvatar;
+    if (_isHttpPhotoUrl(source)) {
+      return FutureBuilder<String>(
+        future: _resolvePhotoUrl(source),
+        builder: (context, snapshot) {
+          final resolved = (snapshot.data ?? source).trim();
+          return resolved.isEmpty ? fallbackAvatar : photoAvatar(resolved);
+        },
+      );
+    }
+    return FutureBuilder<String>(
+      future: _resolvePhotoUrl(source),
+      builder: (context, snapshot) {
+        final resolved = (snapshot.data ?? '').trim();
+        return resolved.isEmpty ? fallbackAvatar : photoAvatar(resolved);
+      },
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -672,11 +755,7 @@ class _DeptMenuPanel extends StatelessWidget {
                           color: Colors.white.withValues(alpha: 0.16),
                           borderRadius: BorderRadius.circular(10),
                         ),
-                        child: const Icon(
-                          Icons.person_outline_rounded,
-                          size: 24,
-                          color: Colors.white,
-                        ),
+                        child: _buildProfileAvatar(),
                       ),
                       const SizedBox(width: 10),
                       Expanded(

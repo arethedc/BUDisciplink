@@ -317,19 +317,36 @@ class _CompactStatusIndicator extends StatelessWidget {
 
 class CollegesProgramsPane extends StatelessWidget {
   final String searchQuery;
+  final Future<void> Function()? onSeedRequested;
+  final bool isSeedingAcademic;
 
-  const CollegesProgramsPane({super.key, this.searchQuery = ''});
+  const CollegesProgramsPane({
+    super.key,
+    this.searchQuery = '',
+    this.onSeedRequested,
+    this.isSeedingAcademic = false,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return _CollegesProgramsPane(searchQuery: searchQuery);
+    return _CollegesProgramsPane(
+      searchQuery: searchQuery,
+      onSeedRequested: onSeedRequested,
+      isSeedingAcademic: isSeedingAcademic,
+    );
   }
 }
 
 class _CollegesProgramsPane extends StatefulWidget {
   final String searchQuery;
+  final Future<void> Function()? onSeedRequested;
+  final bool isSeedingAcademic;
 
-  const _CollegesProgramsPane({required this.searchQuery});
+  const _CollegesProgramsPane({
+    required this.searchQuery,
+    this.onSeedRequested,
+    required this.isSeedingAcademic,
+  });
 
   @override
   State<_CollegesProgramsPane> createState() => _CollegesProgramsPaneState();
@@ -383,7 +400,7 @@ class _CollegesProgramsPaneState extends State<_CollegesProgramsPane> {
       builder: (_) => const _AddCollegeDialog(),
     );
     if (created == true) {
-      _showPaneSnack('College added.');
+      _showPaneSnack('College rows saved.');
     }
   }
 
@@ -409,14 +426,164 @@ class _CollegesProgramsPaneState extends State<_CollegesProgramsPane> {
     }
   }
 
-  Future<void> _openAddProgramDialog({required String collegeId}) async {
+  Future<void> _openAddProgramDialog({
+    required String collegeId,
+    required String collegeLabel,
+  }) async {
     final created = await showDialog<bool>(
       context: context,
-      builder: (_) => _AddProgramDialog(collegeId: collegeId),
+      builder: (_) =>
+          _AddProgramDialog(collegeId: collegeId, collegeLabel: collegeLabel),
     );
     if (created == true) {
-      _showPaneSnack('Program added.');
+      _showPaneSnack('Program rows saved.');
     }
+  }
+
+  Widget _buildEmptyCollegesLevel() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildTopHeader(
+          title: 'Colleges & Programs',
+          subtitle: 'Set up the academic structure students will belong to.',
+        ),
+        Expanded(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 720),
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.fromLTRB(28, 28, 28, 26),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(24),
+                    border: Border.all(
+                      color: Colors.black.withValues(alpha: 0.08),
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.04),
+                        blurRadius: 24,
+                        offset: const Offset(0, 12),
+                      ),
+                    ],
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text(
+                        'Start your institution structure',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: _text,
+                          fontWeight: FontWeight.w900,
+                          fontSize: 22,
+                          letterSpacing: -0.2,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      const Text(
+                        'Add your first college manually or load starter colleges and programs to speed up initial setup.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: _hint,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 13.5,
+                          height: 1.45,
+                        ),
+                      ),
+                      const SizedBox(height: 22),
+                      LayoutBuilder(
+                        builder: (context, constraints) {
+                          final stacked = constraints.maxWidth < 520;
+                          final addButton = FilledButton.icon(
+                            onPressed: _openAddCollegeDialog,
+                            style: FilledButton.styleFrom(
+                              backgroundColor: _primary,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 22,
+                                vertical: 15,
+                              ),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                            ),
+                            icon: const Icon(Icons.add_rounded, size: 18),
+                            label: const Text(
+                              'Add College',
+                              style: TextStyle(fontWeight: FontWeight.w900),
+                            ),
+                          );
+                          final seedButton = OutlinedButton.icon(
+                            onPressed: widget.isSeedingAcademic
+                                ? null
+                                : widget.onSeedRequested,
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: _primary,
+                              side: BorderSide(
+                                color: _primary.withValues(alpha: 0.35),
+                              ),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 18,
+                                vertical: 15,
+                              ),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                            ),
+                            icon: widget.isSeedingAcademic
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: _primary,
+                                    ),
+                                  )
+                                : const Icon(Icons.download_rounded, size: 18),
+                            label: Text(
+                              widget.isSeedingAcademic
+                                  ? 'Seeding...'
+                                  : 'Seed Colleges & Programs',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                          );
+
+                          if (stacked) {
+                            return Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                addButton,
+                                const SizedBox(height: 12),
+                                seedButton,
+                              ],
+                            );
+                          }
+
+                          return Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Flexible(child: addButton),
+                              const SizedBox(width: 12),
+                              Flexible(child: seedButton),
+                            ],
+                          );
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
   }
 
   @override
@@ -496,16 +663,7 @@ class _CollegesProgramsPaneState extends State<_CollegesProgramsPane> {
                         child: SizedBox(
                           width: double.infinity,
                           child: OsaPanelCard(
-                            child: const Padding(
-                              padding: EdgeInsets.all(24),
-                              child: Text(
-                                'No colleges/programs found yet.',
-                                style: TextStyle(
-                                  color: _hint,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                            ),
+                            child: _buildEmptyCollegesLevel(),
                           ),
                         ),
                       ),
@@ -561,7 +719,7 @@ class _CollegesProgramsPaneState extends State<_CollegesProgramsPane> {
 
   Widget _buildTopHeader({
     required String title,
-    required String subtitle,
+    String? subtitle,
     Widget? action,
   }) {
     return Container(
@@ -585,15 +743,17 @@ class _CollegesProgramsPaneState extends State<_CollegesProgramsPane> {
                         fontSize: 19,
                       ),
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      subtitle,
-                      style: const TextStyle(
-                        color: _hint,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 12.5,
+                    if (subtitle != null && subtitle.trim().isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        subtitle,
+                        style: const TextStyle(
+                          color: _hint,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 12.5,
+                        ),
                       ),
-                    ),
+                    ],
                   ],
                 ),
                 if (action != null) ...[const SizedBox(height: 10), action],
@@ -615,15 +775,17 @@ class _CollegesProgramsPaneState extends State<_CollegesProgramsPane> {
                         fontSize: 19,
                       ),
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      subtitle,
-                      style: const TextStyle(
-                        color: _hint,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 12.5,
+                    if (subtitle != null && subtitle.trim().isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        subtitle,
+                        style: const TextStyle(
+                          color: _hint,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 12.5,
+                        ),
                       ),
-                    ),
+                    ],
                   ],
                 ),
               ),
@@ -903,8 +1065,10 @@ class _CollegesProgramsPaneState extends State<_CollegesProgramsPane> {
             _selectedCollegeId = null;
           }),
           action: _buildPanelHeaderActionButton(
-            onPressed: () =>
-                _openAddProgramDialog(collegeId: selectedCollegeId),
+            onPressed: () => _openAddProgramDialog(
+              collegeId: selectedCollegeId,
+              collegeLabel: collegeCode,
+            ),
             icon: Icons.add_rounded,
             label: 'Add Program',
           ),
@@ -968,17 +1132,135 @@ class _AddCollegeDialog extends StatefulWidget {
   State<_AddCollegeDialog> createState() => _AddCollegeDialogState();
 }
 
+class _CodeNameRowControllers {
+  final TextEditingController code;
+  final TextEditingController name;
+
+  _CodeNameRowControllers()
+    : code = TextEditingController(),
+      name = TextEditingController();
+
+  void dispose() {
+    code.dispose();
+    name.dispose();
+  }
+}
+
 class _AddCollegeDialogState extends State<_AddCollegeDialog> {
   final _institutionSvc = InstitutionSetupService();
-  final _codeCtrl = TextEditingController();
-  final _nameCtrl = TextEditingController();
+  final List<_CodeNameRowControllers> _rows = [_CodeNameRowControllers()];
   bool _saving = false;
 
   @override
   void dispose() {
-    _codeCtrl.dispose();
-    _nameCtrl.dispose();
+    for (final row in _rows) {
+      row.dispose();
+    }
     super.dispose();
+  }
+
+  void _addRow() {
+    setState(() => _rows.add(_CodeNameRowControllers()));
+  }
+
+  void _removeRow(int index) {
+    if (_rows.length == 1) return;
+    final row = _rows.removeAt(index);
+    row.dispose();
+    setState(() {});
+  }
+
+  List<({String code, String name})> _validRows() {
+    return _rows
+        .map(
+          (row) => (
+            code: row.code.text.trim().toUpperCase(),
+            name: row.name.text.trim(),
+          ),
+        )
+        .where((row) => row.code.isNotEmpty && row.name.isNotEmpty)
+        .toList(growable: false);
+  }
+
+  bool _hasDuplicateCodes(List<({String code, String name})> rows) {
+    final seen = <String>{};
+    for (final row in rows) {
+      if (!seen.add(row.code)) return true;
+    }
+    return false;
+  }
+
+  Widget _buildRows() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (var i = 0; i < _rows.length; i++) ...[
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                flex: 2,
+                child: TextField(
+                  controller: _rows[i].code,
+                  enabled: !_saving,
+                  textCapitalization: TextCapitalization.characters,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w700,
+                    color: _text,
+                  ),
+                  decoration: _modalDecor(
+                    label: 'College Code ${i + 1}',
+                    icon: Icons.account_balance_outlined,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                flex: 5,
+                child: TextField(
+                  controller: _rows[i].name,
+                  enabled: !_saving,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w700,
+                    color: _text,
+                  ),
+                  decoration: _modalDecor(
+                    label: 'College Name ${i + 1}',
+                    icon: Icons.school_outlined,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              IconButton(
+                tooltip: 'Remove row',
+                onPressed: _saving || _rows.length == 1
+                    ? null
+                    : () => _removeRow(i),
+                icon: const Icon(Icons.close_rounded),
+                color: _hint,
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+        ],
+        OutlinedButton.icon(
+          onPressed: _saving ? null : _addRow,
+          style: OutlinedButton.styleFrom(
+            foregroundColor: _primary,
+            side: BorderSide(color: _primary.withValues(alpha: 0.35)),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+            ),
+          ),
+          icon: const Icon(Icons.add_rounded),
+          label: const Text(
+            'Add Row',
+            style: TextStyle(fontWeight: FontWeight.w900),
+          ),
+        ),
+      ],
+    );
   }
 
   @override
@@ -991,37 +1273,13 @@ class _AddCollegeDialogState extends State<_AddCollegeDialog> {
         style: TextStyle(fontWeight: FontWeight.w900, color: _primary),
       ),
       content: SizedBox(
-        width: 500,
+        width: 720,
         child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              TextField(
-                controller: _codeCtrl,
-                enabled: !_saving,
-                style: const TextStyle(
-                  fontWeight: FontWeight.w700,
-                  color: _text,
-                ),
-                decoration: _modalDecor(
-                  label: 'College Code',
-                  icon: Icons.account_balance_outlined,
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _nameCtrl,
-                enabled: !_saving,
-                style: const TextStyle(
-                  fontWeight: FontWeight.w700,
-                  color: _text,
-                ),
-                decoration: _modalDecor(
-                  label: 'College Name',
-                  icon: Icons.school_outlined,
-                ),
-              ),
+              _buildRows(),
               if (_saving) ...[
                 const SizedBox(height: 10),
                 const LinearProgressIndicator(color: _primary),
@@ -1043,27 +1301,42 @@ class _AddCollegeDialogState extends State<_AddCollegeDialog> {
           onPressed: _saving
               ? null
               : () async {
-                  final rawCode = _codeCtrl.text.trim();
-                  final name = _nameCtrl.text.trim();
-                  if (rawCode.isEmpty || name.isEmpty) return;
-                  final code = rawCode.toUpperCase();
+                  final rows = _validRows();
+                  if (rows.isEmpty) return;
+                  if (_hasDuplicateCodes(rows)) {
+                    AppScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Remove duplicate college codes first.'),
+                      ),
+                    );
+                    return;
+                  }
                   setState(() => _saving = true);
                   try {
-                    final duplicate = await _institutionSvc.collegeCodeExists(
-                      code,
-                    );
-                    if (duplicate) {
-                      if (!context.mounted) return;
-                      AppScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('College code already exists.'),
-                        ),
+                    for (final row in rows) {
+                      final duplicate = await _institutionSvc.collegeCodeExists(
+                        row.code,
                       );
-                      setState(() => _saving = false);
-                      return;
+                      if (duplicate) {
+                        if (!context.mounted) return;
+                        AppScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              'College code ${row.code} already exists.',
+                            ),
+                          ),
+                        );
+                        setState(() => _saving = false);
+                        return;
+                      }
                     }
 
-                    await _institutionSvc.createCollege(code: code, name: name);
+                    for (final row in rows) {
+                      await _institutionSvc.createCollege(
+                        code: row.code,
+                        name: row.name,
+                      );
+                    }
                     if (!context.mounted) return;
                     Navigator.pop(context, true);
                   } catch (e) {
@@ -1075,7 +1348,7 @@ class _AddCollegeDialogState extends State<_AddCollegeDialog> {
                   }
                 },
           child: const Text(
-            'Save',
+            'Save All',
             style: TextStyle(fontWeight: FontWeight.w900),
           ),
         ),
@@ -1086,8 +1359,12 @@ class _AddCollegeDialogState extends State<_AddCollegeDialog> {
 
 class _AddProgramDialog extends StatefulWidget {
   final String collegeId;
+  final String collegeLabel;
 
-  const _AddProgramDialog({required this.collegeId});
+  const _AddProgramDialog({
+    required this.collegeId,
+    required this.collegeLabel,
+  });
 
   @override
   State<_AddProgramDialog> createState() => _AddProgramDialogState();
@@ -1095,15 +1372,134 @@ class _AddProgramDialog extends StatefulWidget {
 
 class _AddProgramDialogState extends State<_AddProgramDialog> {
   final _institutionSvc = InstitutionSetupService();
-  final _codeCtrl = TextEditingController();
-  final _nameCtrl = TextEditingController();
+  final List<_CodeNameRowControllers> _rows = [_CodeNameRowControllers()];
   bool _saving = false;
 
   @override
   void dispose() {
-    _codeCtrl.dispose();
-    _nameCtrl.dispose();
+    for (final row in _rows) {
+      row.dispose();
+    }
     super.dispose();
+  }
+
+  void _addRow() {
+    setState(() => _rows.add(_CodeNameRowControllers()));
+  }
+
+  void _removeRow(int index) {
+    if (_rows.length == 1) return;
+    final row = _rows.removeAt(index);
+    row.dispose();
+    setState(() {});
+  }
+
+  List<({String code, String name})> _validRows() {
+    return _rows
+        .map(
+          (row) => (
+            code: row.code.text.trim().toUpperCase(),
+            name: row.name.text.trim(),
+          ),
+        )
+        .where((row) => row.code.isNotEmpty && row.name.isNotEmpty)
+        .toList(growable: false);
+  }
+
+  bool _hasDuplicateCodes(List<({String code, String name})> rows) {
+    final seen = <String>{};
+    for (final row in rows) {
+      if (!seen.add(row.code)) return true;
+    }
+    return false;
+  }
+
+  Widget _buildRows() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        InputDecorator(
+          decoration: _modalDecor(
+            label: 'College',
+            icon: Icons.account_balance_outlined,
+            enabled: false,
+            helperText: 'Programs will be added under this college.',
+          ),
+          child: Text(
+            widget.collegeLabel.trim().isEmpty
+                ? widget.collegeId
+                : widget.collegeLabel.trim(),
+            style: const TextStyle(color: _text, fontWeight: FontWeight.w700),
+          ),
+        ),
+        const SizedBox(height: 12),
+        for (var i = 0; i < _rows.length; i++) ...[
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                flex: 2,
+                child: TextField(
+                  controller: _rows[i].code,
+                  enabled: !_saving,
+                  textCapitalization: TextCapitalization.characters,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w700,
+                    color: _text,
+                  ),
+                  decoration: _modalDecor(
+                    label: 'Program Code ${i + 1}',
+                    icon: Icons.badge_outlined,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                flex: 5,
+                child: TextField(
+                  controller: _rows[i].name,
+                  enabled: !_saving,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w700,
+                    color: _text,
+                  ),
+                  decoration: _modalDecor(
+                    label: 'Program Name ${i + 1}',
+                    icon: Icons.menu_book_rounded,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              IconButton(
+                tooltip: 'Remove row',
+                onPressed: _saving || _rows.length == 1
+                    ? null
+                    : () => _removeRow(i),
+                icon: const Icon(Icons.close_rounded),
+                color: _hint,
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+        ],
+        OutlinedButton.icon(
+          onPressed: _saving ? null : _addRow,
+          style: OutlinedButton.styleFrom(
+            foregroundColor: _primary,
+            side: BorderSide(color: _primary.withValues(alpha: 0.35)),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+            ),
+          ),
+          icon: const Icon(Icons.add_rounded),
+          label: const Text(
+            'Add Row',
+            style: TextStyle(fontWeight: FontWeight.w900),
+          ),
+        ),
+      ],
+    );
   }
 
   @override
@@ -1116,37 +1512,13 @@ class _AddProgramDialogState extends State<_AddProgramDialog> {
         style: TextStyle(fontWeight: FontWeight.w900, color: _primary),
       ),
       content: SizedBox(
-        width: 500,
+        width: 720,
         child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              TextField(
-                controller: _codeCtrl,
-                enabled: !_saving,
-                style: const TextStyle(
-                  fontWeight: FontWeight.w700,
-                  color: _text,
-                ),
-                decoration: _modalDecor(
-                  label: 'Program Code',
-                  icon: Icons.badge_outlined,
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _nameCtrl,
-                enabled: !_saving,
-                style: const TextStyle(
-                  fontWeight: FontWeight.w700,
-                  color: _text,
-                ),
-                decoration: _modalDecor(
-                  label: 'Program Name',
-                  icon: Icons.menu_book_rounded,
-                ),
-              ),
+              _buildRows(),
               if (_saving) ...[
                 const SizedBox(height: 10),
                 const LinearProgressIndicator(color: _primary),
@@ -1168,32 +1540,45 @@ class _AddProgramDialogState extends State<_AddProgramDialog> {
           onPressed: _saving
               ? null
               : () async {
-                  final rawCode = _codeCtrl.text.trim();
-                  final name = _nameCtrl.text.trim();
-                  if (rawCode.isEmpty || name.isEmpty) return;
-                  final code = rawCode.toUpperCase();
+                  final rows = _validRows();
+                  if (rows.isEmpty) return;
+                  if (_hasDuplicateCodes(rows)) {
+                    AppScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Remove duplicate program codes first.'),
+                      ),
+                    );
+                    return;
+                  }
                   setState(() => _saving = true);
                   try {
-                    final duplicate = await _institutionSvc
-                        .programCodeExistsInCollege(widget.collegeId, code);
-                    if (duplicate) {
-                      if (!context.mounted) return;
-                      AppScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text(
-                            'Program code already exists for this college.',
+                    for (final row in rows) {
+                      final duplicate = await _institutionSvc
+                          .programCodeExistsInCollege(
+                            widget.collegeId,
+                            row.code,
+                          );
+                      if (duplicate) {
+                        if (!context.mounted) return;
+                        AppScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              'Program code ${row.code} already exists for this college.',
+                            ),
                           ),
-                        ),
-                      );
-                      setState(() => _saving = false);
-                      return;
+                        );
+                        setState(() => _saving = false);
+                        return;
+                      }
                     }
 
-                    await _institutionSvc.createProgram(
-                      collegeId: widget.collegeId,
-                      code: code,
-                      name: name,
-                    );
+                    for (final row in rows) {
+                      await _institutionSvc.createProgram(
+                        collegeId: widget.collegeId,
+                        code: row.code,
+                        name: row.name,
+                      );
+                    }
                     if (!context.mounted) return;
                     Navigator.pop(context, true);
                   } catch (e) {
@@ -1205,7 +1590,7 @@ class _AddProgramDialogState extends State<_AddProgramDialog> {
                   }
                 },
           child: const Text(
-            'Save',
+            'Save All',
             style: TextStyle(fontWeight: FontWeight.w900),
           ),
         ),

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
+import 'package:go_router/go_router.dart';
 import '../shared/widgets/app_branding.dart';
 import 'package:apps/pages/shared/widgets/app_inline_notice.dart';
 
@@ -44,7 +45,7 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
     ).trim();
     final baseContinueUrl = configured.isNotEmpty
         ? configured
-        : '${Uri.base.origin}/#/set-password';
+        : '${Uri.base.origin}/set-password';
     final separator = baseContinueUrl.contains('?') ? '&' : '?';
     return '$baseContinueUrl${separator}prefillEmail='
         '${Uri.encodeComponent(email)}';
@@ -90,15 +91,16 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
       if (action == 'needs_email_verification' ||
           action == 'needs_activation') {
         if (!mounted) return;
-        Navigator.pushNamed(
-          context,
-          '/forgot-password-assist',
-          arguments: <String, dynamic>{
-            'email': email,
-            'mode': action == 'needs_activation'
-                ? 'activation'
-                : 'verify_email',
-          },
+        context.go(
+          Uri(
+            path: '/forgot-password-assist',
+            queryParameters: <String, String>{
+              'email': email,
+              'mode': action == 'needs_activation'
+                  ? 'activation'
+                  : 'verify_email',
+            },
+          ).toString(),
         );
         return;
       }
@@ -418,4 +420,3 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
     );
   }
 }
-

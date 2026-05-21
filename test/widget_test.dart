@@ -12,14 +12,16 @@ import 'package:apps/pages/shared/splash_screen_page.dart';
 
 void main() {
   testWidgets('App boots to splash screen', (WidgetTester tester) async {
-    await tester.pumpWidget(
-      const MaterialApp(
-        home: SplashScreen(),
-      ),
-    );
+    await tester.pumpWidget(const MaterialApp(home: SplashScreen()));
     await tester.pump();
 
     // Timer navigation is not triggered unless we advance time.
-    expect(find.text('Student Digital Handbook'), findsOneWidget);
+    expect(find.text('Baliuag University DiscipLink'), findsOneWidget);
+    expect(
+      find.text(
+        'Student Violation and Counseling Management System\nwith Handbook Guidance Support',
+      ),
+      findsOneWidget,
+    );
   });
 }

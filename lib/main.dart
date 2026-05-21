@@ -1,62 +1,19 @@
-import 'package:apps/pages/auth/complete_profile_page.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_quill/flutter_quill.dart'
     show FlutterQuillLocalizations;
+import 'package:flutter_web_plugins/url_strategy.dart';
 
 import 'pages/auth/firebase_options.dart';
-import 'pages/auth/login_page.dart';
-import 'pages/auth/set_password_page.dart';
-import 'pages/auth/sign_up_page.dart';
-import 'pages/auth/verify_email_page.dart';
-import 'pages/auth/forgot_password_assistance_page.dart';
-import 'pages/shared/landing_page.dart';
-import 'pages/shared/splash_screen_page.dart';
-import 'pages/shared/temp_login_page.dart';
-import 'pages/shared/welcome_screen_page.dart';
+import 'services/app_router.dart';
+import 'services/app_firestore.dart';
 import 'services/push_notifications_service.dart';
-
-class _RootGate extends StatelessWidget {
-  const _RootGate();
-
-  bool _isSetPasswordDeepLink() {
-    final base = Uri.base;
-    final hasResetMode =
-        (base.queryParameters['mode'] ?? '').trim() == 'resetPassword';
-    final fragment = base.fragment;
-    final hasSetPasswordRoute =
-        fragment.startsWith('/set-password') ||
-        fragment.startsWith('set-password');
-    return hasResetMode || hasSetPasswordRoute;
-  }
-
-  bool _isVerifyEmailDeepLink() {
-    final base = Uri.base;
-    final hasVerifyMode =
-        (base.queryParameters['mode'] ?? '').trim() == 'verifyEmail';
-    final fragment = base.fragment;
-    final hasVerifyRoute =
-        fragment.startsWith('/verify-email') ||
-        fragment.startsWith('verify-email');
-    final hasVerifyModeInFragment = fragment.contains('mode=verifyEmail');
-    return hasVerifyMode || hasVerifyRoute || hasVerifyModeInFragment;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (_isSetPasswordDeepLink()) {
-      return const SetPasswordPage();
-    }
-    if (_isVerifyEmailDeepLink()) {
-      return const VerifyEmailPage();
-    }
-    return const SplashScreen();
-  }
-}
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  usePathUrlStrategy();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  debugPrint('Firestore DB: ${AppFirestore.instance.databaseId}');
   await PushNotificationsService.instance.initialize();
   runApp(const MyApp());
 }
@@ -72,9 +29,10 @@ class MyApp extends StatelessWidget {
       borderRadius: BorderRadius.circular(16),
     );
 
-    return MaterialApp(
+    return MaterialApp.router(
       debugShowCheckedModeBanner: false,
       title: 'BUDiscipLink',
+      routerConfig: AppRouter.router,
       localizationsDelegates: FlutterQuillLocalizations.localizationsDelegates,
       supportedLocales: FlutterQuillLocalizations.supportedLocales,
       theme: ThemeData(
@@ -166,21 +124,6 @@ class MyApp extends StatelessWidget {
           ),
         ),
       ),
-      initialRoute: '/',
-      routes: {
-        '/': (context) => const _RootGate(),
-        '/splash': (context) => const SplashScreen(),
-        '/welcome': (context) => const WelcomeScreen(),
-        '/login': (context) => const LoginPage(),
-        '/signup': (context) => const SignUpPage(),
-        '/set-password': (context) => const SetPasswordPage(),
-        '/complete-profile': (context) => const CompleteProfilePage(),
-        '/landing': (context) => const LandingPage(),
-        '/verify-email': (context) => const VerifyEmailPage(),
-        '/forgot-password-assist': (context) =>
-            const ForgotPasswordAssistancePage(),
-        '/temp-login': (context) => const TempLoginPage(),
-      },
     );
   }
 }

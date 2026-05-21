@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 import 'violation_case_service.dart';
+import 'package:apps/services/app_firestore.dart';
 
 class OsaMeetingSlotStatus {
   static const open = 'open';
@@ -22,7 +23,7 @@ class OsaMeetingScheduleService {
        _slotCollection = slotCollection,
        _caseCollection = caseCollection;
 
-  final _db = FirebaseFirestore.instance;
+  final _db = AppFirestore.instance;
   final String _templateCollection;
   final String _slotCollection;
   final String _caseCollection;
@@ -533,23 +534,23 @@ class OsaMeetingScheduleService {
         .where('termId', isEqualTo: t);
 
     return query.snapshots().map((snap) {
-      final filtered = snap.docs.where((doc) {
-        final data = doc.data();
-        if ((data['status'] ?? '') != OsaMeetingSlotStatus.cancelled) {
-          return false;
-        }
-        final startAt = (data['startAt'] as Timestamp?)?.toDate();
-        if (startAt == null) return false;
-        return !startAt.isBefore(effectiveFrom);
-      }).toList()
-        ..sort((a, b) {
-          final aStart = (a.data()['startAt'] as Timestamp?)?.toDate();
-          final bStart = (b.data()['startAt'] as Timestamp?)?.toDate();
-          if (aStart == null && bStart == null) return 0;
-          if (aStart == null) return 1;
-          if (bStart == null) return -1;
-          return aStart.compareTo(bStart);
-        });
+      final filtered =
+          snap.docs.where((doc) {
+            final data = doc.data();
+            if ((data['status'] ?? '') != OsaMeetingSlotStatus.cancelled) {
+              return false;
+            }
+            final startAt = (data['startAt'] as Timestamp?)?.toDate();
+            if (startAt == null) return false;
+            return !startAt.isBefore(effectiveFrom);
+          }).toList()..sort((a, b) {
+            final aStart = (a.data()['startAt'] as Timestamp?)?.toDate();
+            final bStart = (b.data()['startAt'] as Timestamp?)?.toDate();
+            if (aStart == null && bStart == null) return 0;
+            if (aStart == null) return 1;
+            if (bStart == null) return -1;
+            return aStart.compareTo(bStart);
+          });
 
       if (limit > 0 && filtered.length > limit) {
         return filtered.sublist(0, limit);
@@ -936,8 +937,7 @@ class OsaMeetingScheduleService {
             '$allowedDays-day window for case $caseCode. Please wait for OSA follow-up.',
         reporterBody:
             'Student did not book the required OSA meeting for case $caseCode.',
-        departmentBody:
-            'Booking window was missed for case $caseCode.',
+        departmentBody: 'Booking window was missed for case $caseCode.',
         payload: const {
           'status': ViolationCaseWorkflow.statusActionSet,
           'meetingStatus': 'booking_missed',
@@ -1384,7 +1384,8 @@ class OsaMeetingScheduleService {
     Future<void> notifyUid(String uid, String body) async {
       final normalizedUid = uid.trim();
       if (normalizedUid.isEmpty) return;
-      if (normalizedActorUid.isNotEmpty && normalizedUid == normalizedActorUid) {
+      if (normalizedActorUid.isNotEmpty &&
+          normalizedUid == normalizedActorUid) {
         return;
       }
       if (!sent.add(normalizedUid)) return;
@@ -1416,5 +1417,4 @@ class OsaMeetingScheduleService {
       }
     }
   }
-
 }

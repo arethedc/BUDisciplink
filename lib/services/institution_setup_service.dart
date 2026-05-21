@@ -1,8 +1,9 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:apps/services/app_firestore.dart';
 
 class InstitutionSetupService {
   InstitutionSetupService({FirebaseFirestore? db})
-    : _db = db ?? FirebaseFirestore.instance;
+    : _db = db ?? AppFirestore.instance;
 
   final FirebaseFirestore _db;
 
@@ -11,12 +12,50 @@ class InstitutionSetupService {
   CollectionReference<Map<String, dynamic>> get _programs =>
       _db.collection('programs');
 
+  String _collegeDocIdFromCode(String code) => code.trim().toLowerCase();
+
+  String _programDocIdFromParts({
+    required String collegeId,
+    required String programCode,
+  }) {
+    return '${collegeId.trim().toLowerCase()}_${programCode.trim().toLowerCase()}';
+  }
+
   Stream<QuerySnapshot<Map<String, dynamic>>> streamColleges() {
     return _colleges.snapshots();
   }
 
   Stream<QuerySnapshot<Map<String, dynamic>>> streamPrograms() {
     return _programs.snapshots();
+  }
+
+  int _coerceSortOrder(dynamic value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    return int.tryParse((value ?? '').toString().trim()) ?? 0;
+  }
+
+  Future<int> _nextCollegeSortOrder() async {
+    final snap = await _colleges.get();
+    var maxSortOrder = 0;
+    for (final doc in snap.docs) {
+      final sortOrder = _coerceSortOrder(doc.data()['sortOrder']);
+      if (sortOrder > maxSortOrder) maxSortOrder = sortOrder;
+    }
+    return maxSortOrder + 1;
+  }
+
+  Future<int> _nextProgramSortOrder(String collegeId) async {
+    final normalizedCollegeId = collegeId.trim();
+    final snap = await _programs
+        .where('collegeId', isEqualTo: normalizedCollegeId)
+        .get();
+    var maxSortOrder = 0;
+    for (final doc in snap.docs) {
+      final sortOrder = _coerceSortOrder(doc.data()['sortOrder']);
+      if (sortOrder > maxSortOrder) maxSortOrder = sortOrder;
+    }
+    return maxSortOrder + 1;
   }
 
   Future<bool> collegeCodeExists(
@@ -63,18 +102,20 @@ class InstitutionSetupService {
     required String code,
     required String name,
     bool active = true,
-    int sortOrder = 999,
+    int? sortOrder,
   }) async {
     final normalizedCode = code.trim().toUpperCase();
     final normalizedName = name.trim();
-    await _colleges.add({
+    final collegeDocId = _collegeDocIdFromCode(normalizedCode);
+    final resolvedSortOrder = sortOrder ?? await _nextCollegeSortOrder();
+    await _colleges.doc(collegeDocId).set({
       'collegeCode': normalizedCode,
       'name': normalizedName,
       'active': active,
-      'sortOrder': sortOrder,
+      'sortOrder': resolvedSortOrder,
       'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
-    });
+    }, SetOptions(merge: true));
   }
 
   Future<void> updateCollege({
@@ -96,17 +137,25 @@ class InstitutionSetupService {
     required String code,
     required String name,
     bool active = true,
-    int sortOrder = 999,
+    int? sortOrder,
   }) async {
-    await _programs.add({
-      'collegeId': collegeId.trim(),
-      'programCode': code.trim().toUpperCase(),
+    final normalizedCollegeId = collegeId.trim().toLowerCase();
+    final normalizedCode = code.trim().toUpperCase();
+    final programDocId = _programDocIdFromParts(
+      collegeId: normalizedCollegeId,
+      programCode: normalizedCode,
+    );
+    final resolvedSortOrder =
+        sortOrder ?? await _nextProgramSortOrder(normalizedCollegeId);
+    await _programs.doc(programDocId).set({
+      'collegeId': normalizedCollegeId,
+      'programCode': normalizedCode,
       'name': name.trim(),
       'active': active,
-      'sortOrder': sortOrder,
+      'sortOrder': resolvedSortOrder,
       'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
-    });
+    }, SetOptions(merge: true));
   }
 
   Future<void> updateProgram({

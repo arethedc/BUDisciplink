@@ -1,33 +1,73 @@
 import 'package:apps/pages/shared/handbook/hb_handbook_page.dart';
 import 'package:apps/pages/shared/notifications/app_notifications_ui.dart';
 import 'package:apps/pages/shared/profile/unified_profile_page.dart';
-import 'package:apps/pages/shared/welcome_screen_page.dart';
 import 'package:apps/pages/shared/widgets/app_branding.dart';
 import 'package:apps/pages/shared/widgets/app_theme_tokens.dart';
 import 'package:apps/pages/shared/widgets/logout_confirm_dialog.dart';
 import 'package:apps/pages/shared/widgets/responsive_layout_tokens.dart';
 import 'package:apps/pages/shared/widgets/role_shell_scaffold.dart';
+import 'package:apps/services/app_router.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
+import 'package:go_router/go_router.dart';
 
 // ✅ adjust these imports to your project paths
 import 'student_home_page.dart';
 import 'student_violations_page.dart';
 import 'student_counseling_page.dart';
-import 'student_notifications_page.dart';
-import 'package:apps/pages/shared/widgets/app_inline_notice.dart';
+import 'package:apps/services/app_firestore.dart';
 
 class StudentDashboard extends StatefulWidget {
-  const StudentDashboard({super.key});
+  final String section;
+  final String? tabDeepLink;
+  final String? handbookSectionId;
+  final String? handbookHighlightText;
+
+  const StudentDashboard({
+    super.key,
+    this.section = 'home',
+    this.tabDeepLink,
+    this.handbookSectionId,
+    this.handbookHighlightText,
+  });
+
+  static const _sectionToIndex = <String, int>{
+    'home': 0,
+    'handbook': 1,
+    'violations': 2,
+    'counseling': 3,
+    'profile': 4,
+    'notifications': 5,
+  };
+
+  static const _indexToSection = <int, String>{
+    0: 'home',
+    1: 'handbook',
+    2: 'violations',
+    3: 'counseling',
+    4: 'profile',
+    5: 'notifications',
+  };
+
+  static int indexForSection(String section) => _sectionToIndex[section] ?? 0;
+
+  static String sectionForIndex(int index) => _indexToSection[index] ?? 'home';
+
+  static String pathForSection(String section, {Map<String, String>? query}) {
+    final base = AppRoutes.withSection(AppRoutes.student, section);
+    if (query == null || query.isEmpty) return base;
+    return Uri(path: base, queryParameters: query).toString();
+  }
 
   @override
   State<StudentDashboard> createState() => _StudentDashboardState();
 }
 
 class _StudentDashboardState extends State<StudentDashboard> {
-  int _currentIndex = 0;
+  static final Map<String, String> _sessionTabBySection = <String, String>{};
+  late int _currentIndex;
   bool _showDesktopNotifications = false;
 
   // ================== THEME (keep Dashboard 2) ==================
@@ -40,12 +80,22 @@ class _StudentDashboardState extends State<StudentDashboard> {
   // ================== PAGES ==================
   List<Widget> get _pages => [
     const StudentHomePage(),
-    const HbHandbookPage(
+    HbHandbookPage(
       hideTopHeader: true,
+      initialSectionId: widget.handbookSectionId,
+      initialHighlightText: widget.handbookHighlightText,
+      openSelectedOnMobile: true,
     ),
-    const StudentViolationsPage(),
-    const StudentCounselingPage(),
+    StudentViolationsPage(
+      initialTab: _effectiveTabForSection('violations'),
+      onTabChanged: (tabKey) => _syncSectionTab('violations', tabKey),
+    ),
+    StudentCounselingPage(
+      initialTab: _effectiveTabForSection('counseling'),
+      onTabChanged: (tabKey) => _syncSectionTab('counseling', tabKey),
+    ),
     const UnifiedProfilePage(),
+    AppNotificationsContent(onBack: () => _go(0)),
   ];
 
   final List<_NavItem> _navItems = const [
@@ -54,6 +104,39 @@ class _StudentDashboardState extends State<StudentDashboard> {
     _NavItem(Icons.warning_rounded, 'Violations'),
     _NavItem(Icons.support_agent_rounded, 'Counseling'),
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    _currentIndex = StudentDashboard.indexForSection(widget.section);
+    final incomingTab = (widget.tabDeepLink ?? '').trim();
+    final incomingSection = widget.section.trim();
+    if (incomingTab.isNotEmpty &&
+        (incomingSection == 'violations' || incomingSection == 'counseling')) {
+      _sessionTabBySection[incomingSection] = incomingTab;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _ensureSectionTabQuery();
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant StudentDashboard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final nextIndex = StudentDashboard.indexForSection(widget.section);
+    if (_currentIndex != nextIndex) {
+      setState(() => _currentIndex = nextIndex);
+    }
+    final incomingTab = (widget.tabDeepLink ?? '').trim();
+    final incomingSection = widget.section.trim();
+    if (incomingTab.isNotEmpty &&
+        (incomingSection == 'violations' || incomingSection == 'counseling')) {
+      _sessionTabBySection[incomingSection] = incomingTab;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _ensureSectionTabQuery();
+    });
+  }
 
   String _pageTitle() {
     switch (_currentIndex) {
@@ -67,6 +150,8 @@ class _StudentDashboardState extends State<StudentDashboard> {
         return "Counseling";
       case 4:
         return "Profile";
+      case 5:
+        return "Notifications";
       default:
         return "Student Portal";
     }
@@ -77,15 +162,72 @@ class _StudentDashboardState extends State<StudentDashboard> {
     if (!mounted || !confirmed) return;
     await FirebaseAuth.instance.signOut();
     if (!mounted) return;
-
-    Navigator.pushAndRemoveUntil(
-      context,
-      MaterialPageRoute(builder: (_) => const WelcomeScreen()),
-      (route) => false,
-    );
+    context.go('/welcome');
   }
 
-  void _go(int i) => setState(() => _currentIndex = i);
+  void _go(int i) {
+    final section = StudentDashboard.sectionForIndex(i);
+    final tab = _defaultTabForSection(section);
+    final target = StudentDashboard.pathForSection(
+      section,
+      query: tab == null ? null : <String, String>{'tab': tab},
+    );
+    if (GoRouterState.of(context).uri.toString() == target) return;
+    context.go(target);
+  }
+
+  String? _effectiveTabForSection(String section) {
+    if (widget.section == section) {
+      final explicit = (widget.tabDeepLink ?? '').trim();
+      if (explicit.isNotEmpty) return explicit;
+    }
+    final remembered = (_sessionTabBySection[section] ?? '').trim();
+    return remembered.isEmpty ? null : remembered;
+  }
+
+  String? _defaultTabForSection(String section) {
+    final remembered = (_sessionTabBySection[section] ?? '').trim();
+    if (remembered.isNotEmpty) return remembered;
+    switch (section) {
+      case 'violations':
+        return 'all';
+      case 'counseling':
+        return 'active';
+      default:
+        return null;
+    }
+  }
+
+  void _ensureSectionTabQuery() {
+    if (!mounted) return;
+    final section = StudentDashboard.sectionForIndex(_currentIndex);
+    final defaultTab = _defaultTabForSection(section);
+    if (defaultTab == null) return;
+    final currentUri = GoRouterState.of(context).uri;
+    final currentTab = (currentUri.queryParameters['tab'] ?? '').trim();
+    if (currentTab.isNotEmpty) return;
+    final target = StudentDashboard.pathForSection(
+      section,
+      query: <String, String>{'tab': defaultTab},
+    );
+    if (target == currentUri.toString()) return;
+    context.replace(target);
+  }
+
+  void _syncSectionTab(String section, String tabKey) {
+    final currentSection = StudentDashboard.sectionForIndex(_currentIndex);
+    if (currentSection != section) return;
+    _sessionTabBySection[section] = tabKey;
+    final currentUri = GoRouterState.of(context).uri;
+    final currentTab = (currentUri.queryParameters['tab'] ?? '').trim();
+    if (currentTab == tabKey) return;
+    final target = StudentDashboard.pathForSection(
+      section,
+      query: <String, String>{'tab': tabKey},
+    );
+    if (target == currentUri.toString()) return;
+    context.go(target);
+  }
 
   void _toggleDesktopNotifications() {
     setState(() => _showDesktopNotifications = !_showDesktopNotifications);
@@ -99,14 +241,7 @@ class _StudentDashboardState extends State<StudentDashboard> {
 
   Future<void> _openNotificationsPage() async {
     _closeDesktopNotifications();
-    await Navigator.of(context).push(
-      PageRouteBuilder<void>(
-        pageBuilder: (context, animation, secondaryAnimation) =>
-            const StudentNotificationsPage(),
-        transitionDuration: Duration.zero,
-        reverseTransitionDuration: Duration.zero,
-      ),
-    );
+    _go(5);
   }
 
   String _displayName(Map<String, dynamic> data, User user) {
@@ -162,7 +297,7 @@ class _StudentDashboardState extends State<StudentDashboard> {
     }
 
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance
+      stream: AppFirestore.instance
           .collection('users')
           .doc(user.uid)
           .snapshots(),
@@ -325,7 +460,19 @@ class _MenuPanel extends StatelessWidget {
   Future<String> _resolvePhotoUrl(String source) async {
     final value = source.trim();
     if (value.isEmpty) return '';
-    if (_isHttpPhotoUrl(value)) return value;
+    if (_isHttpPhotoUrl(value)) {
+      if (value.contains('firebasestorage.googleapis.com') ||
+          value.contains('firebasestorage.app')) {
+        try {
+          return await FirebaseStorage.instance
+              .refFromURL(value)
+              .getDownloadURL();
+        } catch (_) {
+          return value;
+        }
+      }
+      return value;
+    }
     try {
       if (value.startsWith('gs://')) {
         return await FirebaseStorage.instance
@@ -345,15 +492,35 @@ class _MenuPanel extends StatelessWidget {
       size: 24,
       color: Colors.white,
     );
+    final fallbackAvatar = const CircleAvatar(
+      backgroundColor: Colors.white24,
+      child: fallback,
+    );
+
+    Widget photoAvatar(String url) {
+      return ClipOval(
+        child: Image.network(
+          url,
+          width: 40,
+          height: 40,
+          fit: BoxFit.cover,
+          webHtmlElementStrategy: WebHtmlElementStrategy.prefer,
+          errorBuilder: (_, _, _) => fallbackAvatar,
+        ),
+      );
+    }
 
     if (source.isEmpty) {
-      return CircleAvatar(backgroundColor: Colors.white24, child: fallback);
+      return fallbackAvatar;
     }
 
     if (_isHttpPhotoUrl(source)) {
-      return CircleAvatar(
-        backgroundColor: Colors.white24,
-        foregroundImage: NetworkImage(source),
+      return FutureBuilder<String>(
+        future: _resolvePhotoUrl(source),
+        builder: (context, snapshot) {
+          final resolved = (snapshot.data ?? source).trim();
+          return resolved.isEmpty ? fallbackAvatar : photoAvatar(resolved);
+        },
       );
     }
 
@@ -361,11 +528,7 @@ class _MenuPanel extends StatelessWidget {
       future: _resolvePhotoUrl(source),
       builder: (context, snapshot) {
         final resolved = (snapshot.data ?? '').trim();
-        return CircleAvatar(
-          backgroundColor: Colors.white24,
-          foregroundImage: resolved.isEmpty ? null : NetworkImage(resolved),
-          child: resolved.isEmpty ? fallback : null,
-        );
+        return resolved.isEmpty ? fallbackAvatar : photoAvatar(resolved);
       },
     );
   }

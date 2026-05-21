@@ -7,10 +7,16 @@ const { getMessaging } = require('firebase-admin/messaging');
 const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 const { genkit } = require('genkit');
 const { googleAI } = require('@genkit-ai/googleai');
+const {
+  FIRESTORE_DATABASE_ID,
+  USE_DEFAULT_FIRESTORE_DATABASE,
+} = require('./firestore_target');
 
 initializeApp();
 
-const db = getFirestore();
+const db = USE_DEFAULT_FIRESTORE_DATABASE
+  ? getFirestore()
+  : getFirestore(FIRESTORE_DATABASE_ID);
 
 const HANDBOOK_MODEL = 'googleai/gemini-2.5-flash-lite';
 const OSA_MODEL = 'googleai/gemini-2.5-flash-lite';
@@ -1004,7 +1010,6 @@ exports.createCustomSetPasswordLink = onCall(
         prefillEmail: email,
       });
 
-      let mailQueued = false;
       try {
         await db.collection('mail').add({
           to: [email],
@@ -1034,15 +1039,18 @@ exports.createCustomSetPasswordLink = onCall(
           },
           createdAt: new Date().toISOString(),
         });
-        mailQueued = true;
       } catch (error) {
-        console.error('mail queue write failed (optional)', error);
+        console.error('mail queue write failed', error);
+        throw new HttpsError(
+          'internal',
+          'Failed to queue the account setup email.',
+        );
       }
 
       return {
         customLink,
         verifyOobCode,
-        mailQueued,
+        mailQueued: true,
       };
     } catch (error) {
       if (error instanceof HttpsError) throw error;
@@ -1481,7 +1489,6 @@ exports.createCustomVerifyEmailLink = onCall(
       const appVerifyLink =
         buildInAppVerifyLink(continueUrl, verifyLink, email) || verifyLink;
 
-      let mailQueued = false;
       try {
         await db.collection('mail').add({
           to: [email],
@@ -1517,15 +1524,18 @@ exports.createCustomVerifyEmailLink = onCall(
           },
           createdAt: new Date().toISOString(),
         });
-        mailQueued = true;
       } catch (error) {
-        console.error('mail queue write failed (optional)', error);
+        console.error('mail queue write failed', error);
+        throw new HttpsError(
+          'internal',
+          'Failed to queue the verify-email message.',
+        );
       }
 
       return {
         verifyLink,
         appVerifyLink,
-        mailQueued,
+        mailQueued: true,
       };
     } catch (error) {
       if (error instanceof HttpsError) throw error;
@@ -1582,7 +1592,6 @@ exports.sendCurrentUserVerifyEmailLink = onCall(
       const appVerifyLink =
         buildInAppVerifyLink(continueUrl, verifyLink, email) || verifyLink;
 
-      let mailQueued = false;
       try {
         await db.collection('mail').add({
           to: [email],
@@ -1612,15 +1621,18 @@ exports.sendCurrentUserVerifyEmailLink = onCall(
           },
           createdAt: new Date().toISOString(),
         });
-        mailQueued = true;
       } catch (error) {
-        console.error('mail queue write failed (optional)', error);
+        console.error('mail queue write failed', error);
+        throw new HttpsError(
+          'internal',
+          'Failed to queue the verification email.',
+        );
       }
 
       return {
         verifyLink,
         appVerifyLink,
-        mailQueued,
+        mailQueued: true,
       };
     } catch (error) {
       if (error instanceof HttpsError) throw error;
@@ -1628,6 +1640,38 @@ exports.sendCurrentUserVerifyEmailLink = onCall(
       throw new HttpsError(
         'internal',
         'Failed to send current-user verify email link.',
+      );
+    }
+  },
+);
+
+exports.checkEmailVerificationStatus = onCall(
+  { region: 'asia-east1', timeoutSeconds: 30 },
+  async (request) => {
+    try {
+      const email = normalizeString(request.data?.email).toLowerCase();
+      if (!email || !email.includes('@')) {
+        throw new HttpsError('invalid-argument', 'Valid email is required.');
+      }
+
+      try {
+        const authUser = await getAuth().getUserByEmail(email);
+        return {
+          found: true,
+          emailVerified: authUser.emailVerified === true,
+        };
+      } catch (_) {
+        return {
+          found: false,
+          emailVerified: false,
+        };
+      }
+    } catch (error) {
+      if (error instanceof HttpsError) throw error;
+      console.error('checkEmailVerificationStatus failed', error);
+      throw new HttpsError(
+        'internal',
+        'Failed to check email verification status.',
       );
     }
   },

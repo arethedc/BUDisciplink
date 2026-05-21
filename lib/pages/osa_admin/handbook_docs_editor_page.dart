@@ -16,16 +16,18 @@ import 'package:flutter_quill_extensions/flutter_quill_extensions.dart'
     as quill_ext;
 import 'package:apps/pages/shared/widgets/app_inline_notice.dart';
 import 'package:apps/pages/shared/widgets/unsaved_changes_guard.dart';
+import 'package:apps/services/app_firestore.dart';
 
 const String _tableEmbedType = 'x-embed-table';
 const double _tableMaxColWidth = 2000;
-typedef _TableStyleSetter = void Function({
-  bool? bold,
-  bool? italic,
-  String? align,
-  String? fontFamilyKey,
-  int? fontSizePoint,
-});
+typedef _TableStyleSetter =
+    void Function({
+      bool? bold,
+      bool? italic,
+      String? align,
+      String? fontFamilyKey,
+      int? fontSizePoint,
+    });
 
 class _TableSelectionState {
   const _TableSelectionState({
@@ -672,7 +674,9 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
   }
 
   String _cellFontFamilyKey(int row, int col) {
-    final raw = (_cellStyleFor(row, col)['font'] ?? 'default').toString().trim();
+    final raw = (_cellStyleFor(row, col)['font'] ?? 'default')
+        .toString()
+        .trim();
     return switch (raw) {
       'serif' => 'serif',
       'monospace' => 'monospace',
@@ -706,22 +710,18 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
       return _allPositions();
     }
     if (_hasCellSelectionRange) {
-      final minRow = math.min(_selectionAnchorRow, _selectionExtentRow).clamp(
-        0,
-        _rows.length - 1,
-      );
-      final maxRow = math.max(_selectionAnchorRow, _selectionExtentRow).clamp(
-        0,
-        _rows.length - 1,
-      );
-      final minCol = math.min(_selectionAnchorCol, _selectionExtentCol).clamp(
-        0,
-        _headers.length - 1,
-      );
-      final maxCol = math.max(_selectionAnchorCol, _selectionExtentCol).clamp(
-        0,
-        _headers.length - 1,
-      );
+      final minRow = math
+          .min(_selectionAnchorRow, _selectionExtentRow)
+          .clamp(0, _rows.length - 1);
+      final maxRow = math
+          .max(_selectionAnchorRow, _selectionExtentRow)
+          .clamp(0, _rows.length - 1);
+      final minCol = math
+          .min(_selectionAnchorCol, _selectionExtentCol)
+          .clamp(0, _headers.length - 1);
+      final maxCol = math
+          .max(_selectionAnchorCol, _selectionExtentCol)
+          .clamp(0, _headers.length - 1);
       final cells = <_TableCellPosition>[];
       for (var row = minRow; row <= maxRow; row++) {
         for (var col = minCol; col <= maxCol; col++) {
@@ -778,7 +778,8 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
   void _updateDragSelectionExtent(int row, int col) {
     final clampedRow = row.clamp(0, _rows.length - 1);
     final clampedCol = col.clamp(0, _headers.length - 1);
-    if (_selectionExtentRow == clampedRow && _selectionExtentCol == clampedCol) {
+    if (_selectionExtentRow == clampedRow &&
+        _selectionExtentCol == clampedCol) {
       return;
     }
     _selectionExtentRow = clampedRow;
@@ -1364,14 +1365,17 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
                           behavior: HitTestBehavior.translucent,
                           onPointerDown: (event) {
                             if (widget.readOnly) return;
-                            final target = _cellAtGlobalPosition(event.position);
+                            final target = _cellAtGlobalPosition(
+                              event.position,
+                            );
                             if (target == null) return;
                             final targetNode = _focusNodeFor(
                               isHeader: false,
                               row: target.row,
                               col: target.col,
                             );
-                            final shiftSelecting = _isShiftPressed() &&
+                            final shiftSelecting =
+                                _isShiftPressed() &&
                                 (_hasCellSelectionRange || _allCellsSelected);
                             if (shiftSelecting) {
                               _setActiveCellWithoutResettingAnchor(
@@ -1400,177 +1404,186 @@ class _TableEmbedFrameState extends State<_TableEmbedFrame> {
                             // Keep selection stable and use Shift+click for range.
                             return;
                           },
-                          onPointerUp: (_) {
-                          },
-                          onPointerCancel: (_) {
-                          },
+                          onPointerUp: (_) {},
+                          onPointerCancel: (_) {},
                           child: SingleChildScrollView(
                             scrollDirection: Axis.horizontal,
                             child: SizedBox(
                               width: math.max(totalWidth, maxWidth),
                               child: Table(
-                            columnWidths: {
-                              for (var i = 0; i < widths.length; i++)
-                                i: FixedColumnWidth(widths[i]),
-                            },
-                            border: TableBorder.all(
-                              color: Colors.black.withValues(alpha: 0.14),
-                              width: 1,
-                            ),
-                            children: List.generate(_rows.length, (row) {
-                              return TableRow(
-                                children: List.generate(_headers.length, (col) {
-                                  final ctrl = _controllerFor(
-                                    isHeader: false,
-                                    row: row,
-                                    col: col,
-                                  );
-                                  final node = _focusNodeFor(
-                                    isHeader: false,
-                                    row: row,
-                                    col: col,
-                                  );
-                                  final cellBold = _cellBold(row, col);
-                                  final cellItalic = _cellItalic(row, col);
-                                  final cellAlign = _cellAlign(row, col);
-                                  final cellFontKey = _cellFontFamilyKey(
-                                    row,
-                                    col,
-                                  );
-                                  final cellFontSize = _cellFontSize(row, col);
-                                  final cellSelected = _isCellInsideSelection(
-                                    row,
-                                    col,
-                                  );
-                                  return Stack(
-                                    clipBehavior: Clip.none,
-                                    children: [
-                                      Positioned.fill(
-                                        child: IgnorePointer(
-                                          child: AnimatedContainer(
-                                            duration: const Duration(
-                                              milliseconds: 90,
-                                            ),
-                                            color: cellSelected
-                                                ? const Color(
-                                                    0xFF1B5E20,
-                                                  ).withValues(alpha: 0.08)
-                                                : Colors.transparent,
-                                          ),
-                                        ),
-                                      ),
-                                      Focus(
-                                        key: _cellContainerKey(row, col),
-                                        onKeyEvent: (focusNode, event) =>
-                                            _handleCellKey(
-                                              event: event,
-                                              isHeader: false,
-                                              row: row,
-                                              col: col,
-                                            ),
-                                        child: TextField(
-                                          readOnly: widget.readOnly,
-                                          enableInteractiveSelection: false,
-                                          controller: ctrl,
-                                          focusNode: node,
-                                          textAlign: cellAlign,
-                                          minLines: 1,
-                                          maxLines: null,
-                                          keyboardType: TextInputType.multiline,
-                                          textInputAction:
-                                              TextInputAction.newline,
-                                          onTap: () {
-                                            _selected = false;
-                                            // Selection is handled on pointer-down.
-                                            // Keep tap focused on entering text mode.
-                                            widget.onEditingStateChanged(
-                                              widget.offset,
-                                              true,
-                                            );
-                                            if (!node.hasFocus) {
-                                              node.requestFocus();
-                                            }
-                                            if (mounted) setState(() {});
-                                          },
-                                          onChanged: (value) =>
-                                              _updateCellValue(
-                                                isHeader: false,
-                                                row: row,
-                                                col: col,
-                                                value: value,
-                                              ),
-                                          decoration: const InputDecoration(
-                                            isDense: true,
-                                            border: InputBorder.none,
-                                            enabledBorder: InputBorder.none,
-                                            focusedBorder: InputBorder.none,
-                                            disabledBorder: InputBorder.none,
-                                            errorBorder: InputBorder.none,
-                                            focusedErrorBorder: InputBorder.none,
-                                            filled: false,
-                                            contentPadding: EdgeInsets.fromLTRB(
-                                              10,
-                                              8,
-                                              10,
-                                              8,
-                                            ),
-                                          ),
-                                          style:
-                                              const TextStyle(
-                                                color: Color(0xFF1F2A1F),
-                                                height: 1.35,
-                                              ).copyWith(
-                                                fontWeight: cellBold
-                                                    ? FontWeight.w700
-                                                    : FontWeight.w500,
-                                                fontStyle: cellItalic
-                                                    ? FontStyle.italic
-                                                    : FontStyle.normal,
-                                                fontFamily: _fontFamilyFromKey(
-                                                  cellFontKey,
+                                columnWidths: {
+                                  for (var i = 0; i < widths.length; i++)
+                                    i: FixedColumnWidth(widths[i]),
+                                },
+                                border: TableBorder.all(
+                                  color: Colors.black.withValues(alpha: 0.14),
+                                  width: 1,
+                                ),
+                                children: List.generate(_rows.length, (row) {
+                                  return TableRow(
+                                    children: List.generate(_headers.length, (
+                                      col,
+                                    ) {
+                                      final ctrl = _controllerFor(
+                                        isHeader: false,
+                                        row: row,
+                                        col: col,
+                                      );
+                                      final node = _focusNodeFor(
+                                        isHeader: false,
+                                        row: row,
+                                        col: col,
+                                      );
+                                      final cellBold = _cellBold(row, col);
+                                      final cellItalic = _cellItalic(row, col);
+                                      final cellAlign = _cellAlign(row, col);
+                                      final cellFontKey = _cellFontFamilyKey(
+                                        row,
+                                        col,
+                                      );
+                                      final cellFontSize = _cellFontSize(
+                                        row,
+                                        col,
+                                      );
+                                      final cellSelected =
+                                          _isCellInsideSelection(row, col);
+                                      return Stack(
+                                        clipBehavior: Clip.none,
+                                        children: [
+                                          Positioned.fill(
+                                            child: IgnorePointer(
+                                              child: AnimatedContainer(
+                                                duration: const Duration(
+                                                  milliseconds: 90,
                                                 ),
-                                                fontSize: cellFontSize,
+                                                color: cellSelected
+                                                    ? const Color(
+                                                        0xFF1B5E20,
+                                                      ).withValues(alpha: 0.08)
+                                                    : Colors.transparent,
                                               ),
-                                        ),
-                                      ),
-                                      if (!widget.readOnly &&
-                                          row == 0 &&
-                                          col < _headers.length - 1)
-                                        Positioned(
-                                          right: -4,
-                                          top: 0,
-                                          bottom: 0,
-                                          width: 8,
-                                          child: MouseRegion(
-                                            cursor: SystemMouseCursors
-                                                .resizeLeftRight,
-                                            child: GestureDetector(
-                                              behavior:
-                                                  HitTestBehavior.translucent,
-                                              onHorizontalDragUpdate: (details) {
-                                                final next =
-                                                    (_columnWidths[col] == 0
-                                                        ? widths[col]
-                                                        : _columnWidths[col]) +
-                                                    details.delta.dx;
-                                                _columnWidths[col] = next.clamp(
-                                                  _minColWidth,
-                                                  _maxColWidth,
+                                            ),
+                                          ),
+                                          Focus(
+                                            key: _cellContainerKey(row, col),
+                                            onKeyEvent: (focusNode, event) =>
+                                                _handleCellKey(
+                                                  event: event,
+                                                  isHeader: false,
+                                                  row: row,
+                                                  col: col,
+                                                ),
+                                            child: TextField(
+                                              readOnly: widget.readOnly,
+                                              enableInteractiveSelection: false,
+                                              controller: ctrl,
+                                              focusNode: node,
+                                              textAlign: cellAlign,
+                                              minLines: 1,
+                                              maxLines: null,
+                                              keyboardType:
+                                                  TextInputType.multiline,
+                                              textInputAction:
+                                                  TextInputAction.newline,
+                                              onTap: () {
+                                                _selected = false;
+                                                // Selection is handled on pointer-down.
+                                                // Keep tap focused on entering text mode.
+                                                widget.onEditingStateChanged(
+                                                  widget.offset,
+                                                  true,
                                                 );
-                                                _emitDraft();
+                                                if (!node.hasFocus) {
+                                                  node.requestFocus();
+                                                }
                                                 if (mounted) setState(() {});
                                               },
-                                              onHorizontalDragEnd: (_) {
-                                                _emitDraft();
-                                              },
+                                              onChanged: (value) =>
+                                                  _updateCellValue(
+                                                    isHeader: false,
+                                                    row: row,
+                                                    col: col,
+                                                    value: value,
+                                                  ),
+                                              decoration: const InputDecoration(
+                                                isDense: true,
+                                                border: InputBorder.none,
+                                                enabledBorder: InputBorder.none,
+                                                focusedBorder: InputBorder.none,
+                                                disabledBorder:
+                                                    InputBorder.none,
+                                                errorBorder: InputBorder.none,
+                                                focusedErrorBorder:
+                                                    InputBorder.none,
+                                                filled: false,
+                                                contentPadding:
+                                                    EdgeInsets.fromLTRB(
+                                                      10,
+                                                      8,
+                                                      10,
+                                                      8,
+                                                    ),
+                                              ),
+                                              style:
+                                                  const TextStyle(
+                                                    color: Color(0xFF1F2A1F),
+                                                    height: 1.35,
+                                                  ).copyWith(
+                                                    fontWeight: cellBold
+                                                        ? FontWeight.w700
+                                                        : FontWeight.w500,
+                                                    fontStyle: cellItalic
+                                                        ? FontStyle.italic
+                                                        : FontStyle.normal,
+                                                    fontFamily:
+                                                        _fontFamilyFromKey(
+                                                          cellFontKey,
+                                                        ),
+                                                    fontSize: cellFontSize,
+                                                  ),
                                             ),
                                           ),
-                                        ),
-                                    ],
+                                          if (!widget.readOnly &&
+                                              row == 0 &&
+                                              col < _headers.length - 1)
+                                            Positioned(
+                                              right: -4,
+                                              top: 0,
+                                              bottom: 0,
+                                              width: 8,
+                                              child: MouseRegion(
+                                                cursor: SystemMouseCursors
+                                                    .resizeLeftRight,
+                                                child: GestureDetector(
+                                                  behavior: HitTestBehavior
+                                                      .translucent,
+                                                  onHorizontalDragUpdate: (details) {
+                                                    final next =
+                                                        (_columnWidths[col] == 0
+                                                            ? widths[col]
+                                                            : _columnWidths[col]) +
+                                                        details.delta.dx;
+                                                    _columnWidths[col] = next
+                                                        .clamp(
+                                                          _minColWidth,
+                                                          _maxColWidth,
+                                                        );
+                                                    _emitDraft();
+                                                    if (mounted) {
+                                                      setState(() {});
+                                                    }
+                                                  },
+                                                  onHorizontalDragEnd: (_) {
+                                                    _emitDraft();
+                                                  },
+                                                ),
+                                              ),
+                                            ),
+                                        ],
+                                      );
+                                    }),
                                   );
                                 }),
-                              );
-                            }),
                               ),
                             ),
                           ),
@@ -2004,10 +2017,7 @@ class _InteractiveImageEmbedFrame extends StatelessWidget {
                 safeWidth = math.min(safeWidth, maxContentWidth - 4);
               }
 
-              final rotatedFrameSize = _rotatedFrameSize(
-                safeWidth,
-                safeHeight,
-              );
+              final rotatedFrameSize = _rotatedFrameSize(safeWidth, safeHeight);
               final imageFrame = _buildEditableImageFrame(
                 safeWidth: safeWidth,
                 safeHeight: safeHeight,
@@ -2070,10 +2080,7 @@ class _InteractiveImageEmbedFrame extends StatelessWidget {
               } else {
                 content = Column(
                   mainAxisSize: MainAxisSize.min,
-                  children: [
-                    imageFrame,
-                    captionWidget,
-                  ],
+                  children: [imageFrame, captionWidget],
                 );
               }
 
@@ -2516,7 +2523,7 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
     '#3F3F3F',
   ];
 
-  final _db = FirebaseFirestore.instance;
+  final _db = AppFirestore.instance;
   final _titleCtrl = TextEditingController();
   final _searchCtrl = TextEditingController();
   final _editorFocusNode = FocusNode(debugLabel: 'handbook_editor_focus');
@@ -2551,6 +2558,7 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
   String? _handbookId;
   String _handbookVersion = '--';
   String _treeSnapshotSignature = '';
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _versionSub;
 
   List<HandbookNodeDoc> _nodes = const [];
   final Set<String> _expandedNodeIds = <String>{};
@@ -2649,6 +2657,7 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
     _tableStyleSetters.clear();
     _docChangeSub?.cancel();
     _nodeSub?.cancel();
+    _versionSub?.cancel();
     _editorController.dispose();
     _editorFocusNode.dispose();
     _editorScrollController.dispose();
@@ -2865,6 +2874,15 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
           'No editing version selected. Open Manage Handbook and click Open.',
         );
       }
+      final editingVersionSnap = await _db
+          .collection(_colHbVersion)
+          .doc(editingVersion)
+          .get();
+      if (!editingVersionSnap.exists) {
+        throw Exception(
+          'This handbook version no longer exists. Return to Manage Handbook and open a valid version.',
+        );
+      }
       final editingLabel =
           (data['editingVersionLabel'] ??
                   (editingVersion == activeVersion
@@ -2879,6 +2897,7 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
         _handbookVersion = editingLabel;
         _loadingContext = false;
       });
+      _bindVersionDoc();
       _bindNodes();
     } catch (e) {
       if (!mounted) return;
@@ -2970,6 +2989,43 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
         );
   }
 
+  void _bindVersionDoc() {
+    final handbookId = _handbookId;
+    if (handbookId == null || handbookId.isEmpty) return;
+    _versionSub?.cancel();
+    _versionSub = _db
+        .collection(_colHbVersion)
+        .doc(handbookId)
+        .snapshots()
+        .listen(
+          (snapshot) {
+            if (!mounted) return;
+            if (!snapshot.exists) {
+              _nodeSub?.cancel();
+              _safeSetState(() {
+                _contextError =
+                    'This handbook version no longer exists. Return to Manage Handbook and open a valid version.';
+                _loadingContext = false;
+                _handbookId = null;
+              });
+              return;
+            }
+
+            final data = snapshot.data() ?? const <String, dynamic>{};
+            final nextLabel = (data['label'] ?? _handbookVersion)
+                .toString()
+                .trim();
+            if (nextLabel.isNotEmpty && nextLabel != _handbookVersion) {
+              _safeSetState(() => _handbookVersion = nextLabel);
+            }
+          },
+          onError: (e) {
+            if (!mounted) return;
+            setState(() => _contextError = e.toString());
+          },
+        );
+  }
+
   Future<void> _switchToNode(String nodeId, {bool force = false}) async {
     if (!force && nodeId == _selectedNodeId) return;
     final switchVersion = ++_switchVersion;
@@ -3008,26 +3064,27 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
           cached.attachments,
         );
       } else {
-      try {
-        final contentSnap = await _db
-            .collection(_colHbContents)
-            .doc(node.id)
-            .get();
-        final contentData = contentSnap.data() ?? const <String, dynamic>{};
-        final stored = (contentData['content'] ?? '').toString();
-        if (stored.trim().isNotEmpty) {
-          resolvedContent = stored;
-        }
-        final rawAttachments = (contentData['attachments'] as List?) ?? const [];
-        resolvedAttachments = rawAttachments
-            .whereType<Map>()
-            .map((e) => Map<String, dynamic>.from(e.cast<String, dynamic>()))
-            .toList();
-        _contentCacheByNodeId[node.id] = _CachedNodeContent(
-          contentJson: resolvedContent,
-          attachments: List<Map<String, dynamic>>.from(resolvedAttachments),
-        );
-      } catch (_) {}
+        try {
+          final contentSnap = await _db
+              .collection(_colHbContents)
+              .doc(node.id)
+              .get();
+          final contentData = contentSnap.data() ?? const <String, dynamic>{};
+          final stored = (contentData['content'] ?? '').toString();
+          if (stored.trim().isNotEmpty) {
+            resolvedContent = stored;
+          }
+          final rawAttachments =
+              (contentData['attachments'] as List?) ?? const [];
+          resolvedAttachments = rawAttachments
+              .whereType<Map>()
+              .map((e) => Map<String, dynamic>.from(e.cast<String, dynamic>()))
+              .toList();
+          _contentCacheByNodeId[node.id] = _CachedNodeContent(
+            contentJson: resolvedContent,
+            attachments: List<Map<String, dynamic>>.from(resolvedAttachments),
+          );
+        } catch (_) {}
       }
     }
 
@@ -3362,7 +3419,8 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
     }
   }
 
-  bool get _hasAnyUnsavedDrafts => _currentNodeDirty || _pendingNodeDrafts.isNotEmpty;
+  bool get _hasAnyUnsavedDrafts =>
+      _currentNodeDirty || _pendingNodeDrafts.isNotEmpty;
 
   void _refreshUnsavedIndicator() {
     _hasUnsavedChanges = _hasAnyUnsavedDrafts;
@@ -3446,7 +3504,8 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
         await _appendHandbookEditLog(
           action: 'bulk_save_drafts_$source',
           sectionId: _selectedNodeId ?? '',
-          sectionTitle: 'Saved ${_pendingNodeDrafts.length} draft entr${_pendingNodeDrafts.length == 1 ? 'y' : 'ies'}',
+          sectionTitle:
+              'Saved ${_pendingNodeDrafts.length} draft entr${_pendingNodeDrafts.length == 1 ? 'y' : 'ies'}',
           note: note,
         );
       } catch (_) {}
@@ -3482,9 +3541,7 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
 
   void _requestEditorFocusIfEditable() {
     if (!mounted) return;
-    if (_selectedNode == null ||
-        _isEditorReadOnly ||
-        _isTableCellEditing) {
+    if (_selectedNode == null || _isEditorReadOnly || _isTableCellEditing) {
       return;
     }
     _editorController.skipRequestKeyboard = false;
@@ -3601,7 +3658,8 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
     }
     if (_imageInteractionMode && event is KeyDownEvent) {
       final key = event.logicalKey;
-      final isTypingCharacter = event.character != null &&
+      final isTypingCharacter =
+          event.character != null &&
           event.character!.isNotEmpty &&
           !HardwareKeyboard.instance.isControlPressed &&
           !HardwareKeyboard.instance.isMetaPressed &&
@@ -3636,7 +3694,8 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
           selection.isCollapsed &&
           _isImageOffset(selection.baseOffset)) {
         final key = event.logicalKey;
-        final isTypingCharacter = event is KeyDownEvent &&
+        final isTypingCharacter =
+            event is KeyDownEvent &&
             event.character != null &&
             event.character!.isNotEmpty &&
             !HardwareKeyboard.instance.isControlPressed &&
@@ -4628,451 +4687,500 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
                         child: Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                      _toolbarGroupBlock(
-                        label: 'Quick Access',
-                        topRow: [
-                          quickRibbonIcon(
-                            icon: Icons.undo_rounded,
-                            tooltip: 'Undo',
-                            onPressed:
-                                _canEditDocumentActions &&
-                                    _editorController.hasUndo
-                                ? _undoEditorChange
-                                : null,
-                          ),
-                          quickRibbonIcon(
-                            icon: Icons.redo_rounded,
-                            tooltip: 'Redo',
-                            onPressed:
-                                _canEditDocumentActions &&
-                                    _editorController.hasRedo
-                                ? _redoEditorChange
-                                : null,
-                          ),
-                          quickRibbonIcon(
-                            icon: Icons.save_outlined,
-                            tooltip: 'Save now',
-                            onPressed:
-                                (_isWorkflowReadOnly ||
-                                    !_editingEnabled ||
-                                    !_hasUnsavedChanges)
-                                ? null
-                                : () => _saveNodeNow(source: 'manual'),
-                          ),
-                          quickRibbonIcon(
-                            icon: _autoSaveEnabled
-                                ? Icons.sync_rounded
-                                : Icons.sync_disabled_rounded,
-                            tooltip: _autoSaveEnabled
-                                ? 'Auto Save: On'
-                                : 'Auto Save: Off',
-                            active: _autoSaveEnabled,
-                            onPressed: (_isWorkflowReadOnly || !_editingEnabled)
-                                ? null
-                                : () {
-                                    setState(() {
-                                      _autoSaveEnabled = !_autoSaveEnabled;
-                                    });
-                                    if (!_autoSaveEnabled) {
-                                      _autosaveTimer?.cancel();
-                                    } else {
-                                      _scheduleAutosaveDebounced();
-                                    }
-                                    _publishSaveViewState();
-                                  },
-                          ),
-                        ],
-                      ),
-                      _toolbarGroupDivider(),
-                      _toolbarGroupBlock(
-                        label: 'Font',
-                        topRow: [
-                          _toolbarDropdownField<String>(
-                            value: fontFamilyKey,
-                            width: 146,
-                            items: _fontFamilyOptions
-                                .map(
-                                  (opt) => DropdownMenuItem<String>(
-                                    value: opt.key,
-                                    child: Text(
-                                      opt.value,
-                                      overflow: TextOverflow.ellipsis,
+                            _toolbarGroupBlock(
+                              label: 'Quick Access',
+                              topRow: [
+                                quickRibbonIcon(
+                                  icon: Icons.undo_rounded,
+                                  tooltip: 'Undo',
+                                  onPressed:
+                                      _canEditDocumentActions &&
+                                          _editorController.hasUndo
+                                      ? _undoEditorChange
+                                      : null,
+                                ),
+                                quickRibbonIcon(
+                                  icon: Icons.redo_rounded,
+                                  tooltip: 'Redo',
+                                  onPressed:
+                                      _canEditDocumentActions &&
+                                          _editorController.hasRedo
+                                      ? _redoEditorChange
+                                      : null,
+                                ),
+                                quickRibbonIcon(
+                                  icon: Icons.save_outlined,
+                                  tooltip: 'Save now',
+                                  onPressed:
+                                      (_isWorkflowReadOnly ||
+                                          !_editingEnabled ||
+                                          !_hasUnsavedChanges)
+                                      ? null
+                                      : () => _saveNodeNow(source: 'manual'),
+                                ),
+                                quickRibbonIcon(
+                                  icon: _autoSaveEnabled
+                                      ? Icons.sync_rounded
+                                      : Icons.sync_disabled_rounded,
+                                  tooltip: _autoSaveEnabled
+                                      ? 'Auto Save: On'
+                                      : 'Auto Save: Off',
+                                  active: _autoSaveEnabled,
+                                  onPressed:
+                                      (_isWorkflowReadOnly || !_editingEnabled)
+                                      ? null
+                                      : () {
+                                          setState(() {
+                                            _autoSaveEnabled =
+                                                !_autoSaveEnabled;
+                                          });
+                                          if (!_autoSaveEnabled) {
+                                            _autosaveTimer?.cancel();
+                                          } else {
+                                            _scheduleAutosaveDebounced();
+                                          }
+                                          _publishSaveViewState();
+                                        },
+                                ),
+                              ],
+                            ),
+                            _toolbarGroupDivider(),
+                            _toolbarGroupBlock(
+                              label: 'Font',
+                              topRow: [
+                                _toolbarDropdownField<String>(
+                                  value: fontFamilyKey,
+                                  width: 146,
+                                  items: _fontFamilyOptions
+                                      .map(
+                                        (opt) => DropdownMenuItem<String>(
+                                          value: opt.key,
+                                          child: Text(
+                                            opt.value,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                      )
+                                      .toList(growable: false),
+                                  onChanged: !_canEditDocumentActions
+                                      ? null
+                                      : (value) {
+                                          if (value == null) return;
+                                          _setFontFamily(value);
+                                        },
+                                ),
+                                _toolbarDropdownField<int>(
+                                  value: fontSizePt,
+                                  width: 54,
+                                  items: const [
+                                    DropdownMenuItem(
+                                      value: 10,
+                                      child: Text('10'),
+                                    ),
+                                    DropdownMenuItem(
+                                      value: 12,
+                                      child: Text('12'),
+                                    ),
+                                    DropdownMenuItem(
+                                      value: 14,
+                                      child: Text('14'),
+                                    ),
+                                    DropdownMenuItem(
+                                      value: 18,
+                                      child: Text('18'),
+                                    ),
+                                    DropdownMenuItem(
+                                      value: 24,
+                                      child: Text('24'),
+                                    ),
+                                  ],
+                                  onChanged: !_canEditDocumentActions
+                                      ? null
+                                      : (value) {
+                                          if (value == null) return;
+                                          _setFontSizePoint(value);
+                                        },
+                                ),
+                                _groupedToolIconButton(
+                                  icon: Icons.text_increase_rounded,
+                                  tooltip: 'Increase font size',
+                                  onPressed: () =>
+                                      _stepFontSize(increase: true),
+                                  active: false,
+                                ),
+                                _groupedToolIconButton(
+                                  icon: Icons.text_decrease_rounded,
+                                  tooltip: 'Decrease font size',
+                                  onPressed: () =>
+                                      _stepFontSize(increase: false),
+                                  active: false,
+                                ),
+                                PopupMenuButton<_CaseTransform>(
+                                  onSelected: _applyCaseTransform,
+                                  tooltip: 'Change case',
+                                  itemBuilder: (context) => const [
+                                    PopupMenuItem(
+                                      value: _CaseTransform.sentence,
+                                      child: Text('Sentence case.'),
+                                    ),
+                                    PopupMenuItem(
+                                      value: _CaseTransform.lowercase,
+                                      child: Text('lowercase'),
+                                    ),
+                                    PopupMenuItem(
+                                      value: _CaseTransform.uppercase,
+                                      child: Text('UPPERCASE'),
+                                    ),
+                                    PopupMenuItem(
+                                      value: _CaseTransform.capitalize,
+                                      child: Text('Capitalize Each Word'),
+                                    ),
+                                    PopupMenuItem(
+                                      value: _CaseTransform.toggle,
+                                      child: Text('tOGGLE cASE'),
+                                    ),
+                                  ],
+                                  child: _toolPopupIcon(
+                                    tooltip: 'Change case',
+                                    icon: const Text(
+                                      'Aa',
+                                      style: TextStyle(
+                                        color: _text,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w700,
+                                      ),
                                     ),
                                   ),
-                                )
-                                .toList(growable: false),
-                            onChanged: !_canEditDocumentActions
-                                ? null
-                                : (value) {
-                                    if (value == null) return;
-                                    _setFontFamily(value);
-                                  },
-                          ),
-                          _toolbarDropdownField<int>(
-                            value: fontSizePt,
-                            width: 54,
-                            items: const [
-                              DropdownMenuItem(value: 10, child: Text('10')),
-                              DropdownMenuItem(value: 12, child: Text('12')),
-                              DropdownMenuItem(value: 14, child: Text('14')),
-                              DropdownMenuItem(value: 18, child: Text('18')),
-                              DropdownMenuItem(value: 24, child: Text('24')),
-                            ],
-                            onChanged: !_canEditDocumentActions
-                                ? null
-                                : (value) {
-                                    if (value == null) return;
-                                    _setFontSizePoint(value);
-                                  },
-                          ),
-                          _groupedToolIconButton(
-                            icon: Icons.text_increase_rounded,
-                            tooltip: 'Increase font size',
-                            onPressed: () => _stepFontSize(increase: true),
-                            active: false,
-                          ),
-                          _groupedToolIconButton(
-                            icon: Icons.text_decrease_rounded,
-                            tooltip: 'Decrease font size',
-                            onPressed: () => _stepFontSize(increase: false),
-                            active: false,
-                          ),
-                          PopupMenuButton<_CaseTransform>(
-                            onSelected: _applyCaseTransform,
-                            tooltip: 'Change case',
-                            itemBuilder: (context) => const [
-                              PopupMenuItem(
-                                value: _CaseTransform.sentence,
-                                child: Text('Sentence case.'),
-                              ),
-                              PopupMenuItem(
-                                value: _CaseTransform.lowercase,
-                                child: Text('lowercase'),
-                              ),
-                              PopupMenuItem(
-                                value: _CaseTransform.uppercase,
-                                child: Text('UPPERCASE'),
-                              ),
-                              PopupMenuItem(
-                                value: _CaseTransform.capitalize,
-                                child: Text('Capitalize Each Word'),
-                              ),
-                              PopupMenuItem(
-                                value: _CaseTransform.toggle,
-                                child: Text('tOGGLE cASE'),
-                              ),
-                            ],
-                            child: _toolPopupIcon(
-                              tooltip: 'Change case',
-                              icon: const Text(
-                                'Aa',
-                                style: TextStyle(
-                                  color: _text,
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w700,
                                 ),
-                              ),
-                            ),
-                          ),
-                          PopupMenuButton<String>(
-                            onSelected: _setTextColor,
-                            itemBuilder: (context) =>
-                                _buildColorPopupEntries(forBackground: false),
-                            tooltip: 'Text color',
-                            child: _toolPopupIcon(
-                              tooltip: 'Text color',
-                              icon: Icon(
-                                Icons.format_color_text_rounded,
-                                size: 16,
-                                color: textColor == null
-                                    ? _text
-                                    : _hexToColor(textColor, fallback: _text),
-                              ),
-                            ),
-                          ),
-                          PopupMenuButton<String>(
-                            onSelected: _setBackgroundColor,
-                            itemBuilder: (context) =>
-                                _buildColorPopupEntries(forBackground: true),
-                            tooltip: 'Highlight color',
-                            child: _toolPopupIcon(
-                              tooltip: 'Highlight color',
-                              icon: Container(
-                                width: 14,
-                                height: 14,
-                                decoration: BoxDecoration(
-                                  color: highlightColor == null
-                                      ? const Color(0xFFEFF3F0)
-                                      : _hexToColor(
-                                          highlightColor,
-                                          fallback: const Color(0xFFEFF3F0),
-                                        ),
-                                  borderRadius: BorderRadius.circular(3),
-                                  border: Border.all(
-                                    color: Colors.black.withValues(alpha: 0.16),
+                                PopupMenuButton<String>(
+                                  onSelected: _setTextColor,
+                                  itemBuilder: (context) =>
+                                      _buildColorPopupEntries(
+                                        forBackground: false,
+                                      ),
+                                  tooltip: 'Text color',
+                                  child: _toolPopupIcon(
+                                    tooltip: 'Text color',
+                                    icon: Icon(
+                                      Icons.format_color_text_rounded,
+                                      size: 16,
+                                      color: textColor == null
+                                          ? _text
+                                          : _hexToColor(
+                                              textColor,
+                                              fallback: _text,
+                                            ),
+                                    ),
                                   ),
                                 ),
+                                PopupMenuButton<String>(
+                                  onSelected: _setBackgroundColor,
+                                  itemBuilder: (context) =>
+                                      _buildColorPopupEntries(
+                                        forBackground: true,
+                                      ),
+                                  tooltip: 'Highlight color',
+                                  child: _toolPopupIcon(
+                                    tooltip: 'Highlight color',
+                                    icon: Container(
+                                      width: 14,
+                                      height: 14,
+                                      decoration: BoxDecoration(
+                                        color: highlightColor == null
+                                            ? const Color(0xFFEFF3F0)
+                                            : _hexToColor(
+                                                highlightColor,
+                                                fallback: const Color(
+                                                  0xFFEFF3F0,
+                                                ),
+                                              ),
+                                        borderRadius: BorderRadius.circular(3),
+                                        border: Border.all(
+                                          color: Colors.black.withValues(
+                                            alpha: 0.16,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                              bottomRow: [
+                                _groupedToolIconButton(
+                                  icon: Icons.format_bold_rounded,
+                                  tooltip: 'Bold',
+                                  onPressed: () => _toggleInlineFormat(
+                                    _InlineFormatType.bold,
+                                  ),
+                                  active: _isInlineActive(
+                                    _InlineFormatType.bold,
+                                  ),
+                                ),
+                                _groupedToolIconButton(
+                                  icon: Icons.format_italic_rounded,
+                                  tooltip: 'Italic',
+                                  onPressed: () => _toggleInlineFormat(
+                                    _InlineFormatType.italic,
+                                  ),
+                                  active: _isInlineActive(
+                                    _InlineFormatType.italic,
+                                  ),
+                                ),
+                                _groupedToolIconButton(
+                                  icon: Icons.format_underline_rounded,
+                                  tooltip: 'Underline',
+                                  onPressed: () => _toggleInlineFormat(
+                                    _InlineFormatType.underline,
+                                  ),
+                                  active: _isInlineActive(
+                                    _InlineFormatType.underline,
+                                  ),
+                                ),
+                                _groupedToolIconButton(
+                                  icon: Icons.format_strikethrough_rounded,
+                                  tooltip: 'Strikethrough',
+                                  onPressed: () => _toggleInlineFormat(
+                                    _InlineFormatType.strike,
+                                  ),
+                                  active: _isInlineActive(
+                                    _InlineFormatType.strike,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            _toolbarGroupDivider(),
+                            _toolbarGroupBlock(
+                              label: 'Paragraph',
+                              topRow: [
+                                _groupedToolIconButton(
+                                  icon: Icons.format_list_bulleted_rounded,
+                                  tooltip: 'Bulleted list',
+                                  onPressed: () =>
+                                      _toggleListFormat(_ListFormatType.bullet),
+                                  active: _isListActive(_ListFormatType.bullet),
+                                ),
+                                _groupedToolIconButton(
+                                  icon: Icons.format_list_numbered_rounded,
+                                  tooltip: 'Numbered list',
+                                  onPressed: () => _toggleListFormat(
+                                    _ListFormatType.numbered,
+                                  ),
+                                  active: _isListActive(
+                                    _ListFormatType.numbered,
+                                  ),
+                                ),
+                                _groupedToolIconButton(
+                                  icon: Icons.checklist_rounded,
+                                  tooltip: 'Checklist',
+                                  onPressed: () =>
+                                      _toggleListFormat(_ListFormatType.check),
+                                  active: _isListActive(_ListFormatType.check),
+                                ),
+                                _groupedToolIconButton(
+                                  icon: Icons.format_indent_decrease_rounded,
+                                  tooltip: 'Outdent',
+                                  onPressed: () =>
+                                      _indentSelection(increase: false),
+                                  active: false,
+                                ),
+                                _groupedToolIconButton(
+                                  icon: Icons.format_indent_increase_rounded,
+                                  tooltip: 'Indent',
+                                  onPressed: () =>
+                                      _indentSelection(increase: true),
+                                  active: false,
+                                ),
+                              ],
+                              bottomRow: [
+                                _groupedToolIconButton(
+                                  icon: Icons.format_align_left_rounded,
+                                  tooltip: 'Align left',
+                                  onPressed: () => _setAlignment('left'),
+                                  active: alignment == 'left',
+                                ),
+                                _groupedToolIconButton(
+                                  icon: Icons.format_align_center_rounded,
+                                  tooltip: 'Align center',
+                                  onPressed: () => _setAlignment('center'),
+                                  active: alignment == 'center',
+                                ),
+                                _groupedToolIconButton(
+                                  icon: Icons.format_align_right_rounded,
+                                  tooltip: 'Align right',
+                                  onPressed: () => _setAlignment('right'),
+                                  active: alignment == 'right',
+                                ),
+                                _groupedToolIconButton(
+                                  icon: Icons.format_align_justify_rounded,
+                                  tooltip: 'Justify',
+                                  onPressed: () => _setAlignment('justify'),
+                                  active: alignment == 'justify',
+                                ),
+                              ],
+                            ),
+                            _toolbarGroupDivider(),
+                            _toolbarGroupBlock(
+                              label: 'Styles',
+                              topRow: [
+                                _groupedToolIconButton(
+                                  icon: Icons.text_fields_rounded,
+                                  tooltip: 'Normal text',
+                                  onPressed: () => _applyStylePreset('normal'),
+                                  active: headerLevel == null && !quoteActive,
+                                ),
+                                _groupedToolIconButton(
+                                  icon: Icons.title_rounded,
+                                  tooltip: 'Heading 1',
+                                  onPressed: () => _applyStylePreset('h1'),
+                                  active: headerLevel == 1,
+                                ),
+                                _groupedToolIconButton(
+                                  icon: Icons.subtitles_rounded,
+                                  tooltip: 'Heading 2',
+                                  onPressed: () => _applyStylePreset('h2'),
+                                  active: headerLevel == 2,
+                                ),
+                              ],
+                              bottomRow: [
+                                _groupedToolIconButton(
+                                  icon: Icons.format_quote_rounded,
+                                  tooltip: 'Quote',
+                                  onPressed: () => _applyStylePreset('quote'),
+                                  active: quoteActive,
+                                ),
+                                _groupedToolIconButton(
+                                  icon: Icons.code_rounded,
+                                  tooltip: 'Code block',
+                                  onPressed: _toggleCodeBlock,
+                                  active: _isCodeBlockActive(),
+                                ),
+                                _groupedToolIconButton(
+                                  icon: Icons.format_clear_rounded,
+                                  tooltip: 'Clear formatting',
+                                  onPressed: _clearSelectionFormatting,
+                                  active: false,
+                                ),
+                              ],
+                            ),
+                            _toolbarGroupDivider(),
+                            _toolbarGroupBlock(
+                              label: 'Insert',
+                              topRow: [
+                                _groupedToolIconButton(
+                                  icon: Icons.table_rows_rounded,
+                                  tooltip: 'Insert table',
+                                  onPressed: () => _handleInsertAction('table'),
+                                  active: false,
+                                ),
+                                _groupedToolIconButton(
+                                  icon: Icons.image_outlined,
+                                  tooltip: 'Insert image',
+                                  onPressed: () => _handleInsertAction('image'),
+                                  active: false,
+                                ),
+                                _groupedToolIconButton(
+                                  icon: Icons.attach_file_rounded,
+                                  tooltip: 'Insert attachment',
+                                  onPressed: () =>
+                                      _handleInsertAction('attachment'),
+                                  active: false,
+                                ),
+                                _groupedToolIconButton(
+                                  icon: Icons.link_rounded,
+                                  tooltip: 'Insert hyperlink',
+                                  onPressed: () => _handleInsertAction('link'),
+                                  active: false,
+                                ),
+                              ],
+                            ),
+                            if (hasSelectedImage) ...[
+                              _toolbarGroupDivider(),
+                              _toolbarGroupBlock(
+                                label: 'Image',
+                                topRow: [
+                                  _groupedToolIconButton(
+                                    icon: Icons.photo_size_select_large_rounded,
+                                    tooltip: 'Image size',
+                                    onPressed: () =>
+                                        _showImageSizeControlDialog(
+                                          selectedImageOffset,
+                                        ),
+                                    active: false,
+                                    widgetKey: _imageSizeButtonKey,
+                                  ),
+                                  _groupedToolIconButton(
+                                    icon: _imageCropMode
+                                        ? Icons.crop_free_rounded
+                                        : Icons.crop_rounded,
+                                    tooltip: _imageCropMode
+                                        ? 'Crop mode on'
+                                        : 'Crop mode off',
+                                    onPressed: () {
+                                      setState(() {
+                                        _imageCropMode = !_imageCropMode;
+                                      });
+                                    },
+                                    active: _imageCropMode,
+                                  ),
+                                  _groupedToolIconButton(
+                                    icon: Icons.rotate_left_rounded,
+                                    tooltip: 'Rotate left',
+                                    onPressed: () =>
+                                        _rotateImageLeft(selectedImageOffset),
+                                    active: false,
+                                  ),
+                                  _groupedToolIconButton(
+                                    icon: Icons.rotate_right_rounded,
+                                    tooltip: 'Rotate right',
+                                    onPressed: () =>
+                                        _rotateImageRight(selectedImageOffset),
+                                    active: false,
+                                  ),
+                                ],
+                                bottomRow: [
+                                  _groupedToolIconButton(
+                                    icon: Icons.format_align_left_rounded,
+                                    tooltip: 'Align left',
+                                    onPressed: () => _setImageAlignment(
+                                      selectedImageOffset,
+                                      'left',
+                                    ),
+                                    active: selectedImageAlignment == 'left',
+                                  ),
+                                  _groupedToolIconButton(
+                                    icon: Icons.format_align_center_rounded,
+                                    tooltip: 'Align center',
+                                    onPressed: () => _setImageAlignment(
+                                      selectedImageOffset,
+                                      'center',
+                                    ),
+                                    active: selectedImageAlignment == 'center',
+                                  ),
+                                  _groupedToolIconButton(
+                                    icon: Icons.format_align_right_rounded,
+                                    tooltip: 'Align right',
+                                    onPressed: () => _setImageAlignment(
+                                      selectedImageOffset,
+                                      'right',
+                                    ),
+                                    active: selectedImageAlignment == 'right',
+                                  ),
+                                  _groupedToolIconButton(
+                                    icon: Icons.view_agenda_rounded,
+                                    tooltip: selectedImageDisplayMode == 'full'
+                                        ? 'Display mode: full width'
+                                        : 'Display mode: inline',
+                                    onPressed: () => _setImageDisplayMode(
+                                      selectedImageOffset,
+                                      selectedImageDisplayMode == 'full'
+                                          ? 'inline'
+                                          : 'full',
+                                    ),
+                                    active: selectedImageDisplayMode == 'full',
+                                  ),
+                                ],
                               ),
-                            ),
-                          ),
-                        ],
-                        bottomRow: [
-                          _groupedToolIconButton(
-                            icon: Icons.format_bold_rounded,
-                            tooltip: 'Bold',
-                            onPressed: () =>
-                                _toggleInlineFormat(_InlineFormatType.bold),
-                            active: _isInlineActive(_InlineFormatType.bold),
-                          ),
-                          _groupedToolIconButton(
-                            icon: Icons.format_italic_rounded,
-                            tooltip: 'Italic',
-                            onPressed: () =>
-                                _toggleInlineFormat(_InlineFormatType.italic),
-                            active: _isInlineActive(_InlineFormatType.italic),
-                          ),
-                          _groupedToolIconButton(
-                            icon: Icons.format_underline_rounded,
-                            tooltip: 'Underline',
-                            onPressed: () => _toggleInlineFormat(
-                              _InlineFormatType.underline,
-                            ),
-                            active: _isInlineActive(
-                              _InlineFormatType.underline,
-                            ),
-                          ),
-                          _groupedToolIconButton(
-                            icon: Icons.format_strikethrough_rounded,
-                            tooltip: 'Strikethrough',
-                            onPressed: () =>
-                                _toggleInlineFormat(_InlineFormatType.strike),
-                            active: _isInlineActive(_InlineFormatType.strike),
-                          ),
-                        ],
-                      ),
-                      _toolbarGroupDivider(),
-                      _toolbarGroupBlock(
-                        label: 'Paragraph',
-                        topRow: [
-                          _groupedToolIconButton(
-                            icon: Icons.format_list_bulleted_rounded,
-                            tooltip: 'Bulleted list',
-                            onPressed: () =>
-                                _toggleListFormat(_ListFormatType.bullet),
-                            active: _isListActive(_ListFormatType.bullet),
-                          ),
-                          _groupedToolIconButton(
-                            icon: Icons.format_list_numbered_rounded,
-                            tooltip: 'Numbered list',
-                            onPressed: () =>
-                                _toggleListFormat(_ListFormatType.numbered),
-                            active: _isListActive(_ListFormatType.numbered),
-                          ),
-                          _groupedToolIconButton(
-                            icon: Icons.checklist_rounded,
-                            tooltip: 'Checklist',
-                            onPressed: () =>
-                                _toggleListFormat(_ListFormatType.check),
-                            active: _isListActive(_ListFormatType.check),
-                          ),
-                          _groupedToolIconButton(
-                            icon: Icons.format_indent_decrease_rounded,
-                            tooltip: 'Outdent',
-                            onPressed: () => _indentSelection(increase: false),
-                            active: false,
-                          ),
-                          _groupedToolIconButton(
-                            icon: Icons.format_indent_increase_rounded,
-                            tooltip: 'Indent',
-                            onPressed: () => _indentSelection(increase: true),
-                            active: false,
-                          ),
-                        ],
-                        bottomRow: [
-                          _groupedToolIconButton(
-                            icon: Icons.format_align_left_rounded,
-                            tooltip: 'Align left',
-                            onPressed: () => _setAlignment('left'),
-                            active: alignment == 'left',
-                          ),
-                          _groupedToolIconButton(
-                            icon: Icons.format_align_center_rounded,
-                            tooltip: 'Align center',
-                            onPressed: () => _setAlignment('center'),
-                            active: alignment == 'center',
-                          ),
-                          _groupedToolIconButton(
-                            icon: Icons.format_align_right_rounded,
-                            tooltip: 'Align right',
-                            onPressed: () => _setAlignment('right'),
-                            active: alignment == 'right',
-                          ),
-                          _groupedToolIconButton(
-                            icon: Icons.format_align_justify_rounded,
-                            tooltip: 'Justify',
-                            onPressed: () => _setAlignment('justify'),
-                            active: alignment == 'justify',
-                          ),
-                        ],
-                      ),
-                      _toolbarGroupDivider(),
-                      _toolbarGroupBlock(
-                        label: 'Styles',
-                        topRow: [
-                          _groupedToolIconButton(
-                            icon: Icons.text_fields_rounded,
-                            tooltip: 'Normal text',
-                            onPressed: () => _applyStylePreset('normal'),
-                            active: headerLevel == null && !quoteActive,
-                          ),
-                          _groupedToolIconButton(
-                            icon: Icons.title_rounded,
-                            tooltip: 'Heading 1',
-                            onPressed: () => _applyStylePreset('h1'),
-                            active: headerLevel == 1,
-                          ),
-                          _groupedToolIconButton(
-                            icon: Icons.subtitles_rounded,
-                            tooltip: 'Heading 2',
-                            onPressed: () => _applyStylePreset('h2'),
-                            active: headerLevel == 2,
-                          ),
-                        ],
-                        bottomRow: [
-                          _groupedToolIconButton(
-                            icon: Icons.format_quote_rounded,
-                            tooltip: 'Quote',
-                            onPressed: () => _applyStylePreset('quote'),
-                            active: quoteActive,
-                          ),
-                          _groupedToolIconButton(
-                            icon: Icons.code_rounded,
-                            tooltip: 'Code block',
-                            onPressed: _toggleCodeBlock,
-                            active: _isCodeBlockActive(),
-                          ),
-                          _groupedToolIconButton(
-                            icon: Icons.format_clear_rounded,
-                            tooltip: 'Clear formatting',
-                            onPressed: _clearSelectionFormatting,
-                            active: false,
-                          ),
-                        ],
-                      ),
-                      _toolbarGroupDivider(),
-                      _toolbarGroupBlock(
-                        label: 'Insert',
-                        topRow: [
-                          _groupedToolIconButton(
-                            icon: Icons.table_rows_rounded,
-                            tooltip: 'Insert table',
-                            onPressed: () => _handleInsertAction('table'),
-                            active: false,
-                          ),
-                          _groupedToolIconButton(
-                            icon: Icons.image_outlined,
-                            tooltip: 'Insert image',
-                            onPressed: () => _handleInsertAction('image'),
-                            active: false,
-                          ),
-                          _groupedToolIconButton(
-                            icon: Icons.attach_file_rounded,
-                            tooltip: 'Insert attachment',
-                            onPressed: () => _handleInsertAction('attachment'),
-                            active: false,
-                          ),
-                          _groupedToolIconButton(
-                            icon: Icons.link_rounded,
-                            tooltip: 'Insert hyperlink',
-                            onPressed: () => _handleInsertAction('link'),
-                            active: false,
-                          ),
-                        ],
-                      ),
-                      if (hasSelectedImage) ...[
-                        _toolbarGroupDivider(),
-                        _toolbarGroupBlock(
-                          label: 'Image',
-                          topRow: [
-                            _groupedToolIconButton(
-                              icon: Icons.photo_size_select_large_rounded,
-                              tooltip: 'Image size',
-                              onPressed: () =>
-                                  _showImageSizeControlDialog(selectedImageOffset),
-                              active: false,
-                              widgetKey: _imageSizeButtonKey,
-                            ),
-                            _groupedToolIconButton(
-                              icon: _imageCropMode
-                                  ? Icons.crop_free_rounded
-                                  : Icons.crop_rounded,
-                              tooltip: _imageCropMode
-                                  ? 'Crop mode on'
-                                  : 'Crop mode off',
-                              onPressed: () {
-                                setState(() {
-                                  _imageCropMode = !_imageCropMode;
-                                });
-                              },
-                              active: _imageCropMode,
-                            ),
-                            _groupedToolIconButton(
-                              icon: Icons.rotate_left_rounded,
-                              tooltip: 'Rotate left',
-                              onPressed: () =>
-                                  _rotateImageLeft(selectedImageOffset),
-                              active: false,
-                            ),
-                            _groupedToolIconButton(
-                              icon: Icons.rotate_right_rounded,
-                              tooltip: 'Rotate right',
-                              onPressed: () =>
-                                  _rotateImageRight(selectedImageOffset),
-                              active: false,
-                            ),
-                          ],
-                          bottomRow: [
-                            _groupedToolIconButton(
-                              icon: Icons.format_align_left_rounded,
-                              tooltip: 'Align left',
-                              onPressed: () =>
-                                  _setImageAlignment(selectedImageOffset, 'left'),
-                              active: selectedImageAlignment == 'left',
-                            ),
-                            _groupedToolIconButton(
-                              icon: Icons.format_align_center_rounded,
-                              tooltip: 'Align center',
-                              onPressed: () => _setImageAlignment(
-                                selectedImageOffset,
-                                'center',
-                              ),
-                              active: selectedImageAlignment == 'center',
-                            ),
-                            _groupedToolIconButton(
-                              icon: Icons.format_align_right_rounded,
-                              tooltip: 'Align right',
-                              onPressed: () => _setImageAlignment(
-                                selectedImageOffset,
-                                'right',
-                              ),
-                              active: selectedImageAlignment == 'right',
-                            ),
-                            _groupedToolIconButton(
-                              icon: Icons.view_agenda_rounded,
-                              tooltip: selectedImageDisplayMode == 'full'
-                                  ? 'Display mode: full width'
-                                  : 'Display mode: inline',
-                              onPressed: () => _setImageDisplayMode(
-                                selectedImageOffset,
-                                selectedImageDisplayMode == 'full'
-                                    ? 'inline'
-                                    : 'full',
-                              ),
-                              active: selectedImageDisplayMode == 'full',
-                            ),
-                          ],
-                        ),
-                      ],
+                            ],
                           ],
                         ),
                       ),
@@ -5679,7 +5787,9 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
       quill.ChangeSource.local,
     );
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !_imageInteractionMode || _activeImageOffset != imageOffset) {
+      if (!mounted ||
+          !_imageInteractionMode ||
+          _activeImageOffset != imageOffset) {
         return;
       }
       _editorFocusNode.unfocus();
@@ -5921,16 +6031,16 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
     _editorController.skipRequestKeyboard = true;
 
     final styleMap = _effectiveImageStyleMap(offset);
-    final currentWidth =
-        (_styleDouble(styleMap, 'width', fallback: _readImageWidth(offset) ?? 420))
-            .clamp(120, 1400);
-    final currentHeight =
-        (_styleDouble(
-              styleMap,
-              'height',
-              fallback: _readImageHeight(offset) ?? (currentWidth * 0.62),
-            ))
-            .clamp(90, 1400);
+    final currentWidth = (_styleDouble(
+      styleMap,
+      'width',
+      fallback: _readImageWidth(offset) ?? 420,
+    )).clamp(120, 1400);
+    final currentHeight = (_styleDouble(
+      styleMap,
+      'height',
+      fallback: _readImageHeight(offset) ?? (currentWidth * 0.62),
+    )).clamp(90, 1400);
 
     if (_imageCropMode) {
       var cropLeft = _styleDouble(styleMap, 'cropLeft');
@@ -5998,7 +6108,8 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
     if (_isCornerHandle(handle)) {
       final widthFromHorizontal = width + deltaX;
       final widthFromVertical = width + (deltaY * ratio);
-      width = (widthFromHorizontal - width).abs() >=
+      width =
+          (widthFromHorizontal - width).abs() >=
               (widthFromVertical - width).abs()
           ? widthFromHorizontal
           : widthFromVertical;
@@ -6082,7 +6193,8 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
       Offset(0, anchorBox.size.height),
       ancestor: overlayBox,
     );
-    final rightAlignedLeft = anchorBottomLeft.dx + anchorBox.size.width - panelWidth;
+    final rightAlignedLeft =
+        anchorBottomLeft.dx + anchorBox.size.width - panelWidth;
     final left = rightAlignedLeft.clamp(
       margin,
       math.max(margin, overlayBox.size.width - panelWidth - margin),
@@ -6127,10 +6239,8 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
                             divisions: 84,
                             onChanged: (value) =>
                                 setSheetState(() => previewWidth = value),
-                            onChangeEnd: (value) => _setImageWidth(
-                              imageOffset,
-                              value,
-                            ),
+                            onChangeEnd: (value) =>
+                                _setImageWidth(imageOffset, value),
                           ),
                           Row(
                             mainAxisAlignment: MainAxisAlignment.end,
@@ -6186,16 +6296,16 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
 
   void _setImageWidth(int offset, double width) {
     final styleMap = _effectiveImageStyleMap(offset);
-    final currentWidth =
-        (_styleDouble(styleMap, 'width', fallback: _readImageWidth(offset) ?? 420))
-            .clamp(120.0, 1400.0);
-    final currentHeight =
-        (_styleDouble(
-              styleMap,
-              'height',
-              fallback: _readImageHeight(offset) ?? (currentWidth * 0.62),
-            ))
-            .clamp(90.0, 1400.0);
+    final currentWidth = (_styleDouble(
+      styleMap,
+      'width',
+      fallback: _readImageWidth(offset) ?? 420,
+    )).clamp(120.0, 1400.0);
+    final currentHeight = (_styleDouble(
+      styleMap,
+      'height',
+      fallback: _readImageHeight(offset) ?? (currentWidth * 0.62),
+    )).clamp(90.0, 1400.0);
     final ratio = (currentHeight <= 0)
         ? (420 / 260)
         : (currentWidth / currentHeight).clamp(0.2, 8.0);
@@ -6522,9 +6632,7 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
                             if (!_entriesPanelCollapsed) ...[
                               SizedBox(
                                 width: 330,
-                                child: RepaintBoundary(
-                                  child: _leftTreePanel(),
-                                ),
+                                child: RepaintBoundary(child: _leftTreePanel()),
                               ),
                               const SizedBox(width: 12),
                             ],
@@ -6554,9 +6662,7 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
                             if (!_entriesPanelCollapsed) ...[
                               SizedBox(
                                 width: 300,
-                                child: RepaintBoundary(
-                                  child: _leftTreePanel(),
-                                ),
+                                child: RepaintBoundary(child: _leftTreePanel()),
                               ),
                               const SizedBox(width: 12),
                             ],
@@ -6594,9 +6700,7 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
                                 ],
                                 Expanded(
                                   flex: 8,
-                                  child: RepaintBoundary(
-                                    child: _editorPanel(),
-                                  ),
+                                  child: RepaintBoundary(child: _editorPanel()),
                                 ),
                                 if (!_outlinePanelCollapsed) ...[
                                   const SizedBox(height: 10),
@@ -7549,11 +7653,12 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
         autoFocus: false,
         expands: false,
         enableAlwaysIndentOnTab: false,
-        enableInteractiveSelection:
-            !_isEditorReadOnly && !_isTableCellEditing,
+        enableInteractiveSelection: !_isEditorReadOnly && !_isTableCellEditing,
         onKeyPressed: (event, node) => _handleEditorKeyPress(event),
         showCursor:
-            !_isEditorReadOnly && !_isTableCellEditing && !_imageInteractionMode,
+            !_isEditorReadOnly &&
+            !_isTableCellEditing &&
+            !_imageInteractionMode,
         onTapDown: (details, getPositionForOffset) {
           if (!_imageInteractionMode) return false;
           final localOffset = details.localPosition;
@@ -7561,7 +7666,8 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
           final tappedOffset = textPosition.offset;
           final activeImageOffset = _activeImageOffset;
           final resolvedTappedImage = _resolveImageOffset(tappedOffset);
-          final onActiveImage = activeImageOffset != null &&
+          final onActiveImage =
+              activeImageOffset != null &&
               resolvedTappedImage != null &&
               resolvedTappedImage == activeImageOffset &&
               _isImageOffset(activeImageOffset);
@@ -7698,308 +7804,311 @@ class _HandbookDocsEditorPageState extends State<HandbookDocsEditorPage> {
           child: TapRegion(
             groupId: _editorInteractionTapGroup,
             child: LayoutBuilder(
-            builder: (context, constraints) {
-              final compactHeight = constraints.maxHeight < 520;
-              final minimalHeight = constraints.maxHeight < 320;
-              final showRibbon =
-                  !_isEditorReadOnly && !minimalHeight && _showRibbon;
-              return Stack(
-                children: [
-                  Column(
-                    children: [
-                      if (showRibbon) _editorGroupedHomeToolbar(),
-                      if (!showRibbon &&
-                          !_isEditorReadOnly &&
-                          !minimalHeight &&
-                          _showRibbon == false)
-                        _editorCollapsedRibbonStrip(),
-                      if (_isEditorReadOnly && !compactHeight)
-                        Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
-                          color: _primary.withValues(alpha: 0.05),
-                          child: Text(
-                            _editorReadOnlyMessage,
-                            style: TextStyle(
-                              color: _primary,
-                              fontWeight: FontWeight.w800,
-                              fontSize: 12,
-                            ),
-                          ),
-                        ),
-                      Expanded(
-                        child: GestureDetector(
-                          behavior: HitTestBehavior.translucent,
-                          onTap: () {
-                            if (_isEditorReadOnly ||
-                                _isTableCellEditing ||
-                                _selectedNode == null) {
-                              return;
-                            }
-                            if (_imageInteractionMode) {
-                              // Let Quill onTapDown decide whether to keep or exit image mode.
-                              // Avoid competing focus changes here.
-                              return;
-                            }
-                            _editorController.skipRequestKeyboard = false;
-                            _editorFocusNode.requestFocus();
-                          },
-                          child: Container(
-                            margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFFF4F6F5),
-                              borderRadius: BorderRadius.circular(10),
-                              border: Border.all(
-                                color: Colors.black.withValues(alpha: 0.08),
+              builder: (context, constraints) {
+                final compactHeight = constraints.maxHeight < 520;
+                final minimalHeight = constraints.maxHeight < 320;
+                final showRibbon =
+                    !_isEditorReadOnly && !minimalHeight && _showRibbon;
+                return Stack(
+                  children: [
+                    Column(
+                      children: [
+                        if (showRibbon) _editorGroupedHomeToolbar(),
+                        if (!showRibbon &&
+                            !_isEditorReadOnly &&
+                            !minimalHeight &&
+                            _showRibbon == false)
+                          _editorCollapsedRibbonStrip(),
+                        if (_isEditorReadOnly && !compactHeight)
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+                            color: _primary.withValues(alpha: 0.05),
+                            child: Text(
+                              _editorReadOnlyMessage,
+                              style: TextStyle(
+                                color: _primary,
+                                fontWeight: FontWeight.w800,
+                                fontSize: 12,
                               ),
                             ),
-                            child: Column(
-                              children: [
-                                Expanded(
-                                  child: Center(
-                                    child: Container(
-                                      constraints: BoxConstraints(
-                                        maxWidth: paperMaxWidth,
-                                      ),
-                                      margin: const EdgeInsets.fromLTRB(
-                                        18,
-                                        14,
-                                        18,
-                                        14,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        color: Colors.white,
-                                        borderRadius: BorderRadius.circular(8),
-                                        border: Border.all(
-                                          color: Colors.black.withValues(
-                                            alpha: 0.08,
-                                          ),
+                          ),
+                        Expanded(
+                          child: GestureDetector(
+                            behavior: HitTestBehavior.translucent,
+                            onTap: () {
+                              if (_isEditorReadOnly ||
+                                  _isTableCellEditing ||
+                                  _selectedNode == null) {
+                                return;
+                              }
+                              if (_imageInteractionMode) {
+                                // Let Quill onTapDown decide whether to keep or exit image mode.
+                                // Avoid competing focus changes here.
+                                return;
+                              }
+                              _editorController.skipRequestKeyboard = false;
+                              _editorFocusNode.requestFocus();
+                            },
+                            child: Container(
+                              margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFF4F6F5),
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(
+                                  color: Colors.black.withValues(alpha: 0.08),
+                                ),
+                              ),
+                              child: Column(
+                                children: [
+                                  Expanded(
+                                    child: Center(
+                                      child: Container(
+                                        constraints: BoxConstraints(
+                                          maxWidth: paperMaxWidth,
                                         ),
-                                        boxShadow: const [
-                                          BoxShadow(
-                                            color: Color(0x12000000),
-                                            blurRadius: 16,
-                                            offset: Offset(0, 4),
+                                        margin: const EdgeInsets.fromLTRB(
+                                          18,
+                                          14,
+                                          18,
+                                          14,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: Colors.white,
+                                          borderRadius: BorderRadius.circular(
+                                            8,
                                           ),
-                                        ],
-                                      ),
-                                      child: Column(
-                                        children: [
-                                          if (!_isEditorReadOnly) ...[
-                                            Padding(
-                                              padding:
-                                                  const EdgeInsets.fromLTRB(
-                                                    22,
-                                                    10,
-                                                    22,
-                                                    6,
-                                                  ),
-                                              child: LayoutBuilder(
-                                                builder: (
-                                                  context,
-                                                  titleConstraints,
-                                                ) {
-                                                  final compactTitleRow =
-                                                      titleConstraints
-                                                              .maxWidth <
-                                                          860;
-                                                  final titleField = Row(
-                                                    children: [
-                                                      if (showTitleSectionNumber) ...[
-                                                        Text(
-                                                          '$selectedSectionNumber. ',
-                                                          style: const TextStyle(
-                                                            color: _text,
-                                                            fontWeight:
-                                                                FontWeight.w900,
-                                                            fontSize: 22,
+                                          border: Border.all(
+                                            color: Colors.black.withValues(
+                                              alpha: 0.08,
+                                            ),
+                                          ),
+                                          boxShadow: const [
+                                            BoxShadow(
+                                              color: Color(0x12000000),
+                                              blurRadius: 16,
+                                              offset: Offset(0, 4),
+                                            ),
+                                          ],
+                                        ),
+                                        child: Column(
+                                          children: [
+                                            if (!_isEditorReadOnly) ...[
+                                              Padding(
+                                                padding:
+                                                    const EdgeInsets.fromLTRB(
+                                                      22,
+                                                      10,
+                                                      22,
+                                                      6,
+                                                    ),
+                                                child: LayoutBuilder(
+                                                  builder: (context, titleConstraints) {
+                                                    final compactTitleRow =
+                                                        titleConstraints
+                                                            .maxWidth <
+                                                        860;
+                                                    final titleField = Row(
+                                                      children: [
+                                                        if (showTitleSectionNumber) ...[
+                                                          Text(
+                                                            '$selectedSectionNumber. ',
+                                                            style:
+                                                                const TextStyle(
+                                                                  color: _text,
+                                                                  fontWeight:
+                                                                      FontWeight
+                                                                          .w900,
+                                                                  fontSize: 22,
+                                                                ),
+                                                          ),
+                                                        ],
+                                                        Expanded(
+                                                          child: TextField(
+                                                            controller:
+                                                                _titleCtrl,
+                                                            readOnly:
+                                                                _isEditorReadOnly,
+                                                            style:
+                                                                const TextStyle(
+                                                                  color: _text,
+                                                                  fontWeight:
+                                                                      FontWeight
+                                                                          .w900,
+                                                                  fontSize: 22,
+                                                                ),
+                                                            decoration: const InputDecoration(
+                                                              border:
+                                                                  InputBorder
+                                                                      .none,
+                                                              enabledBorder:
+                                                                  InputBorder
+                                                                      .none,
+                                                              focusedBorder:
+                                                                  InputBorder
+                                                                      .none,
+                                                              disabledBorder:
+                                                                  InputBorder
+                                                                      .none,
+                                                              filled: false,
+                                                              isDense: true,
+                                                              contentPadding:
+                                                                  EdgeInsets
+                                                                      .zero,
+                                                              hintText:
+                                                                  'Node title',
+                                                            ),
                                                           ),
                                                         ),
                                                       ],
-                                                      Expanded(
-                                                        child: TextField(
-                                                          controller:
-                                                              _titleCtrl,
-                                                          readOnly:
-                                                              _isEditorReadOnly,
-                                                          style:
-                                                              const TextStyle(
-                                                                color: _text,
-                                                                fontWeight:
-                                                                    FontWeight
-                                                                        .w900,
-                                                                fontSize: 22,
-                                                              ),
-                                                          decoration:
-                                                              const InputDecoration(
-                                                                border:
-                                                                    InputBorder
-                                                                        .none,
-                                                                enabledBorder:
-                                                                    InputBorder
-                                                                        .none,
-                                                                focusedBorder:
-                                                                    InputBorder
-                                                                        .none,
-                                                                disabledBorder:
-                                                                    InputBorder
-                                                                        .none,
-                                                                filled: false,
-                                                                isDense: true,
-                                                                contentPadding:
-                                                                    EdgeInsets
-                                                                        .zero,
-                                                                hintText:
-                                                                    'Node title',
-                                                              ),
-                                                        ),
-                                                      ),
-                                                    ],
-                                                  );
-                                                  final toggle = Row(
-                                                    mainAxisSize:
-                                                        MainAxisSize.min,
-                                                    children: [
-                                                      const Text(
-                                                        'Section',
-                                                        style: TextStyle(
-                                                          color: _muted,
-                                                          fontWeight:
-                                                              FontWeight.w800,
-                                                          fontSize: 12,
-                                                        ),
-                                                      ),
-                                                      const SizedBox(width: 6),
-                                                      Switch.adaptive(
-                                                        value:
-                                                            _useSectionNumbering,
-                                                        onChanged:
-                                                            _isEditorReadOnly
-                                                            ? null
-                                                            : (value) {
-                                                                setState(() {
-                                                                  _useSectionNumbering =
-                                                                      value;
-                                                                });
-                                                              },
-                                                      ),
-                                                    ],
-                                                  );
-
-                                                  if (compactTitleRow) {
-                                                    return Column(
-                                                      crossAxisAlignment:
-                                                          CrossAxisAlignment
-                                                              .start,
+                                                    );
+                                                    final toggle = Row(
+                                                      mainAxisSize:
+                                                          MainAxisSize.min,
                                                       children: [
-                                                        titleField,
-                                                        const SizedBox(
-                                                          height: 2,
+                                                        const Text(
+                                                          'Section',
+                                                          style: TextStyle(
+                                                            color: _muted,
+                                                            fontWeight:
+                                                                FontWeight.w800,
+                                                            fontSize: 12,
+                                                          ),
                                                         ),
-                                                        Align(
-                                                          alignment: Alignment
-                                                              .centerRight,
-                                                          child: toggle,
+                                                        const SizedBox(
+                                                          width: 6,
+                                                        ),
+                                                        Switch.adaptive(
+                                                          value:
+                                                              _useSectionNumbering,
+                                                          onChanged:
+                                                              _isEditorReadOnly
+                                                              ? null
+                                                              : (value) {
+                                                                  setState(() {
+                                                                    _useSectionNumbering =
+                                                                        value;
+                                                                  });
+                                                                },
                                                         ),
                                                       ],
                                                     );
-                                                  }
-                                                  return Row(
+
+                                                    if (compactTitleRow) {
+                                                      return Column(
+                                                        crossAxisAlignment:
+                                                            CrossAxisAlignment
+                                                                .start,
+                                                        children: [
+                                                          titleField,
+                                                          const SizedBox(
+                                                            height: 2,
+                                                          ),
+                                                          Align(
+                                                            alignment: Alignment
+                                                                .centerRight,
+                                                            child: toggle,
+                                                          ),
+                                                        ],
+                                                      );
+                                                    }
+                                                    return Row(
+                                                      children: [
+                                                        Expanded(
+                                                          child: titleField,
+                                                        ),
+                                                        const SizedBox(
+                                                          width: 8,
+                                                        ),
+                                                        toggle,
+                                                      ],
+                                                    );
+                                                  },
+                                                ),
+                                              ),
+                                              Divider(
+                                                height: 1,
+                                                color: Colors.black.withValues(
+                                                  alpha: 0.08,
+                                                ),
+                                              ),
+                                            ],
+                                            Expanded(
+                                              child: ListenableBuilder(
+                                                listenable: _editorController,
+                                                child: MediaQuery(
+                                                  data: MediaQuery.of(context)
+                                                      .copyWith(
+                                                        textScaler:
+                                                            TextScaler.linear(
+                                                              _paperZoom,
+                                                            ),
+                                                      ),
+                                                  child: editorWidget,
+                                                ),
+                                                builder: (context, child) {
+                                                  final plain =
+                                                      _editorController.document
+                                                          .toPlainText()
+                                                          .replaceAll('\n', '')
+                                                          .trim();
+                                                  final showEmptyHint =
+                                                      plain.isEmpty &&
+                                                      !_isEditorReadOnly;
+                                                  return Stack(
                                                     children: [
-                                                      Expanded(
-                                                        child: titleField,
+                                                      Positioned.fill(
+                                                        child: child!,
                                                       ),
-                                                      const SizedBox(
-                                                        width: 8,
-                                                      ),
-                                                      toggle,
+                                                      if (showEmptyHint)
+                                                        const IgnorePointer(
+                                                          child: Padding(
+                                                            padding:
+                                                                EdgeInsets.fromLTRB(
+                                                                  38,
+                                                                  30,
+                                                                  38,
+                                                                  24,
+                                                                ),
+                                                            child: Align(
+                                                              alignment:
+                                                                  Alignment
+                                                                      .topLeft,
+                                                              child: Text(
+                                                                'Start writing this handbook section...',
+                                                                style: TextStyle(
+                                                                  color: _muted,
+                                                                  fontWeight:
+                                                                      FontWeight
+                                                                          .w600,
+                                                                  fontSize: 15,
+                                                                ),
+                                                              ),
+                                                            ),
+                                                          ),
+                                                        ),
                                                     ],
                                                   );
                                                 },
                                               ),
                                             ),
-                                            Divider(
-                                              height: 1,
-                                              color: Colors.black.withValues(
-                                                alpha: 0.08,
-                                              ),
-                                            ),
                                           ],
-                                          Expanded(
-                                            child: ListenableBuilder(
-                                              listenable: _editorController,
-                                              child: MediaQuery(
-                                                data: MediaQuery.of(
-                                                  context,
-                                                ).copyWith(
-                                                  textScaler: TextScaler.linear(
-                                                    _paperZoom,
-                                                  ),
-                                                ),
-                                                child: editorWidget,
-                                              ),
-                                              builder: (context, child) {
-                                                final plain = _editorController
-                                                    .document
-                                                    .toPlainText()
-                                                    .replaceAll('\n', '')
-                                                    .trim();
-                                                final showEmptyHint =
-                                                    plain.isEmpty &&
-                                                    !_isEditorReadOnly;
-                                                return Stack(
-                                                  children: [
-                                                    Positioned.fill(
-                                                      child: child!,
-                                                    ),
-                                                    if (showEmptyHint)
-                                                      const IgnorePointer(
-                                                        child: Padding(
-                                                          padding:
-                                                              EdgeInsets.fromLTRB(
-                                                                38,
-                                                                30,
-                                                                38,
-                                                                24,
-                                                              ),
-                                                          child: Align(
-                                                            alignment: Alignment
-                                                                .topLeft,
-                                                            child: Text(
-                                                              'Start writing this handbook section...',
-                                                              style: TextStyle(
-                                                                color: _muted,
-                                                                fontWeight:
-                                                                    FontWeight
-                                                                        .w600,
-                                                                fontSize: 15,
-                                                              ),
-                                                            ),
-                                                          ),
-                                                        ),
-                                                      ),
-                                                  ],
-                                                );
-                                              },
-                                            ),
-                                          ),
-                                        ],
+                                        ),
                                       ),
                                     ),
                                   ),
-                                ),
-                              ],
+                                ],
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                      if (!compactHeight && !_isEditorReadOnly)
-                        _editorStatusBar(),
-                    ],
-                  ),
-                ],
-              );
-            },
+                        if (!compactHeight && !_isEditorReadOnly)
+                          _editorStatusBar(),
+                      ],
+                    ),
+                  ],
+                );
+              },
             ),
           ),
         ),

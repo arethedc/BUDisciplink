@@ -1,10 +1,10 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 class HandbookSectionDoc {
-  final String id;        // doc id e.g. SY2024-2025_01
-  final String code;      // "1"
-  final String title;     // "About the University"
-  final int order;        // 1
+  final String id; // doc id e.g. SY2024-2025_01
+  final String code; // "1"
+  final String title; // "About the University"
+  final int order; // 1
   final bool isPublished; // true
 
   HandbookSectionDoc({

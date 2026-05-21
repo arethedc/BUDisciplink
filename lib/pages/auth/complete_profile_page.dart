@@ -7,11 +7,13 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../services/role_router.dart';
 import '../shared/widgets/logout_confirm_dialog.dart';
 import '../shared/widgets/unsaved_changes_guard.dart';
 import 'package:apps/pages/shared/widgets/app_inline_notice.dart';
+import 'package:apps/services/app_firestore.dart';
 
 class CompleteProfilePage extends StatefulWidget {
   const CompleteProfilePage({super.key});
@@ -79,7 +81,7 @@ class _CompleteProfilePageState extends State<CompleteProfilePage> {
   void _initProfileLogsStream() {
     final uid = (FirebaseAuth.instance.currentUser?.uid ?? '').trim();
     if (uid.isEmpty) return;
-    _profileLogsStream ??= FirebaseFirestore.instance
+    _profileLogsStream ??= AppFirestore.instance
         .collection('users')
         .doc(uid)
         .collection('profile_logs')
@@ -112,7 +114,7 @@ class _CompleteProfilePageState extends State<CompleteProfilePage> {
   }
 
   Future<void> _loadColleges() async {
-    final snap = await FirebaseFirestore.instance
+    final snap = await AppFirestore.instance
         .collection('colleges')
         .where('active', isEqualTo: true)
         .get();
@@ -132,7 +134,7 @@ class _CompleteProfilePageState extends State<CompleteProfilePage> {
   }
 
   Future<void> _loadPrograms(String collegeId) async {
-    final snap = await FirebaseFirestore.instance
+    final snap = await AppFirestore.instance
         .collection('programs')
         .where('collegeId', isEqualTo: collegeId)
         .where('active', isEqualTo: true)
@@ -174,10 +176,7 @@ class _CompleteProfilePageState extends State<CompleteProfilePage> {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
 
-    final doc = await FirebaseFirestore.instance
-        .collection('users')
-        .doc(uid)
-        .get();
+    final doc = await AppFirestore.instance.collection('users').doc(uid).get();
     if (!doc.exists) return;
 
     final data = doc.data() ?? <String, dynamic>{};
@@ -190,7 +189,7 @@ class _CompleteProfilePageState extends State<CompleteProfilePage> {
     final programId = (studentProfile['programId'] ?? '').toString().trim();
 
     if (collegeId.isNotEmpty) {
-      final snap = await FirebaseFirestore.instance
+      final snap = await AppFirestore.instance
           .collection('programs')
           .where('collegeId', isEqualTo: collegeId)
           .where('active', isEqualTo: true)
@@ -443,7 +442,7 @@ class _CompleteProfilePageState extends State<CompleteProfilePage> {
     if (departmentCode.isEmpty) return;
 
     try {
-      final db = FirebaseFirestore.instance;
+      final db = AppFirestore.instance;
       final results = await Future.wait([
         db
             .collection('users')
@@ -537,7 +536,7 @@ class _CompleteProfilePageState extends State<CompleteProfilePage> {
       final currentProgram = (selectedProgram ?? '').trim();
       final fullName = '$firstName $lastName'.trim();
 
-      await FirebaseFirestore.instance.collection('users').doc(uid).update({
+      await AppFirestore.instance.collection('users').doc(uid).update({
         'studentProfile': {
           'studentNo': studentNo,
           'collegeId': selectedCollege,
@@ -548,6 +547,7 @@ class _CompleteProfilePageState extends State<CompleteProfilePage> {
         'lastName': lastName,
         'displayName': displayName,
         if ((nextPhotoUrl ?? '').trim().isNotEmpty) 'photoUrl': nextPhotoUrl,
+        'accountSource': 'self_signup',
         'accountStatus': 'active',
         'studentVerificationStatus': 'pending_approval',
         'status': 'pending_approval',
@@ -590,7 +590,7 @@ class _CompleteProfilePageState extends State<CompleteProfilePage> {
     if (!context.mounted || !confirmed) return;
     await FirebaseAuth.instance.signOut();
     if (!context.mounted) return;
-    Navigator.pushNamedAndRemoveUntil(context, '/welcome', (r) => false);
+    context.go('/welcome');
   }
 
   InputDecoration _decor({
@@ -1409,4 +1409,3 @@ class _CompleteProfilePageState extends State<CompleteProfilePage> {
     );
   }
 }
-

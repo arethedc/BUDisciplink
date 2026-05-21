@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import 'app_theme_tokens.dart';
+import 'package:apps/services/app_firestore.dart';
 
 class RoleShellScaffold extends StatelessWidget {
   final Color backgroundColor;
@@ -290,7 +291,7 @@ class _NotificationBellButtonState extends State<_NotificationBellButton> {
   void _startListener() {
     final uid = (widget.uid ?? '').trim();
     if (uid.isEmpty) return;
-    _sub = FirebaseFirestore.instance
+    _sub = AppFirestore.instance
         .collection('users')
         .doc(uid)
         .collection('notifications')

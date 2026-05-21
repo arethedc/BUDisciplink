@@ -3,30 +3,76 @@ import 'package:apps/pages/professor/MySubmittedReportPage.dart';
 import 'package:apps/pages/shared/handbook/hb_handbook_page.dart';
 import 'package:apps/pages/shared/notifications/app_notifications_ui.dart';
 import 'package:apps/pages/shared/profile/unified_profile_page.dart';
-import 'package:apps/pages/shared/welcome_screen_page.dart';
 import 'package:apps/pages/shared/widgets/app_branding.dart';
 import 'package:apps/pages/shared/widgets/app_theme_tokens.dart';
 import 'package:apps/pages/shared/widgets/logout_confirm_dialog.dart';
 import 'package:apps/pages/shared/widgets/responsive_layout_tokens.dart';
 import 'package:apps/pages/shared/widgets/role_shell_scaffold.dart';
 import 'package:apps/pages/shared/widgets/unsaved_changes_guard.dart';
+import 'package:apps/services/app_router.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_storage/firebase_storage.dart';
+import 'package:go_router/go_router.dart';
 
 import 'professor_counseling_page.dart';
 import 'professor_home_page.dart';
-import 'package:apps/pages/shared/widgets/app_inline_notice.dart';
+import 'package:apps/services/app_firestore.dart';
 
 class ProfessorDashboard extends StatefulWidget {
-  const ProfessorDashboard({super.key});
+  final String section;
+  final String? tabDeepLink;
+  final String? handbookSectionId;
+  final String? handbookHighlightText;
+
+  const ProfessorDashboard({
+    super.key,
+    this.section = 'home',
+    this.tabDeepLink,
+    this.handbookSectionId,
+    this.handbookHighlightText,
+  });
+
+  static const _sectionToIndex = <String, int>{
+    'home': 0,
+    'handbook': 1,
+    'report': 2,
+    'my-reports': 3,
+    'counseling': 4,
+    'profile': 5,
+    'notifications': 6,
+  };
+
+  static const _indexToSection = <int, String>{
+    0: 'home',
+    1: 'handbook',
+    2: 'report',
+    3: 'my-reports',
+    4: 'counseling',
+    5: 'profile',
+    6: 'notifications',
+  };
+
+  static int indexForSection(String section) => _sectionToIndex[section] ?? 0;
+
+  static String sectionForIndex(int index) => _indexToSection[index] ?? 'home';
+
+  static String pathForSection(String section, {Map<String, String>? query}) {
+    final base = AppRoutes.withSection(AppRoutes.professor, section);
+    if (query == null || query.isEmpty) return base;
+    return Uri(path: base, queryParameters: query).toString();
+  }
 
   @override
   State<ProfessorDashboard> createState() => _ProfessorDashboardState();
 }
 
 class _ProfessorDashboardState extends State<ProfessorDashboard> {
-  int _currentIndex = 0;
+  static String? _sessionMyReportsTab;
+  late int _currentIndex;
+  String? _myReportsTabLink;
+  String? _rememberedMyReportsTab;
   int _previousIndexBeforeNotifications = 0;
   bool _showDesktopNotifications = false;
   final _violationUnsaved = UnsavedChangesController();
@@ -44,14 +90,21 @@ class _ProfessorDashboardState extends State<ProfessorDashboard> {
   // ================== PAGES ==================
   List<Widget> get _pages => [
     const ProfessorHomePage(),
-    const HbHandbookPage(hideTopHeader: true),
+    HbHandbookPage(
+      hideTopHeader: true,
+      initialSectionId: widget.handbookSectionId,
+      initialHighlightText: widget.handbookHighlightText,
+      openSelectedOnMobile: true,
+    ),
     ViolationReportPage(
       onOpenMyReportsInShell: () => _go(3),
       unsavedChangesController: _violationUnsaved,
     ),
     MySubmittedCasesPage(
-      onOpenViolationReport: _openViolationReportModal,
-      onOpenCounselingReferral: _openCounselingReferralModal,
+      onOpenViolationReport: () => _go(2),
+      onOpenCounselingReferral: () => _go(4),
+      initialTab: _effectiveMyReportsTab(),
+      onTabChanged: (tabKey) => _syncTabQuery('my-reports', tabKey),
     ),
     ProfessorCounselingPage(unsavedChangesController: _counselingUnsaved),
     const UnifiedProfilePage(),
@@ -67,6 +120,15 @@ class _ProfessorDashboardState extends State<ProfessorDashboard> {
     ),
   ];
 
+  String? _effectiveMyReportsTab() {
+    final explicit = (_myReportsTabLink ?? '').trim();
+    if (explicit.isNotEmpty) return explicit;
+    final remembered = (_rememberedMyReportsTab ?? '').trim();
+    if (remembered.isNotEmpty) return remembered;
+    final sessionRemembered = (_sessionMyReportsTab ?? '').trim();
+    return sessionRemembered.isEmpty ? null : sessionRemembered;
+  }
+
   final List<_NavItem> _navItems = const [
     _NavItem(Icons.home_rounded, 'Home'),
     _NavItem(Icons.menu_book_rounded, 'Handbook'),
@@ -74,6 +136,89 @@ class _ProfessorDashboardState extends State<ProfessorDashboard> {
     _NavItem(Icons.assignment_rounded, 'My Reports'),
     _NavItem(Icons.support_agent_rounded, 'Counseling Referrals'),
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    _currentIndex = ProfessorDashboard.indexForSection(widget.section);
+    _myReportsTabLink = widget.tabDeepLink;
+    final incomingTab = (widget.tabDeepLink ?? '').trim();
+    if (incomingTab.isNotEmpty) {
+      _rememberedMyReportsTab = incomingTab;
+      _sessionMyReportsTab = incomingTab;
+    } else {
+      final sessionRemembered = (_sessionMyReportsTab ?? '').trim();
+      if (sessionRemembered.isNotEmpty) {
+        _rememberedMyReportsTab = sessionRemembered;
+      }
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _ensureSectionTabQuery();
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant ProfessorDashboard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final nextIndex = ProfessorDashboard.indexForSection(widget.section);
+    final nextTab = widget.tabDeepLink;
+    if (_currentIndex != nextIndex) {
+      setState(() => _currentIndex = nextIndex);
+    }
+    if (_myReportsTabLink != nextTab) {
+      setState(() => _myReportsTabLink = nextTab);
+    }
+    if (nextTab != null && nextTab.trim().isNotEmpty) {
+      _rememberedMyReportsTab = nextTab.trim();
+      _sessionMyReportsTab = nextTab.trim();
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _ensureSectionTabQuery();
+    });
+  }
+
+  String? _defaultTabForSection(String section) {
+    if (section == 'my-reports') {
+      final remembered = (_rememberedMyReportsTab ?? '').trim();
+      if (remembered.isNotEmpty) return remembered;
+      final sessionRemembered = (_sessionMyReportsTab ?? '').trim();
+      if (sessionRemembered.isNotEmpty) return sessionRemembered;
+      return 'violation';
+    }
+    return null;
+  }
+
+  void _ensureSectionTabQuery() {
+    if (!mounted) return;
+    final section = ProfessorDashboard.sectionForIndex(_currentIndex);
+    final defaultTab = _defaultTabForSection(section);
+    if (defaultTab == null) return;
+    final currentUri = GoRouterState.of(context).uri;
+    final currentTab = (currentUri.queryParameters['tab'] ?? '').trim();
+    if (currentTab.isNotEmpty) return;
+    final target = ProfessorDashboard.pathForSection(
+      section,
+      query: <String, String>{'tab': defaultTab},
+    );
+    if (target == currentUri.toString()) return;
+    context.replace(target);
+  }
+
+  void _syncTabQuery(String section, String tabKey) {
+    final currentSection = ProfessorDashboard.sectionForIndex(_currentIndex);
+    if (currentSection != section) return;
+    _rememberedMyReportsTab = tabKey;
+    _sessionMyReportsTab = tabKey;
+    final currentUri = GoRouterState.of(context).uri;
+    final currentTab = (currentUri.queryParameters['tab'] ?? '').trim();
+    if (currentTab == tabKey) return;
+    final target = ProfessorDashboard.pathForSection(
+      section,
+      query: <String, String>{'tab': tabKey},
+    );
+    if (target == currentUri.toString()) return;
+    context.go(target);
+  }
 
   String _pageTitle() {
     switch (_currentIndex) {
@@ -103,12 +248,7 @@ class _ProfessorDashboardState extends State<ProfessorDashboard> {
     if (!mounted || !confirmed) return;
     await FirebaseAuth.instance.signOut();
     if (!mounted) return;
-
-    Navigator.pushAndRemoveUntil(
-      context,
-      MaterialPageRoute(builder: (_) => const WelcomeScreen()),
-      (route) => false,
-    );
+    context.go('/welcome');
   }
 
   UnsavedChangesController? _controllerForIndex(int index) {
@@ -138,139 +278,25 @@ class _ProfessorDashboardState extends State<ProfessorDashboard> {
     return leave;
   }
 
-  Future<void> _openFormModal({
-    required String title,
-    required Widget child,
-    String? subtitle,
-  }) async {
-    await showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) {
-        final isFlatHeaderModal =
-            title == 'Report Violation' || title == 'Counselling Referral';
-        final size = MediaQuery.of(dialogContext).size;
-        final isDesktop = size.width >= 900;
-        final maxWidth = isDesktop ? 1180.0 : size.width - 20;
-        final maxHeight = size.height * 0.92;
-        return Dialog(
-          insetPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
-          clipBehavior: Clip.antiAlias,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          child: SizedBox(
-            width: maxWidth,
-            height: maxHeight,
-            child: Column(
-              children: [
-                Container(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 10, 10),
-                  decoration: BoxDecoration(
-                    color: isFlatHeaderModal ? Colors.white : surface,
-                    border: isFlatHeaderModal
-                        ? null
-                        : Border(
-                            bottom: BorderSide(
-                              color: Colors.black.withValues(alpha: 0.08),
-                            ),
-                          ),
-                  ),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(
-                              title,
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w900,
-                                color: textDark,
-                                fontSize: 16,
-                              ),
-                            ),
-                            if ((subtitle ?? '').trim().isNotEmpty) ...[
-                              const SizedBox(height: 4),
-                              Text(
-                                subtitle!.trim(),
-                                style: TextStyle(
-                                  color: hint.withValues(alpha: 0.95),
-                                  fontWeight: FontWeight.w700,
-                                  fontSize: 12.5,
-                                ),
-                              ),
-                            ],
-                          ],
-                        ),
-                      ),
-                      IconButton(
-                        tooltip: 'Close',
-                        onPressed: () => Navigator.of(dialogContext).pop(),
-                        icon: const Icon(Icons.close_rounded, size: 20),
-                        style: IconButton.styleFrom(
-                          backgroundColor: Colors.black.withValues(alpha: 0.06),
-                          visualDensity: VisualDensity.compact,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                Expanded(child: child),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  Future<void> _openViolationReportModal() async {
-    final canLeave = await _confirmLeaveCurrentPage();
-    if (!mounted || !canLeave) return;
-    await _openFormModal(
-      title: 'Report Violation',
-      subtitle: 'Search a student, complete incident details, and submit.',
-      child: ViolationReportPage(
-        onOpenMyReportsInShell: () {
-          Navigator.of(context, rootNavigator: true).pop();
-          _go(3);
-        },
-      ),
-    );
-  }
-
-  Future<void> _openCounselingReferralModal() async {
-    final canLeave = await _confirmLeaveCurrentPage();
-    if (!mounted || !canLeave) return;
-    await _openFormModal(
-      title: 'Counselling Referral',
-      child: const ProfessorCounselingPage(),
-    );
-  }
-
   void _go(int i) {
     _goAsync(i);
   }
 
   Future<void> _goAsync(int i) async {
-    if (i == 2) {
-      await _openViolationReportModal();
-      return;
-    }
-    if (i == 4) {
-      await _openCounselingReferralModal();
-      return;
-    }
     if (i == _currentIndex) return;
     final canLeave = await _confirmLeaveCurrentPage();
     if (!mounted || !canLeave) return;
-    setState(() {
-      _currentIndex = i;
-      if (i != _notificationsIndex) {
-        _previousIndexBeforeNotifications = i;
-      }
-    });
+    if (i != _notificationsIndex) {
+      _previousIndexBeforeNotifications = i;
+    }
+    final section = ProfessorDashboard.sectionForIndex(i);
+    final tab = _defaultTabForSection(section);
+    final target = ProfessorDashboard.pathForSection(
+      section,
+      query: tab == null ? null : <String, String>{'tab': tab},
+    );
+    if (GoRouterState.of(context).uri.toString() == target) return;
+    context.go(target);
   }
 
   void _toggleDesktopNotifications() {
@@ -286,13 +312,11 @@ class _ProfessorDashboardState extends State<ProfessorDashboard> {
   Future<void> _openNotificationsPage() async {
     final canLeave = await _confirmLeaveCurrentPage();
     if (!mounted || !canLeave) return;
-    setState(() {
-      if (_currentIndex != _notificationsIndex) {
-        _previousIndexBeforeNotifications = _currentIndex;
-      }
-      _showDesktopNotifications = false;
-      _currentIndex = _notificationsIndex;
-    });
+    if (_currentIndex != _notificationsIndex) {
+      _previousIndexBeforeNotifications = _currentIndex;
+    }
+    _showDesktopNotifications = false;
+    _go(_notificationsIndex);
   }
 
   Future<void> _handleNotificationView(AppNotificationViewIntent intent) async {
@@ -321,6 +345,24 @@ class _ProfessorDashboardState extends State<ProfessorDashboard> {
   String _email(Map<String, dynamic> data, User user) {
     final e = (data['email'] ?? user.email ?? '').toString().trim();
     return e.isEmpty ? '--' : e;
+  }
+
+  String _profilePhotoUrl(Map<String, dynamic> data) {
+    final direct = (data['photoUrl'] ?? '').toString().trim();
+    if (direct.isNotEmpty) return direct;
+    final profilePhoto = (data['profilePhotoUrl'] ?? '').toString().trim();
+    if (profilePhoto.isNotEmpty) return profilePhoto;
+    final studentProfile = data['studentProfile'] as Map<String, dynamic>?;
+    final nestedStudentPhoto = (studentProfile?['photoUrl'] ?? '')
+        .toString()
+        .trim();
+    if (nestedStudentPhoto.isNotEmpty) return nestedStudentPhoto;
+    final employeeProfile = data['employeeProfile'] as Map<String, dynamic>?;
+    final nestedEmployeePhoto = (employeeProfile?['photoUrl'] ?? '')
+        .toString()
+        .trim();
+    if (nestedEmployeePhoto.isNotEmpty) return nestedEmployeePhoto;
+    return '';
   }
 
   String _title(Map<String, dynamic> data) {
@@ -355,7 +397,7 @@ class _ProfessorDashboardState extends State<ProfessorDashboard> {
     }
 
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance
+      stream: AppFirestore.instance
           .collection('users')
           .doc(user.uid)
           .snapshots(),
@@ -364,6 +406,7 @@ class _ProfessorDashboardState extends State<ProfessorDashboard> {
         final accountName = _displayName(data, user);
         final accountEmail = _email(data, user);
         final accountTitle = _title(data);
+        final profilePhotoUrl = _profilePhotoUrl(data);
 
         return LayoutBuilder(
           builder: (context, constraints) {
@@ -386,6 +429,7 @@ class _ProfessorDashboardState extends State<ProfessorDashboard> {
               accountTitle: accountTitle,
               accountEmail: accountEmail,
               accountName: accountName,
+              profilePhotoUrl: profilePhotoUrl,
             );
 
             return RoleShellScaffold(
@@ -416,6 +460,7 @@ class _ProfessorDashboardState extends State<ProfessorDashboard> {
                   accountTitle: accountTitle,
                   accountEmail: accountEmail,
                   accountName: accountName,
+                  profilePhotoUrl: profilePhotoUrl,
                 ),
               ),
               sidebar: menuPanel,
@@ -521,6 +566,7 @@ class _MenuPanel extends StatelessWidget {
   final String accountTitle;
   final String accountEmail;
   final String accountName;
+  final String profilePhotoUrl;
 
   const _MenuPanel({
     required this.currentIndex,
@@ -535,7 +581,84 @@ class _MenuPanel extends StatelessWidget {
     required this.accountTitle,
     required this.accountEmail,
     required this.accountName,
+    required this.profilePhotoUrl,
   });
+
+  bool _isHttpPhotoUrl(String value) {
+    return value.startsWith('http://') || value.startsWith('https://');
+  }
+
+  Future<String> _resolvePhotoUrl(String source) async {
+    final value = source.trim();
+    if (value.isEmpty) return '';
+    if (_isHttpPhotoUrl(value)) {
+      if (value.contains('firebasestorage.googleapis.com') ||
+          value.contains('firebasestorage.app')) {
+        try {
+          return await FirebaseStorage.instance
+              .refFromURL(value)
+              .getDownloadURL();
+        } catch (_) {
+          return value;
+        }
+      }
+      return value;
+    }
+    try {
+      if (value.startsWith('gs://')) {
+        return await FirebaseStorage.instance
+            .refFromURL(value)
+            .getDownloadURL();
+      }
+      return await FirebaseStorage.instance.ref(value).getDownloadURL();
+    } catch (_) {
+      return '';
+    }
+  }
+
+  Widget _buildProfileAvatar() {
+    final source = profilePhotoUrl.trim();
+    const fallback = Icon(
+      Icons.person_outline_rounded,
+      size: 24,
+      color: Colors.white,
+    );
+    final fallbackAvatar = const CircleAvatar(
+      backgroundColor: Colors.white24,
+      child: fallback,
+    );
+
+    Widget photoAvatar(String url) {
+      return ClipOval(
+        child: Image.network(
+          url,
+          width: 40,
+          height: 40,
+          fit: BoxFit.cover,
+          webHtmlElementStrategy: WebHtmlElementStrategy.prefer,
+          errorBuilder: (_, _, _) => fallbackAvatar,
+        ),
+      );
+    }
+
+    if (source.isEmpty) return fallbackAvatar;
+    if (_isHttpPhotoUrl(source)) {
+      return FutureBuilder<String>(
+        future: _resolvePhotoUrl(source),
+        builder: (context, snapshot) {
+          final resolved = (snapshot.data ?? source).trim();
+          return resolved.isEmpty ? fallbackAvatar : photoAvatar(resolved);
+        },
+      );
+    }
+    return FutureBuilder<String>(
+      future: _resolvePhotoUrl(source),
+      builder: (context, snapshot) {
+        final resolved = (snapshot.data ?? '').trim();
+        return resolved.isEmpty ? fallbackAvatar : photoAvatar(resolved);
+      },
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -595,11 +718,7 @@ class _MenuPanel extends StatelessWidget {
                           color: Colors.white.withValues(alpha: 0.16),
                           borderRadius: BorderRadius.circular(10),
                         ),
-                        child: const Icon(
-                          Icons.person_outline_rounded,
-                          size: 24,
-                          color: Colors.white,
-                        ),
+                        child: _buildProfileAvatar(),
                       ),
                       const SizedBox(width: 10),
                       Expanded(

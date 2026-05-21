@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../../services/violation_case_service.dart';
+import 'package:apps/services/app_firestore.dart';
 
 class DepartmentAdminHomePage extends StatelessWidget {
   final VoidCallback? onOpenUserManagement;
@@ -80,6 +81,26 @@ class DepartmentAdminHomePage extends StatelessWidget {
   }
 
   String _safe(dynamic v) => (v ?? '').toString().trim();
+
+  String _departmentLabelFromDocs(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> colleges,
+    String collegeId,
+  ) {
+    final id = collegeId.trim();
+    if (id.isEmpty) return '-';
+    for (final doc in colleges) {
+      if (doc.id != id) continue;
+      final data = doc.data();
+      final code = (data['collegeCode'] ?? '').toString().trim();
+      final name = (data['name'] ?? data['collegeName'] ?? data['title'] ?? '')
+          .toString()
+          .trim();
+      if (code.isEmpty && name.isEmpty) return '--';
+      if (name.isEmpty || name == code) return code.isEmpty ? name : code;
+      return '${code.isEmpty ? name : code} - $name';
+    }
+    return '--';
+  }
 
   String _studentName(Map<String, dynamic> userData) {
     final display = _safe(userData['displayName']);
@@ -236,7 +257,7 @@ class DepartmentAdminHomePage extends StatelessWidget {
     }
 
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance
+      stream: AppFirestore.instance
           .collection('users')
           .doc(authUser.uid)
           .snapshots(),
@@ -258,7 +279,7 @@ class DepartmentAdminHomePage extends StatelessWidget {
         }
 
         return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-          stream: FirebaseFirestore.instance
+          stream: AppFirestore.instance
               .collection('users')
               .where('role', isEqualTo: 'student')
               .where('studentProfile.collegeId', isEqualTo: dept)
@@ -364,12 +385,25 @@ class DepartmentAdminHomePage extends StatelessWidget {
                               ),
                             ),
                             const SizedBox(height: 4),
-                            Text(
-                              'Scope: $dept',
-                              style: const TextStyle(
-                                color: hint,
-                                fontWeight: FontWeight.w800,
-                              ),
+                            StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                              stream: AppFirestore.instance
+                                  .collection('colleges')
+                                  .where(FieldPath.documentId, isEqualTo: dept)
+                                  .limit(1)
+                                  .snapshots(),
+                              builder: (context, collegeSnap) {
+                                final scopeLabel = _departmentLabelFromDocs(
+                                  collegeSnap.data?.docs ?? const [],
+                                  dept,
+                                );
+                                return Text(
+                                  'Scope: $scopeLabel',
+                                  style: const TextStyle(
+                                    color: hint,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                );
+                              },
                             ),
                           ],
                         ),
@@ -404,7 +438,7 @@ class DepartmentAdminHomePage extends StatelessWidget {
                       ),
                       const SizedBox(height: 16),
                       StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                        stream: FirebaseFirestore.instance
+                        stream: AppFirestore.instance
                             .collection('users')
                             .doc(authUser.uid)
                             .collection('notifications')
@@ -757,9 +791,8 @@ class DepartmentAdminHomePage extends StatelessWidget {
                                             _safe(d['caseId']).isEmpty
                                             ? doc.id
                                             : _safe(d['caseId']);
-                                        final violationCode = _safe(
-                                          d['caseCode'],
-                                        ).isNotEmpty
+                                        final violationCode =
+                                            _safe(d['caseCode']).isNotEmpty
                                             ? _safe(d['caseCode'])
                                             : caseId;
                                         final violationLabel = _safe(
@@ -821,20 +854,18 @@ class DepartmentAdminHomePage extends StatelessWidget {
                                                             child: Text(
                                                               violationCode,
                                                               maxLines: 1,
-                                                              overflow: TextOverflow
-                                                                  .ellipsis,
-                                                              style:
-                                                                  const TextStyle(
-                                                                    color:
-                                                                        primary,
-                                                                    fontWeight:
-                                                                        FontWeight
-                                                                            .w800,
-                                                                    fontSize:
-                                                                        11.2,
-                                                                    letterSpacing:
-                                                                        0.15,
-                                                                  ),
+                                                              overflow:
+                                                                  TextOverflow
+                                                                      .ellipsis,
+                                                              style: const TextStyle(
+                                                                color: primary,
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .w800,
+                                                                fontSize: 11.2,
+                                                                letterSpacing:
+                                                                    0.15,
+                                                              ),
                                                             ),
                                                           ),
                                                           const SizedBox(

@@ -3,11 +3,14 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
 
+import '../../services/academic_settings_service.dart';
 import '../../services/counseling_case_workflow_service.dart';
 import '../../services/counseling_setup_service.dart';
+import '../../services/institution_label_service.dart';
 import '../../services/student_directory_policy.dart';
 import '../shared/widgets/unsaved_changes_guard.dart';
 import 'package:apps/pages/shared/widgets/app_inline_notice.dart';
+import 'package:apps/services/app_firestore.dart';
 
 class ProfessorCounselingPage extends StatefulWidget {
   final UnsavedChangesController? unsavedChangesController;
@@ -39,6 +42,7 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
   final _commentsCtrl = TextEditingController();
   final _studentSearchFocus = FocusNode();
   final _notesFocus = FocusNode();
+  final _academicSettingsService = AcademicSettingsService();
   final _workflowService = CounselingCaseWorkflowService();
   final _counselingSetupService = CounselingSetupService();
   OverlayEntry? _studentSearchOverlay;
@@ -52,31 +56,31 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
   String? _studentName;
   String? _studentNo;
   String? _studentProgram;
+  String? _studentProgramLabel;
   String? _studentPhotoUrl;
 
   bool _loading = false;
   bool _loadingStudents = true;
+  bool _checkingAcademicContext = true;
+  bool _checkingCounselingSetup = true;
+  bool _hasActiveSchoolYear = false;
+  bool _hasCounselingSetup = false;
+  String? _activeSchoolYearLabel;
+  String? _academicContextError;
   bool _studentSelectionError = false;
   bool _notesError = false;
   final List<Map<String, String>> _students = <Map<String, String>>[];
+  final Map<String, Future<String>> _programLabelFutureCache = {};
 
   final Set<String> _moodsSelected = <String>{};
   final Set<String> _schoolSelected = <String>{};
   final Set<String> _relationshipSelected = <String>{};
   final Set<String> _homeSelected = <String>{};
   final Map<String, Future<String>> _resolvedPhotoUrlCache = {};
-  List<String> _moodOptions = List<String>.from(
-    CounselingSetupConfig.defaults.moodsBehaviors,
-  );
-  List<String> _schoolOptions = List<String>.from(
-    CounselingSetupConfig.defaults.schoolConcerns,
-  );
-  List<String> _relationshipOptions = List<String>.from(
-    CounselingSetupConfig.defaults.relationships,
-  );
-  List<String> _homeOptions = List<String>.from(
-    CounselingSetupConfig.defaults.homeConcerns,
-  );
+  List<String> _moodOptions = <String>[];
+  List<String> _schoolOptions = <String>[];
+  List<String> _relationshipOptions = <String>[];
+  List<String> _homeOptions = <String>[];
 
   @override
   void initState() {
@@ -107,18 +111,61 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
       _loadTeacher(),
       _loadStudents(),
       _loadCounselingSetup(),
+      _loadAcademicContext(),
     ]);
   }
 
+  Future<void> _loadAcademicContext() async {
+    if (!mounted) return;
+    setState(() {
+      _checkingAcademicContext = true;
+      _academicContextError = null;
+    });
+
+    try {
+      final activeSy = await _academicSettingsService.getActiveSY();
+      if (!mounted) return;
+
+      final hasActive = activeSy != null;
+      final label = hasActive
+          ? ((activeSy['label'] ?? activeSy['id'] ?? '').toString().trim())
+          : null;
+
+      setState(() {
+        _hasActiveSchoolYear = hasActive;
+        _activeSchoolYearLabel = (label == null || label.isEmpty)
+            ? null
+            : label;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _hasActiveSchoolYear = false;
+        _activeSchoolYearLabel = null;
+        _academicContextError = e.toString();
+      });
+    } finally {
+      if (mounted) {
+        setState(() => _checkingAcademicContext = false);
+      }
+    }
+  }
+
   Future<void> _loadCounselingSetup() async {
+    if (mounted) {
+      setState(() {
+        _checkingCounselingSetup = true;
+      });
+    }
     try {
       final config = await _counselingSetupService.getConfig();
       if (!mounted) return;
       setState(() {
-        _moodOptions = List<String>.from(config.moodsBehaviors);
-        _schoolOptions = List<String>.from(config.schoolConcerns);
-        _relationshipOptions = List<String>.from(config.relationships);
-        _homeOptions = List<String>.from(config.homeConcerns);
+        _hasCounselingSetup = config.hasMinimumCounselingSetup;
+        _moodOptions = List<String>.from(config.academicPerformanceInformation);
+        _schoolOptions = List<String>.from(config.physicalAttributes);
+        _relationshipOptions = List<String>.from(config.crisisIndicators);
+        _homeOptions = List<String>.from(config.atypicalBehavior);
         _moodsSelected.removeWhere((item) => !_moodOptions.contains(item));
         _schoolSelected.removeWhere((item) => !_schoolOptions.contains(item));
         _relationshipSelected.removeWhere(
@@ -127,7 +174,18 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
         _homeSelected.removeWhere((item) => !_homeOptions.contains(item));
       });
     } catch (_) {
-      // Keep defaults if setup cannot be loaded.
+      // Keep empty options if setup cannot be loaded.
+      if (mounted) {
+        setState(() {
+          _hasCounselingSetup = false;
+        });
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _checkingCounselingSetup = false;
+        });
+      }
     }
   }
 
@@ -139,7 +197,7 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
     _teacherEmail = user.email?.trim() ?? '';
 
     try {
-      final snap = await FirebaseFirestore.instance
+      final snap = await AppFirestore.instance
           .collection('users')
           .doc(user.uid)
           .get();
@@ -167,7 +225,7 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
   Future<void> _loadStudents() async {
     setState(() => _loadingStudents = true);
     try {
-      final snap = await FirebaseFirestore.instance
+      final snap = await AppFirestore.instance
           .collection('users')
           .where('role', isEqualTo: 'student')
           .limit(700)
@@ -191,6 +249,9 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
             : 'Unnamed Student';
         final studentNo = (studentProfile['studentNo'] ?? '').toString().trim();
         final program = (studentProfile['programId'] ?? '').toString().trim();
+        final programLabel = program.isEmpty
+            ? '--'
+            : await _resolveProgramLabel(program);
         final photoUrl = (data['photoUrl'] ?? studentProfile['photoUrl'] ?? '')
             .toString()
             .trim();
@@ -200,6 +261,7 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
           'name': name,
           'studentNo': studentNo,
           'programId': program,
+          'programLabel': programLabel,
           'photoUrl': photoUrl,
         });
       }
@@ -237,9 +299,11 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
           final name = (student['name'] ?? '').toLowerCase();
           final studentNo = (student['studentNo'] ?? '').toLowerCase();
           final programId = (student['programId'] ?? '').toLowerCase();
+          final programLabel = (student['programLabel'] ?? '').toLowerCase();
           return name.contains(q) ||
               studentNo.contains(q) ||
-              programId.contains(q);
+              programId.contains(q) ||
+              programLabel.contains(q);
         })
         .take(7)
         .toList();
@@ -346,7 +410,7 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
                           final student = suggestions[index];
                           final name = student['name'] ?? '';
                           final studentNo = student['studentNo'] ?? 'No ID';
-                          final programId = student['programId'] ?? '';
+                          final programLabel = student['programLabel'] ?? '--';
                           final photoUrl = student['photoUrl'];
                           return ListTile(
                             dense: true,
@@ -367,7 +431,7 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
                               ),
                             ),
                             subtitle: Text(
-                              '$studentNo${programId.isNotEmpty ? ' | $programId' : ''}',
+                              '$studentNo${programLabel != '--' ? ' | $programLabel' : ''}',
                               style: const TextStyle(
                                 color: hintColor,
                                 fontWeight: FontWeight.w700,
@@ -396,6 +460,16 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
     if (parts.isEmpty) return 'S';
     if (parts.length == 1) return parts.first.substring(0, 1).toUpperCase();
     return (parts[0].substring(0, 1) + parts[1].substring(0, 1)).toUpperCase();
+  }
+
+  Future<String> _resolveProgramLabel(String programId) {
+    final id = programId.trim();
+    if (id.isEmpty) return Future<String>.value('--');
+    return _programLabelFutureCache.putIfAbsent(id, () async {
+      final label = await InstitutionLabelService.resolveProgramLabel(id);
+      final resolved = label.trim();
+      return resolved.isEmpty ? '--' : resolved;
+    });
   }
 
   Widget _studentAvatar({
@@ -681,6 +755,15 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
   Future<void> _submit() async {
     FocusManager.instance.primaryFocus?.unfocus();
     if (_loading) return;
+    if (!_hasCounselingSetup) {
+      AppScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Counseling setup is not yet available.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
     if (_studentUid == null) {
       setState(() => _studentSelectionError = true);
       AppScaffoldMessenger.of(context).showSnackBar(
@@ -728,20 +811,20 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
         professorName: referredByName,
         counselingType: _counselingType,
         reasons: {
-          'moodsBehaviors': _moodsSelected.toList()..sort(),
-          'schoolConcerns': _schoolSelected.toList()..sort(),
-          'relationships': _relationshipSelected.toList()..sort(),
-          'homeConcerns': _homeSelected.toList()..sort(),
-          'otherMood': _otherMoodCtrl.text.trim(),
-          'otherSchool': _otherSchoolCtrl.text.trim(),
-          'otherRelationship': _otherRelationshipCtrl.text.trim(),
-          'otherHome': _otherHomeCtrl.text.trim(),
+          'academicPerformanceInformation': _moodsSelected.toList()..sort(),
+          'physicalAttributes': _schoolSelected.toList()..sort(),
+          'crisisIndicators': _relationshipSelected.toList()..sort(),
+          'atypicalBehavior': _homeSelected.toList()..sort(),
+          'otherAcademicPerformance': _otherMoodCtrl.text.trim(),
+          'otherPhysicalAttributes': _otherSchoolCtrl.text.trim(),
+          'otherCrisisIndicators': _otherRelationshipCtrl.text.trim(),
+          'otherAtypicalBehavior': _otherHomeCtrl.text.trim(),
         },
         comments: _commentsCtrl.text.trim(),
       );
 
       try {
-        await FirebaseFirestore.instance
+        await AppFirestore.instance
             .collection('counseling_cases')
             .doc(caseId)
             .set({
@@ -753,7 +836,7 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
         // best-effort repair for older linked cases.
       }
 
-      final caseDoc = await FirebaseFirestore.instance
+      final caseDoc = await AppFirestore.instance
           .collection('counseling_cases')
           .doc(caseId)
           .get();
@@ -774,10 +857,7 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
 
       if (!mounted) return;
       AppScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(message),
-          backgroundColor: primaryColor,
-        ),
+        SnackBar(content: Text(message), backgroundColor: primaryColor),
       );
       _resetFormAfterSubmit();
     } catch (error) {
@@ -796,17 +876,17 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
   List<String> _selectedConcernGroups() {
     final groups = <String>[];
     if (_moodsSelected.isNotEmpty || _otherMoodCtrl.text.trim().isNotEmpty) {
-      groups.add('Emotional and Behavior');
+      groups.add('Academic Performance Information');
     }
     if (_schoolSelected.isNotEmpty || _otherSchoolCtrl.text.trim().isNotEmpty) {
-      groups.add('Academic and School');
+      groups.add('Physical Attributes');
     }
     if (_relationshipSelected.isNotEmpty ||
         _otherRelationshipCtrl.text.trim().isNotEmpty) {
-      groups.add('Peer and Relationship');
+      groups.add('Crisis Indicators');
     }
     if (_homeSelected.isNotEmpty || _otherHomeCtrl.text.trim().isNotEmpty) {
-      groups.add('Family and Home');
+      groups.add('Atypical Behavior');
     }
     return groups;
   }
@@ -820,9 +900,12 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
     final referralType = _counselingType == 'personal'
         ? 'Personal'
         : 'Academic';
+    final programLabel = (_studentProgramLabel ?? '').trim().isEmpty
+        ? '--'
+        : (_studentProgramLabel ?? '').trim();
     final studentLabel =
         '${_studentName ?? 'Unknown'} | ${_studentNo ?? 'No ID'}'
-        '${(_studentProgram ?? '').isNotEmpty ? ' | ${_studentProgram!}' : ''}';
+        '${programLabel == '--' ? '' : ' | $programLabel'}';
 
     final result = await showDialog<bool>(
       context: context,
@@ -1060,6 +1143,7 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
       _studentName = null;
       _studentNo = null;
       _studentProgram = null;
+      _studentProgramLabel = null;
       _studentPhotoUrl = null;
       _moodsSelected.clear();
       _schoolSelected.clear();
@@ -1084,6 +1168,7 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
       _studentName = student['name'];
       _studentNo = student['studentNo'];
       _studentProgram = student['programId'];
+      _studentProgramLabel = student['programLabel'];
       _studentPhotoUrl = student['photoUrl'];
       _studentSearchCtrl.clear();
       _studentSelectionError = false;
@@ -1099,6 +1184,7 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
       _studentName = null;
       _studentNo = null;
       _studentProgram = null;
+      _studentProgramLabel = null;
       _studentPhotoUrl = null;
       _studentSearchCtrl.clear();
       _studentSelectionError = false;
@@ -1205,74 +1291,271 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
           child: Scaffold(
             backgroundColor: Colors.white,
             body: SafeArea(
-              child: SingleChildScrollView(
-                padding: EdgeInsets.fromLTRB(
-                  pad,
-                  compactModal ? 8 * scale : 14 * scale,
-                  pad,
-                  compactModal ? 12 * scale : 20 * scale,
-                ),
-                child: Center(
-                  child: ConstrainedBox(
-                    constraints: BoxConstraints(maxWidth: desktop ? 1160 : 920),
-                    child: SizedBox(
-                      width: double.infinity,
-                      child: Form(
-                        key: _formKey,
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            _buildSectionCard(
-                              title: 'Student Selection',
-                              subtitle:
-                                  'Please select the student who needs support.',
-                              scale: scale,
-                              child: _buildStudentSelector(scale),
+              child: _checkingAcademicContext || _checkingCounselingSetup
+                  ? SizedBox.expand(
+                      child: Padding(
+                        padding: EdgeInsets.fromLTRB(
+                          pad,
+                          compactModal ? 6 * scale : 8 * scale,
+                          pad,
+                          compactModal ? 10 * scale : 14 * scale,
+                        ),
+                        child: Center(
+                          child: Container(
+                            width: double.infinity,
+                            constraints: BoxConstraints(
+                              maxWidth: compactModal ? 420 : 520,
                             ),
-                            SizedBox(height: 12 * scale),
-                            _buildSectionCard(
-                              title: 'Student Information & Referral Type',
-                              subtitle:
-                                  'Review selected student details and confirm the referral type.',
-                              scale: scale,
-                              child: _buildStudentInfoTypeSplit(
-                                scale,
-                                split: desktop,
+                            padding: EdgeInsets.all(24 * scale),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(18),
+                              border: Border.all(
+                                color: Colors.black.withValues(alpha: 0.08),
                               ),
                             ),
-                            SizedBox(height: 12 * scale),
-                            _buildSectionCard(
-                              title: 'Notes',
-                              subtitle:
-                                  'Tell us the student\'s current situation so we can respond well.',
-                              scale: scale,
-                              child: _buildCommentsSection(scale),
-                            ),
-                            SizedBox(height: 12 * scale),
-                            _buildSectionCard(
-                              title: 'Concern Checklist',
-                              subtitle:
-                                  'Optional: select any areas of concern to help counseling prepare support.',
-                              scale: scale,
-                              child: _buildReasonsGrid(
-                                scale,
-                                tablet,
-                                collapsible: !tablet,
+                            child: const Center(
+                              child: CircularProgressIndicator(
+                                color: primaryColor,
                               ),
                             ),
-                            SizedBox(height: 14 * scale),
-                            _buildActions(scale, stacked: stackActions),
-                          ],
+                          ),
+                        ),
+                      ),
+                    )
+                  : !_hasActiveSchoolYear
+                  ? SizedBox.expand(
+                      child: Padding(
+                        padding: EdgeInsets.fromLTRB(
+                          pad,
+                          compactModal ? 6 * scale : 8 * scale,
+                          pad,
+                          compactModal ? 10 * scale : 14 * scale,
+                        ),
+                        child: Center(
+                          child: _buildNoActiveSchoolYearGate(scale),
+                        ),
+                      ),
+                    )
+                  : !_hasCounselingSetup
+                  ? SizedBox.expand(
+                      child: Padding(
+                        padding: EdgeInsets.fromLTRB(
+                          pad,
+                          compactModal ? 6 * scale : 8 * scale,
+                          pad,
+                          compactModal ? 10 * scale : 14 * scale,
+                        ),
+                        child: Center(
+                          child: _buildNoCounselingSetupGate(scale),
+                        ),
+                      ),
+                    )
+                  : SingleChildScrollView(
+                      padding: EdgeInsets.fromLTRB(
+                        pad,
+                        compactModal ? 8 * scale : 14 * scale,
+                        pad,
+                        compactModal ? 12 * scale : 20 * scale,
+                      ),
+                      child: Center(
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            maxWidth: desktop ? 1160 : 920,
+                          ),
+                          child: SizedBox(
+                            width: double.infinity,
+                            child: Form(
+                              key: _formKey,
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  _buildSectionCard(
+                                    title: 'Student Selection',
+                                    subtitle:
+                                        'Please select the student who needs support.',
+                                    scale: scale,
+                                    child: _buildStudentSelector(scale),
+                                  ),
+                                  SizedBox(height: 12 * scale),
+                                  _buildSectionCard(
+                                    title:
+                                        'Student Information & Referral Type',
+                                    subtitle:
+                                        'Review selected student details and confirm the referral type.',
+                                    scale: scale,
+                                    child: _buildStudentInfoTypeSplit(
+                                      scale,
+                                      split: desktop,
+                                    ),
+                                  ),
+                                  SizedBox(height: 12 * scale),
+                                  _buildSectionCard(
+                                    title: 'Notes',
+                                    subtitle:
+                                        'Tell us the student\'s current situation so we can respond well.',
+                                    scale: scale,
+                                    child: _buildCommentsSection(scale),
+                                  ),
+                                  SizedBox(height: 12 * scale),
+                                  _buildSectionCard(
+                                    title: 'Concern Checklist',
+                                    subtitle:
+                                        'Optional: select any areas of concern to help counseling prepare support.',
+                                    scale: scale,
+                                    child: _buildReasonsGrid(
+                                      scale,
+                                      tablet,
+                                      collapsible: !tablet,
+                                    ),
+                                  ),
+                                  SizedBox(height: 14 * scale),
+                                  _buildActions(scale, stacked: stackActions),
+                                ],
+                              ),
+                            ),
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                ),
-              ),
             ),
           ),
         );
       },
+    );
+  }
+
+  Widget _buildNoActiveSchoolYearGate(double scale) {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 640),
+      child: Container(
+        width: double.infinity,
+        padding: EdgeInsets.symmetric(
+          horizontal: 24 * scale,
+          vertical: 20 * scale,
+        ),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(color: primaryColor.withValues(alpha: 0.10)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.05),
+              blurRadius: 20,
+              offset: const Offset(0, 10),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Text(
+              'No active school year',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: primaryColor,
+                fontWeight: FontWeight.w900,
+                fontSize: (17.0 * scale).clamp(17.0, 19.0),
+                height: 1.12,
+              ),
+            ),
+            SizedBox(height: 10 * scale),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 520),
+              child: Text(
+                'Counseling referrals are unavailable until a school year with semester dates is active.',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: hintColor,
+                  fontWeight: FontWeight.w700,
+                  fontSize: (13.0 * scale).clamp(12.8, 13.8),
+                  height: 1.25,
+                ),
+              ),
+            ),
+            if ((_activeSchoolYearLabel ?? '').isNotEmpty) ...[
+              SizedBox(height: 10 * scale),
+              Text(
+                'Active year: $_activeSchoolYearLabel',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: hintColor,
+                  fontWeight: FontWeight.w700,
+                  fontSize: (12.1 * scale).clamp(12.0, 12.8),
+                ),
+              ),
+            ],
+            if ((_academicContextError ?? '').isNotEmpty) ...[
+              SizedBox(height: 8 * scale),
+              Text(
+                'Check failed: $_academicContextError',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Colors.red.shade700,
+                  fontWeight: FontWeight.w700,
+                  fontSize: (12.2 * scale).clamp(12.2, 13.5),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildNoCounselingSetupGate(double scale) {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 640),
+      child: Container(
+        width: double.infinity,
+        padding: EdgeInsets.symmetric(
+          horizontal: 24 * scale,
+          vertical: 20 * scale,
+        ),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(color: primaryColor.withValues(alpha: 0.10)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.05),
+              blurRadius: 20,
+              offset: const Offset(0, 10),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Text(
+              'Counseling setup is not yet available',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: primaryColor,
+                fontWeight: FontWeight.w900,
+                fontSize: (17.0 * scale).clamp(17.0, 19.0),
+                height: 1.12,
+              ),
+            ),
+            SizedBox(height: 10 * scale),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 520),
+              child: Text(
+                'Please contact the counseling admin to complete the setup before submitting a referral.',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: hintColor,
+                  fontWeight: FontWeight.w700,
+                  fontSize: (13.0 * scale).clamp(12.8, 13.8),
+                  height: 1.25,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -1465,8 +1748,8 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
                   [
                     if ((_studentNo ?? '').trim().isNotEmpty)
                       (_studentNo ?? '').trim(),
-                    if ((_studentProgram ?? '').trim().isNotEmpty)
-                      (_studentProgram ?? '').trim(),
+                    if ((_studentProgramLabel ?? '').trim().isNotEmpty)
+                      (_studentProgramLabel ?? '').trim(),
                   ].join(' | '),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -1502,7 +1785,7 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
     final left = Column(
       children: [
         _reasonGroupCard(
-          title: 'Emotional and Behavior Concerns',
+          title: 'Academic Performance Information',
           options: _moodOptions,
           selected: _moodsSelected,
           otherController: _otherMoodCtrl,
@@ -1511,7 +1794,7 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
         ),
         SizedBox(height: 10 * scale),
         _reasonGroupCard(
-          title: 'Peer and Relationship Concerns',
+          title: 'Physical Attributes',
           options: _relationshipOptions,
           selected: _relationshipSelected,
           otherController: _otherRelationshipCtrl,
@@ -1524,7 +1807,7 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
     final right = Column(
       children: [
         _reasonGroupCard(
-          title: 'Academic and School Concerns',
+          title: 'Crisis Indicators',
           options: _schoolOptions,
           selected: _schoolSelected,
           otherController: _otherSchoolCtrl,
@@ -1533,7 +1816,7 @@ class _ProfessorCounselingPageState extends State<ProfessorCounselingPage> {
         ),
         SizedBox(height: 10 * scale),
         _reasonGroupCard(
-          title: 'Family and Home Concerns',
+          title: 'Atypical Behavior',
           options: _homeOptions,
           selected: _homeSelected,
           otherController: _otherHomeCtrl,

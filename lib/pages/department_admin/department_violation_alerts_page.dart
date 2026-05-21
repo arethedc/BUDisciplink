@@ -4,12 +4,15 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart';
+import 'package:apps/services/link_opener.dart';
 
 import '../../services/violation_case_service.dart';
+import '../../services/institution_label_service.dart';
 import '../professor/violation_report_page.dart';
 import '../shared/widgets/app_layout_tokens.dart';
 import '../shared/widgets/modern_table_layout.dart';
+import '../shared/widgets/app_empty_state.dart';
+import 'package:apps/services/app_firestore.dart';
 
 class DepartmentViolationAlertsPage extends StatefulWidget {
   final String? initialSelectedCaseId;
@@ -444,9 +447,14 @@ class _DepartmentViolationAlertsPageState
         final maxHeight = size.height * 0.92;
 
         return Dialog(
-          insetPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+          insetPadding: const EdgeInsets.symmetric(
+            horizontal: 10,
+            vertical: 12,
+          ),
           clipBehavior: Clip.antiAlias,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
           child: SizedBox(
             width: maxWidth,
             height: maxHeight,
@@ -454,9 +462,7 @@ class _DepartmentViolationAlertsPageState
               children: [
                 Container(
                   padding: const EdgeInsets.fromLTRB(16, 12, 10, 10),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                  ),
+                  decoration: BoxDecoration(color: Colors.white),
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -1003,7 +1009,7 @@ class _DepartmentViolationAlertsPageState
     final uid = studentUid.trim();
     if (uid.isEmpty) return '';
     try {
-      final snap = await FirebaseFirestore.instance
+      final snap = await AppFirestore.instance
           .collection('users')
           .doc(uid)
           .get();
@@ -1036,7 +1042,19 @@ class _DepartmentViolationAlertsPageState
   Future<String> _resolveImageSourceUrl(String source) async {
     final value = _safeStr(source);
     if (value.isEmpty) return '';
-    if (_isHttpImageUrl(value)) return value;
+    if (_isHttpImageUrl(value)) {
+      if (value.contains('firebasestorage.googleapis.com') ||
+          value.contains('firebasestorage.app')) {
+        try {
+          return await FirebaseStorage.instance
+              .refFromURL(value)
+              .getDownloadURL();
+        } catch (_) {
+          return value;
+        }
+      }
+      return value;
+    }
     try {
       if (value.startsWith('gs://')) {
         return await FirebaseStorage.instance
@@ -1091,7 +1109,7 @@ class _DepartmentViolationAlertsPageState
       ).showSnackBar(const SnackBar(content: Text('Invalid file URL.')));
       return;
     }
-    final ok = await launchUrl(uri, mode: LaunchMode.platformDefault);
+    final ok = await LinkOpener.openExternal(uri);
     if (!ok && mounted) {
       ScaffoldMessenger.of(
         context,
@@ -1552,9 +1570,7 @@ class _DepartmentViolationAlertsPageState
     );
   }
 
-  Widget? _buildFullHeaderActions({
-    required bool useCompactHeaderActions,
-  }) {
+  Widget? _buildFullHeaderActions({required bool useCompactHeaderActions}) {
     if (useCompactHeaderActions) return null;
     return OutlinedButton.icon(
       onPressed: _openViolationReportModal,
@@ -1589,11 +1605,7 @@ class _DepartmentViolationAlertsPageState
         child: PopupMenuButton<String>(
           tooltip: 'More options',
           padding: EdgeInsets.zero,
-          icon: const Icon(
-            Icons.more_horiz_rounded,
-            color: hint,
-            size: 20,
-          ),
+          icon: const Icon(Icons.more_horiz_rounded, color: hint, size: 20),
           onSelected: (action) {
             if (action == 'report_violation') {
               _openViolationReportModal();
@@ -1674,6 +1686,7 @@ class _DepartmentViolationAlertsPageState
           child: Row(
             children: [
               FutureBuilder<String>(
+                key: ValueKey('department-alert-photo-${doc.id}-$studentUid'),
                 future: studentPhotoFuture,
                 initialData: profilePhotoUrlFromCase,
                 builder: (context, snapshot) {
@@ -1716,7 +1729,10 @@ class _DepartmentViolationAlertsPageState
                                     borderRadius: BorderRadius.circular(11),
                                     child: Image.network(
                                       photoUrl,
+                                      key: ValueKey(photoUrl),
                                       fit: BoxFit.cover,
+                                      webHtmlElementStrategy:
+                                          WebHtmlElementStrategy.prefer,
                                       errorBuilder:
                                           (context, error, stackTrace) =>
                                               const Icon(
@@ -1777,12 +1793,50 @@ class _DepartmentViolationAlertsPageState
                       ),
                     ),
                     const SizedBox(height: 2),
-                    Text(
-                      'Program: ${studentProgram.isEmpty ? '--' : studentProgram}',
-                      style: const TextStyle(
-                        color: hint,
-                        fontWeight: FontWeight.w700,
+                    FutureBuilder<String>(
+                      future: InstitutionLabelService.resolveCollegeLabel(
+                        _safeStr(
+                          d['studentProfile']?['collegeId'] ??
+                              d['studentCollegeId'] ??
+                              d['department'],
+                        ),
                       ),
+                      initialData: _safeStr(
+                        d['studentProfile']?['collegeId'] ??
+                            d['studentCollegeId'] ??
+                            d['department'],
+                      ),
+                      builder: (context, snapshot) {
+                        final college = _safeStr(snapshot.data).isEmpty
+                            ? '--'
+                            : _safeStr(snapshot.data);
+                        return Text(
+                          'College: $college',
+                          style: const TextStyle(
+                            color: hint,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 2),
+                    FutureBuilder<String>(
+                      future: InstitutionLabelService.resolveProgramLabel(
+                        studentProgram,
+                      ),
+                      initialData: studentProgram,
+                      builder: (context, snapshot) {
+                        final program = _safeStr(snapshot.data).isEmpty
+                            ? '--'
+                            : _safeStr(snapshot.data);
+                        return Text(
+                          'Program: $program',
+                          style: const TextStyle(
+                            color: hint,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        );
+                      },
                     ),
                   ],
                 ),
@@ -1918,7 +1972,7 @@ class _DepartmentViolationAlertsPageState
                       Icon(Icons.assignment_outlined, color: primary, size: 20),
                       SizedBox(width: 8),
                       Text(
-                        'Case Details',
+                        'Violation Details',
                         style: TextStyle(
                           color: primary,
                           fontWeight: FontWeight.w900,
@@ -1982,7 +2036,7 @@ class _DepartmentViolationAlertsPageState
                         ),
                         SizedBox(width: 8),
                         Text(
-                          'Case Details',
+                          'Violation Details',
                           style: TextStyle(
                             color: primary,
                             fontWeight: FontWeight.w900,
@@ -2070,7 +2124,7 @@ class _DepartmentViolationAlertsPageState
     }
 
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance
+      stream: AppFirestore.instance
           .collection('users')
           .doc(currentUser.uid)
           .snapshots(),
@@ -2093,7 +2147,7 @@ class _DepartmentViolationAlertsPageState
         }
 
         return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-          stream: FirebaseFirestore.instance
+          stream: AppFirestore.instance
               .collection('users')
               .where('role', isEqualTo: 'student')
               .where('studentProfile.collegeId', isEqualTo: department)
@@ -2225,18 +2279,10 @@ class _DepartmentViolationAlertsPageState
     required bool showSideDetails,
   }) {
     if (filtered.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.inbox_outlined, size: 64, color: Colors.grey[300]),
-            const SizedBox(height: 16),
-            const Text(
-              'No cases found',
-              style: TextStyle(color: hint, fontWeight: FontWeight.bold),
-            ),
-          ],
-        ),
+      return const AppEmptyState(
+        icon: Icons.inbox_outlined,
+        title: 'No cases found',
+        subtitle: 'There are no department cases for the selected filters.',
       );
     }
 

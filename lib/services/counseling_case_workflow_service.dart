@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 import 'academic_settings_service.dart';
+import 'package:apps/services/app_firestore.dart';
 
 class CounselingCaseWorkflow {
   static const referralSourceStudent = 'student';
@@ -55,9 +56,9 @@ class CounselingCaseState {
         CounselingCaseWorkflow.referralSourceStudent) {
       return true;
     }
-    return _safeList(data['referralSources']).contains(
-      CounselingCaseWorkflow.referralSourceStudent,
-    );
+    return _safeList(
+      data['referralSources'],
+    ).contains(CounselingCaseWorkflow.referralSourceStudent);
   }
 
   static bool isCompleted(Map<String, dynamic> data) {
@@ -164,10 +165,10 @@ class CounselingCaseWorkflowService {
   CounselingCaseWorkflowService({
     FirebaseFirestore? db,
     AcademicSettingsService? academicSettingsService,
-  }) : _db = db ?? FirebaseFirestore.instance,
+  }) : _db = db ?? AppFirestore.instance,
        _academicSettings =
            academicSettingsService ??
-           AcademicSettingsService(db: db ?? FirebaseFirestore.instance);
+           AcademicSettingsService(db: db ?? AppFirestore.instance);
 
   final FirebaseFirestore _db;
   final AcademicSettingsService _academicSettings;
@@ -792,7 +793,10 @@ class CounselingCaseWorkflowService {
     );
   }
 
-  Future<void> markAppointmentCompleted({required String caseId}) async {
+  Future<void> markAppointmentCompleted({
+    required String caseId,
+    required String meetingNotes,
+  }) async {
     var studentUid = '';
     var caseCode = caseId;
     await _db.runTransaction((tx) async {
@@ -829,6 +833,7 @@ class CounselingCaseWorkflowService {
         'workflowStatus': CounselingCaseWorkflow.workflowCompleted,
         'meetingStatus': CounselingCaseWorkflow.meetingCompleted,
         'bookingStatus': CounselingCaseWorkflow.bookingCompleted,
+        'meetingNotes': meetingNotes.trim(),
         'completedAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
       });
@@ -856,6 +861,7 @@ class CounselingCaseWorkflowService {
       meta: {
         'workflowStatus': CounselingCaseWorkflow.workflowCompleted,
         'meetingStatus': CounselingCaseWorkflow.meetingCompleted,
+        'meetingNotes': meetingNotes.trim(),
       },
     );
   }
@@ -1047,9 +1053,8 @@ class CounselingCaseWorkflowService {
     return _AcademicContext(schoolYearId: schoolYearId, termId: termId);
   }
 
-  Future<QueryDocumentSnapshot<Map<String, dynamic>>?> _findActiveCaseForStudent(
-    String studentUid,
-  ) async {
+  Future<QueryDocumentSnapshot<Map<String, dynamic>>?>
+  _findActiveCaseForStudent(String studentUid) async {
     final normalizedStudentUid = studentUid.trim();
     if (normalizedStudentUid.isEmpty) return null;
 
@@ -1058,11 +1063,13 @@ class CounselingCaseWorkflowService {
         .limit(20)
         .get();
 
-    final activeDocs = snap.docs.where((doc) {
-      final data = doc.data();
-      return !CounselingCaseState.isClosed(data);
-    }).toList()
-      ..sort((a, b) => _caseSortDate(b.data()).compareTo(_caseSortDate(a.data())));
+    final activeDocs =
+        snap.docs.where((doc) {
+          final data = doc.data();
+          return !CounselingCaseState.isClosed(data);
+        }).toList()..sort(
+          (a, b) => _caseSortDate(b.data()).compareTo(_caseSortDate(a.data())),
+        );
 
     if (activeDocs.isEmpty) return null;
     return activeDocs.first;
@@ -1089,9 +1096,10 @@ class CounselingCaseWorkflowService {
     final now = DateTime.now();
     final bookingWindowStart = now.add(CounselingCaseWorkflow.bookingLeadTime);
 
-    final updatedSources = _mergeStringList(_stringList(caseData['referralSources']), [
-      normalizedSource,
-    ]);
+    final updatedSources = _mergeStringList(
+      _stringList(caseData['referralSources']),
+      [normalizedSource],
+    );
     final updatedReporterUids = _mergeStringList(
       _stringList(caseData['referralReporterUids']),
       [referredByUid.trim()],
@@ -1120,7 +1128,9 @@ class CounselingCaseWorkflowService {
           updatedSources.contains(CounselingCaseWorkflow.referralSourceStudent),
       'professorReferralSubmitted':
           caseData['professorReferralSubmitted'] == true ||
-          updatedSources.contains(CounselingCaseWorkflow.referralSourceProfessor),
+          updatedSources.contains(
+            CounselingCaseWorkflow.referralSourceProfessor,
+          ),
       'latestReferralSource': normalizedSource,
       'latestReferralAt': Timestamp.fromDate(now),
       'reasons': _mergeReasons(caseData['reasons'], reasons),
@@ -1158,7 +1168,8 @@ class CounselingCaseWorkflowService {
 
     await _cases.doc(caseId).set(update, SetOptions(merge: true));
 
-    final sourceLabel = normalizedSource == CounselingCaseWorkflow.referralSourceStudent
+    final sourceLabel =
+        normalizedSource == CounselingCaseWorkflow.referralSourceStudent
         ? 'self-referral'
         : 'professor referral';
     final openedBooking =
@@ -1212,7 +1223,10 @@ class CounselingCaseWorkflowService {
     };
   }
 
-  Map<String, dynamic> _mergeReasons(dynamic existing, Map<String, dynamic> incoming) {
+  Map<String, dynamic> _mergeReasons(
+    dynamic existing,
+    Map<String, dynamic> incoming,
+  ) {
     final merged = <String, dynamic>{};
     if (existing is Map) {
       for (final entry in existing.entries) {
@@ -1227,8 +1241,7 @@ class CounselingCaseWorkflowService {
         final values = <String>{
           ..._stringList(existingValue),
           ..._stringList(incomingValue),
-        }.toList()
-          ..sort();
+        }.toList()..sort();
         merged[key] = values;
         continue;
       }
@@ -1243,10 +1256,11 @@ class CounselingCaseWorkflowService {
       final existingItems = _stringList(existingValue);
       if (existingItems.isNotEmpty) {
         final mergedItems = <String>{
-          ...existingItems.map((item) => item.trim()).where((item) => item.isNotEmpty),
+          ...existingItems
+              .map((item) => item.trim())
+              .where((item) => item.isNotEmpty),
           incomingText,
-        }.toList()
-          ..sort();
+        }.toList()..sort();
         merged[key] = mergedItems;
       } else {
         merged[key] = [incomingText];
@@ -1286,8 +1300,10 @@ class CounselingCaseWorkflowService {
   }
 
   List<String> _mergeStringList(List<String> existing, List<String> incoming) {
-    return <String>{...existing, ...incoming.where((item) => item.trim().isNotEmpty)}
-        .toList();
+    return <String>{
+      ...existing,
+      ...incoming.where((item) => item.trim().isNotEmpty),
+    }.toList();
   }
 
   List<Map<String, dynamic>> _mapList(dynamic raw) {
@@ -1295,9 +1311,7 @@ class CounselingCaseWorkflowService {
       return raw
           .whereType<Map>()
           .map(
-            (item) => item.map(
-              (key, value) => MapEntry(key.toString(), value),
-            ),
+            (item) => item.map((key, value) => MapEntry(key.toString(), value)),
           )
           .toList();
     }

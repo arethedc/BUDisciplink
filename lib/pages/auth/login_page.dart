@@ -1,14 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:go_router/go_router.dart';
 import '../../services/user_service.dart';
 import '../../services/role_router.dart';
 import '../shared/widgets/app_branding.dart';
-import '../auth/forgot_password_page.dart';
 import 'package:apps/pages/shared/widgets/app_inline_notice.dart';
+import 'package:apps/services/app_firestore.dart';
 
 class LoginPage extends StatefulWidget {
-  const LoginPage({super.key});
+  final String? prefillEmail;
+
+  const LoginPage({super.key, this.prefillEmail});
 
   @override
   State<LoginPage> createState() => _LoginPageState();
@@ -18,6 +21,7 @@ class _LoginPageState extends State<LoginPage> {
   final TextEditingController emailController = TextEditingController();
   final TextEditingController passwordController = TextEditingController();
   bool _prefilledFromArgs = false;
+  bool _shownUnverifiedNoticeFromRoute = false;
 
   bool isLoading = false;
   bool _obscurePassword = true;
@@ -59,7 +63,7 @@ class _LoginPageState extends State<LoginPage> {
     final nowEpoch = DateTime.now().millisecondsSinceEpoch;
     final authSignInEpoch = _toEpochMs(user.metadata.lastSignInTime);
     final eventEpoch = authSignInEpoch ?? nowEpoch;
-    final userRef = FirebaseFirestore.instance.collection('users').doc(uid);
+    final userRef = AppFirestore.instance.collection('users').doc(uid);
     final logData = <String, dynamic>{
       'action': 'logged_in',
       'title': 'User logged in',
@@ -121,17 +125,20 @@ class _LoginPageState extends State<LoginPage> {
       // 2️⃣ Refresh user + check email verification
       await authUser.reload();
       final freshUser = FirebaseAuth.instance.currentUser;
-      if (freshUser != null && !freshUser.emailVerified) {
-        // ✅ DO NOT sign out here. Keep logged in so VerifyEmailPage can resend/check.
+      if (freshUser == null || !freshUser.emailVerified) {
+        final safeEmail = (freshUser?.email ?? emailController.text).trim();
+        try {
+          await FirebaseAuth.instance.signOut();
+        } catch (_) {}
         if (!mounted) return;
-        Navigator.pushNamedAndRemoveUntil(
-          context,
-          '/verify-email',
-          (r) => false,
-          arguments: {
-            'source': 'logged_unverified',
-            'prefillEmail': emailController.text.trim(),
-          },
+        context.go(
+          Uri(
+            path: '/login',
+            queryParameters: <String, String>{
+              if (safeEmail.isNotEmpty) 'prefillEmail': safeEmail,
+              'reason': 'unverified',
+            },
+          ).toString(),
         );
         return;
       }
@@ -150,6 +157,12 @@ class _LoginPageState extends State<LoginPage> {
 
       // 4️⃣ Route normally
       if (!mounted) return;
+      final next = (GoRouterState.of(context).uri.queryParameters['next'] ?? '')
+          .trim();
+      if (next.startsWith('/') && !next.startsWith('//')) {
+        context.go(next);
+        return;
+      }
       await RoleRouter.route(context);
     } on FirebaseAuthException catch (e) {
       if (!mounted) return;
@@ -173,17 +186,53 @@ class _LoginPageState extends State<LoginPage> {
     // ✅ Clean behavior:
     // - Do NOT send email here
     // - Just open the ForgotPasswordPage
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => const ForgotPasswordPage()),
-    );
+    context.go('/forgot-password');
   }
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    if (!_shownUnverifiedNoticeFromRoute) {
+      final reason =
+          (GoRouterState.of(context).uri.queryParameters['reason'] ?? '')
+              .trim()
+              .toLowerCase();
+      if (reason == 'unverified') {
+        _shownUnverifiedNoticeFromRoute = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          AppScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'This email is not verified yet. Please check your email and click the verification link before logging in.',
+              ),
+              backgroundColor: Colors.orange,
+            ),
+          );
+          final prefill =
+              (GoRouterState.of(context).uri.queryParameters['prefillEmail'] ??
+                      '')
+                  .trim();
+          context.go(
+            Uri(
+              path: '/login',
+              queryParameters: <String, String>{
+                if (prefill.isNotEmpty) 'prefillEmail': prefill,
+              },
+            ).toString(),
+          );
+          _shownUnverifiedNoticeFromRoute = false;
+        });
+      }
+    }
+
     if (_prefilledFromArgs) return;
     _prefilledFromArgs = true;
+    final prefill = widget.prefillEmail?.trim() ?? '';
+    if (prefill.isNotEmpty) {
+      emailController.text = prefill;
+      return;
+    }
     final args = ModalRoute.of(context)?.settings.arguments;
     if (args is Map) {
       final email = (args['prefillEmail'] ?? args['email'] ?? '')
@@ -276,8 +325,7 @@ class _LoginPageState extends State<LoginPage> {
                         const SizedBox(height: 8),
 
                         // Logo (Smaller for login)
-               
-                         Align(
+                        Align(
                           alignment: Alignment.centerLeft,
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
@@ -436,10 +484,7 @@ class _LoginPageState extends State<LoginPage> {
                         const SizedBox(height: 10),
 
                         TextButton(
-                          onPressed: () => Navigator.pushReplacementNamed(
-                            context,
-                            '/signup',
-                          ),
+                          onPressed: () => context.go('/signup'),
                           style: TextButton.styleFrom(
                             foregroundColor: primary,
                             textStyle: const TextStyle(
@@ -495,4 +540,3 @@ class _LoginPageState extends State<LoginPage> {
     );
   }
 }
-

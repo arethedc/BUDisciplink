@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:apps/pages/shared/widgets/app_layout_tokens.dart';
+import 'package:apps/services/app_firestore.dart';
 
 enum AppNotificationViewTarget { pendingApproval, violationAlert }
 
@@ -169,7 +170,7 @@ class _AppNotificationsPageState extends State<AppNotificationsPage> {
       );
     }
 
-    final stream = FirebaseFirestore.instance
+    final stream = AppFirestore.instance
         .collection('users')
         .doc(user.uid)
         .collection('notifications')
@@ -363,7 +364,7 @@ class _AppNotificationsContentState extends State<AppNotificationsContent> {
       );
     }
 
-    final stream = FirebaseFirestore.instance
+    final stream = AppFirestore.instance
         .collection('users')
         .doc(user.uid)
         .collection('notifications')
@@ -575,7 +576,7 @@ class _DesktopNotificationsPanelState extends State<DesktopNotificationsPanel> {
 
   @override
   Widget build(BuildContext context) {
-    final stream = FirebaseFirestore.instance
+    final stream = AppFirestore.instance
         .collection('users')
         .doc(widget.uid)
         .collection('notifications')
@@ -1311,7 +1312,7 @@ Future<Map<String, dynamic>?> _fetchViolationCaseData({
   required Map<String, dynamic> payload,
   required AppNotificationViewIntent intent,
 }) async {
-  final db = FirebaseFirestore.instance;
+  final db = AppFirestore.instance;
   final directCaseId = _safeStr(intent.caseId).isNotEmpty
       ? _safeStr(intent.caseId)
       : _safeStr(data['caseId']);
@@ -1476,7 +1477,8 @@ List<_NotificationDetailItem> _buildViolationNotificationDetails({
     name: _firstNonEmpty([live?['reportedByName'], payload['reportedByName']]),
     role: _firstNonEmpty([live?['reportedByRole'], payload['reportedByRole']]),
   );
-  final incidentAt = _toDate(payload['incidentAt']) ?? _toDate(live?['incidentAt']);
+  final incidentAt =
+      _toDate(payload['incidentAt']) ?? _toDate(live?['incidentAt']);
   final action = _humanizeSnakeOrTitle(
     _firstNonEmpty([
       live?['actionSelected'],
@@ -1503,9 +1505,11 @@ List<_NotificationDetailItem> _buildViolationNotificationDetails({
   final meetingStatus = _humanizeSnakeOrTitle(
     _firstNonEmpty([live?['meetingStatus'], payload['meetingStatus']]),
   );
-  final scheduledAt = _toDate(payload['scheduledAt']) ?? _toDate(live?['scheduledAt']);
+  final scheduledAt =
+      _toDate(payload['scheduledAt']) ?? _toDate(live?['scheduledAt']);
   final bookingDeadlineAt =
-      _toDate(payload['bookingDeadlineAt']) ?? _toDate(live?['bookingDeadlineAt']);
+      _toDate(payload['bookingDeadlineAt']) ??
+      _toDate(live?['bookingDeadlineAt']);
   final status = _humanizeSnakeOrTitle(
     _firstNonEmpty([payload['status'], live?['status']]),
   );

@@ -6,10 +6,7 @@ class ProfessorHomePage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return const Center(
-      child: Text(
-        'Professor Home',
-        style: TextStyle(fontSize: 20),
-      ),
+      child: Text('Professor Home', style: TextStyle(fontSize: 20)),
     );
   }
 }

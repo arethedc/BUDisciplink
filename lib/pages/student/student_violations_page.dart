@@ -5,8 +5,10 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../shared/widgets/modern_table_layout.dart';
+import '../shared/widgets/app_empty_state.dart';
 import '../../services/osa_meeting_schedule_service.dart';
 import 'package:apps/pages/shared/widgets/app_inline_notice.dart';
+import 'package:apps/services/app_firestore.dart';
 
 enum _StudentCasesTab {
   all,
@@ -19,7 +21,10 @@ enum _StudentCasesTab {
 }
 
 class StudentViolationsPage extends StatefulWidget {
-  const StudentViolationsPage({super.key});
+  final String? initialTab;
+  final ValueChanged<String>? onTabChanged;
+
+  const StudentViolationsPage({super.key, this.initialTab, this.onTabChanged});
 
   @override
   State<StudentViolationsPage> createState() => _StudentViolationsPageState();
@@ -49,11 +54,26 @@ class _StudentViolationsPageState extends State<StudentViolationsPage> {
   @override
   void initState() {
     super.initState();
+    _tab = _tabFromKey(widget.initialTab);
     _runBookingExpirySweep();
     _bookingSweepTimer = Timer.periodic(
       const Duration(minutes: 2),
       (_) => _runBookingExpirySweep(),
     );
+  }
+
+  @override
+  void didUpdateWidget(covariant StudentViolationsPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.initialTab != widget.initialTab) {
+      final nextTab = _tabFromKey(widget.initialTab);
+      if (nextTab != _tab) {
+        setState(() {
+          _tab = nextTab;
+          _selectedId = null;
+        });
+      }
+    }
   }
 
   Future<void> _runBookingExpirySweep() async {
@@ -96,6 +116,49 @@ class _StudentViolationsPageState extends State<StudentViolationsPage> {
         return 'Resolved';
       case _StudentCasesTab.cancelled:
         return 'Cancelled';
+    }
+  }
+
+  _StudentCasesTab _tabFromKey(String? raw) {
+    final value = (raw ?? '').trim().toLowerCase();
+    switch (value) {
+      case 'needs-booking':
+      case 'needs_booking':
+        return _StudentCasesTab.needsBooking;
+      case 'scheduled':
+        return _StudentCasesTab.scheduled;
+      case 'under-review':
+      case 'under_review':
+        return _StudentCasesTab.underReview;
+      case 'unresolved':
+        return _StudentCasesTab.unresolved;
+      case 'resolved':
+        return _StudentCasesTab.resolved;
+      case 'cancelled':
+        return _StudentCasesTab.cancelled;
+      case 'all':
+      default:
+        return _StudentCasesTab.all;
+    }
+  }
+
+  String _tabKey(_StudentCasesTab tab) {
+    switch (tab) {
+      case _StudentCasesTab.needsBooking:
+        return 'needs-booking';
+      case _StudentCasesTab.scheduled:
+        return 'scheduled';
+      case _StudentCasesTab.underReview:
+        return 'under-review';
+      case _StudentCasesTab.unresolved:
+        return 'unresolved';
+      case _StudentCasesTab.resolved:
+        return 'resolved';
+      case _StudentCasesTab.cancelled:
+        return 'cancelled';
+      case _StudentCasesTab.all:
+      default:
+        return 'all';
     }
   }
 
@@ -356,6 +419,7 @@ class _StudentViolationsPageState extends State<StudentViolationsPage> {
                           _tab = newTab;
                           _selectedId = null;
                         });
+                        widget.onTabChanged?.call(_tabKey(newTab));
                       },
                       tabs: _StudentCasesTab.values
                           .map(
@@ -371,7 +435,7 @@ class _StudentViolationsPageState extends State<StudentViolationsPage> {
               filters: const [],
             ),
             body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              stream: FirebaseFirestore.instance
+              stream: AppFirestore.instance
                   .collection('violation_cases')
                   .where('studentUid', isEqualTo: user.uid)
                   .snapshots(),
@@ -484,7 +548,7 @@ class _StudentViolationsPageState extends State<StudentViolationsPage> {
             showDetails: desktopWide && _selectedId != null,
             details: desktopWide && _selectedId != null
                 ? StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-                    stream: FirebaseFirestore.instance
+                    stream: AppFirestore.instance
                         .collection('violation_cases')
                         .doc(_selectedId)
                         .snapshots(),
@@ -559,22 +623,14 @@ class _StudentViolationsPageState extends State<StudentViolationsPage> {
               }
 
               final codeCellWidth = colWidth(1.20, 104, compactMinWidth: 86);
-              final concernCellWidth = colWidth(
-                1.35,
-                126,
-                compactMinWidth: 98,
-              );
+              final concernCellWidth = colWidth(1.35, 126, compactMinWidth: 98);
               final violationCellWidth = colWidth(
                 2.55,
                 230,
                 compactMinWidth: 170,
               );
               final dateCellWidth = colWidth(1.20, 112, compactMinWidth: 92);
-              final statusCellWidth = colWidth(
-                1.45,
-                132,
-                compactMinWidth: 112,
-              );
+              final statusCellWidth = colWidth(1.45, 132, compactMinWidth: 112);
 
               return SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
@@ -653,9 +709,9 @@ class _StudentViolationsPageState extends State<StudentViolationsPage> {
                               states,
                             ) {
                               if (isSelected) {
-                                return primaryColor.withValues(alpha: 0.10);
+                                return primaryColor.withValues(alpha: 0.08);
                               }
-                              return Colors.white;
+                              return null;
                             }),
                             onSelectChanged: (_) {
                               setState(() {
@@ -879,15 +935,17 @@ class _StudentViolationsPageState extends State<StudentViolationsPage> {
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      useSafeArea: true,
       showDragHandle: true,
       backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (_) => SizedBox(
-        height: MediaQuery.of(context).size.height * 0.92,
-        child: _StudentCaseDetailsSheet(doc: doc),
+      builder: (_) => FractionallySizedBox(
+        heightFactor: 0.92,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+          child: _StudentCaseDetailsSheet(doc: doc),
+        ),
       ),
     );
   }
@@ -1317,6 +1375,8 @@ class _DesktopDetailsPanel extends StatelessWidget {
     );
     final dateReported = _bestDate(d);
     final dateReportedText = _formatReportedAtSmart(dateReported);
+    final incidentAt = _tsToDate(d['incidentAt']);
+    final dateOfIncidentText = _formatReportedAtSmart(incidentAt);
     final reporterDisplay = _reportedByDisplay(d);
     final concern = _safeStr(d['concern'] ?? d['reportedConcernType']);
     final category = _categoryLabelFromCase(d);
@@ -1366,60 +1426,10 @@ class _DesktopDetailsPanel extends StatelessWidget {
         _safeStr(d['studentUid']).isNotEmpty;
 
     return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: Colors.black.withOpacity(0.08)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.04),
-            blurRadius: 14,
-            offset: const Offset(0, 8),
-          ),
-        ],
-      ),
+      color: Colors.white,
       child: Column(
         children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(14, 14, 10, 8),
-            child: Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 6,
-                  ),
-                  decoration: BoxDecoration(
-                    color: primaryColor.withOpacity(0.12),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: primaryColor.withOpacity(0.25)),
-                  ),
-                  child: Text(
-                    code,
-                    style: TextStyle(
-                      color: primaryColor,
-                      fontWeight: FontWeight.w900,
-                      fontSize: 12,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    'Case Details',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: textDark,
-                      fontWeight: FontWeight.w900,
-                      fontSize: 16,
-                    ),
-                  ),
-                ),
-                _studentStatusPill(status),
-              ],
-            ),
-          ),
+          const _StudentCaseDetailsHeader(),
           const Divider(height: 1),
           Expanded(
             child: SingleChildScrollView(
@@ -1427,9 +1437,18 @@ class _DesktopDetailsPanel extends StatelessWidget {
               child: Column(
                 children: [
                   _StudentDetailCard(
-                    title: 'Incident Summary',
+                    title: 'Violation Summary',
                     child: Column(
                       children: [
+                        _studentKv('Case Code', code),
+                        const SizedBox(height: 8),
+                        _studentKv('Status', status),
+                        const SizedBox(height: 8),
+                        _studentKv(
+                          'Violation Type',
+                          violation.isEmpty ? '--' : violation,
+                        ),
+                        const SizedBox(height: 8),
                         _studentKv(
                           'Concern',
                           concern.isEmpty ? '--' : _titleCase(concern),
@@ -1440,38 +1459,14 @@ class _DesktopDetailsPanel extends StatelessWidget {
                           category.isEmpty ? '--' : category,
                         ),
                         const SizedBox(height: 8),
-                        _studentKv(
-                          'Violation Type',
-                          violation.isEmpty ? '--' : violation,
-                        ),
+                        _studentKv('Date of Incident', dateOfIncidentText),
                         const SizedBox(height: 8),
                         _studentKv('Date Reported', dateReportedText),
                         const SizedBox(height: 8),
                         _studentKv('Reported By', reporterDisplay),
+                        const SizedBox(height: 8),
+                        _studentKv('Description', desc.isEmpty ? '--' : desc),
                       ],
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  _StudentDetailCard(
-                    title: 'Incident Description',
-                    child: Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.03),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: Colors.black.withOpacity(0.08),
-                        ),
-                      ),
-                      child: Text(
-                        desc.isEmpty ? '--' : desc,
-                        style: const TextStyle(
-                          color: textDark,
-                          fontWeight: FontWeight.w600,
-                          height: 1.35,
-                        ),
-                      ),
                     ),
                   ),
                   if (officialRemarks.isNotEmpty) ...[
@@ -1668,6 +1663,8 @@ class _StudentCaseDetailsSheet extends StatelessWidget {
     );
     final dateReported = _bestDate(d);
     final dateReportedText = _formatReportedAtSmart(dateReported);
+    final incidentAt = _tsToDate(d['incidentAt']);
+    final dateOfIncidentText = _formatReportedAtSmart(incidentAt);
     final reporterDisplay = _reportedByDisplay(d);
     final concern = _safeStr(d['concern'] ?? d['reportedConcernType']);
     final category = _categoryLabelFromCase(d);
@@ -1720,45 +1717,7 @@ class _StudentCaseDetailsSheet extends StatelessWidget {
       color: bg,
       child: Column(
         children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(14, 14, 10, 8),
-            child: Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 6,
-                  ),
-                  decoration: BoxDecoration(
-                    color: primaryColor.withOpacity(0.12),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: primaryColor.withOpacity(0.25)),
-                  ),
-                  child: Text(
-                    code,
-                    style: const TextStyle(
-                      color: primaryColor,
-                      fontWeight: FontWeight.w900,
-                      fontSize: 12,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    'Case Details',
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: textDark,
-                      fontWeight: FontWeight.w900,
-                      fontSize: 16,
-                    ),
-                  ),
-                ),
-                Flexible(child: _studentStatusPill(status)),
-              ],
-            ),
-          ),
+          _StudentCaseDetailsHeader(onClose: () => Navigator.of(context).pop()),
           const Divider(height: 1),
           Expanded(
             child: SingleChildScrollView(
@@ -1766,9 +1725,18 @@ class _StudentCaseDetailsSheet extends StatelessWidget {
               child: Column(
                 children: [
                   _StudentDetailCard(
-                    title: 'Case Details',
+                    title: 'Violation Summary',
                     child: Column(
                       children: [
+                        _studentKv('Case Code', code),
+                        const SizedBox(height: 8),
+                        _studentKv('Status', status),
+                        const SizedBox(height: 8),
+                        _studentKv(
+                          'Violation Type',
+                          violation.isEmpty ? '--' : violation,
+                        ),
+                        const SizedBox(height: 8),
                         _studentKv(
                           'Concern',
                           concern.isEmpty ? '--' : _titleCase(concern),
@@ -1779,38 +1747,14 @@ class _StudentCaseDetailsSheet extends StatelessWidget {
                           category.isEmpty ? '--' : category,
                         ),
                         const SizedBox(height: 8),
-                        _studentKv(
-                          'Violation Type',
-                          violation.isEmpty ? '--' : violation,
-                        ),
+                        _studentKv('Date of Incident', dateOfIncidentText),
                         const SizedBox(height: 8),
                         _studentKv('Date Reported', dateReportedText),
                         const SizedBox(height: 8),
                         _studentKv('Reported By', reporterDisplay),
+                        const SizedBox(height: 8),
+                        _studentKv('Description', desc.isEmpty ? '--' : desc),
                       ],
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  _StudentDetailCard(
-                    title: 'Incident Description',
-                    child: Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.03),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: Colors.black.withOpacity(0.08),
-                        ),
-                      ),
-                      child: Text(
-                        desc.isEmpty ? '--' : desc,
-                        style: const TextStyle(
-                          color: textDark,
-                          fontWeight: FontWeight.w600,
-                          height: 1.35,
-                        ),
-                      ),
                     ),
                   ),
                   if (officialRemarks.isNotEmpty) ...[
@@ -1978,6 +1922,48 @@ class _StudentCaseDetailsSheet extends StatelessWidget {
               ),
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StudentCaseDetailsHeader extends StatelessWidget {
+  final VoidCallback? onClose;
+
+  const _StudentCaseDetailsHeader({this.onClose});
+
+  @override
+  Widget build(BuildContext context) {
+    const primaryColor = Color(0xFF1B5E20);
+    const hintColor = Color(0xFF6D7F62);
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 14, 10, 8),
+      child: Row(
+        children: [
+          const Expanded(
+            child: Row(
+              children: [
+                Icon(Icons.assignment_outlined, color: primaryColor, size: 20),
+                SizedBox(width: 8),
+                Text(
+                  'Violation Details',
+                  style: TextStyle(
+                    color: primaryColor,
+                    fontWeight: FontWeight.w900,
+                    fontSize: 17,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (onClose != null)
+            IconButton(
+              tooltip: 'Close',
+              onPressed: onClose,
+              icon: const Icon(Icons.close_rounded, color: hintColor),
+            ),
         ],
       ),
     );
@@ -2849,15 +2835,11 @@ class _EmptyState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Center(
-      child: Padding(
-        padding: EdgeInsets.all(18),
-        child: Text(
-          'No violations found for the selected filters.',
-          textAlign: TextAlign.center,
-          style: TextStyle(fontWeight: FontWeight.w900),
-        ),
-      ),
+    return const AppEmptyState(
+      icon: Icons.assignment_late_outlined,
+      title: 'No violations found',
+      subtitle: 'There are no violation records for the selected filters.',
+      padding: EdgeInsets.all(18),
     );
   }
 }
@@ -2935,7 +2917,8 @@ bool _matchesStudentTab(Map<String, dynamic> d, _StudentCasesTab tab) {
   final isCancelled = _isCancelledStatusKey(statusKey);
   final isResolved = statusKey == 'resolved';
   final isUnresolved = statusKey == 'unresolved';
-  final isReviewLike = statusKey == 'submitted' ||
+  final isReviewLike =
+      statusKey == 'submitted' ||
       statusKey == 'under review' ||
       statusKey == 'action set';
 

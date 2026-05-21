@@ -1,10 +1,11 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:apps/services/app_firestore.dart';
 
 class CollegeProgramSeedService {
   final FirebaseFirestore _db;
 
   CollegeProgramSeedService({FirebaseFirestore? db})
-    : _db = db ?? FirebaseFirestore.instance;
+    : _db = db ?? AppFirestore.instance;
 
   static const List<_SeedCollege> _buColleges = [
     _SeedCollege(
@@ -128,35 +129,65 @@ class CollegeProgramSeedService {
     final programsRef = _db.collection('programs');
     final now = FieldValue.serverTimestamp();
     final batch = _db.batch();
+    final existingCollegesSnap = await collegesRef.get();
+    final existingProgramsSnap = await programsRef.get();
+
+    final legacyCollegeIdsByCode = <String, String>{};
+    for (final doc in existingCollegesSnap.docs) {
+      final code = (doc.data()['collegeCode'] ?? '')
+          .toString()
+          .trim()
+          .toUpperCase();
+      if (code.isEmpty) continue;
+      legacyCollegeIdsByCode[code] = doc.id.trim();
+    }
 
     var collegesCount = 0;
     var programsCount = 0;
 
     for (var i = 0; i < _buColleges.length; i++) {
       final college = _buColleges[i];
-      final collegeDoc = collegesRef.doc(college.code);
-      batch.set(collegeDoc, {
+      final collegeId = college.code.trim().toLowerCase();
+      final collegeDoc = collegesRef.doc(collegeId);
+      final collegeData = <String, dynamic>{
         'collegeCode': college.code,
         'name': college.name,
         'active': true,
         'sortOrder': i + 1,
-        'createdAt': now,
         'updatedAt': now,
-      }, SetOptions(merge: true));
+      };
+      collegeData['createdAt'] = now;
+      batch.set(collegeDoc, collegeData, SetOptions(merge: true));
       collegesCount++;
 
       for (var j = 0; j < college.programs.length; j++) {
         final program = college.programs[j];
-        final programDoc = programsRef.doc(program.code);
-        batch.set(programDoc, {
+        final programId = '${collegeId}_${program.code.trim().toLowerCase()}';
+        final programDoc = programsRef.doc(programId);
+        final legacyCollegeId = legacyCollegeIdsByCode[college.code] ?? '';
+        final normalizedProgramCode = program.code.trim().toUpperCase();
+        final hasLegacyProgram = existingProgramsSnap.docs.any((doc) {
+          final data = doc.data();
+          final dataCode = (data['programCode'] ?? '')
+              .toString()
+              .trim()
+              .toUpperCase();
+          final dataCollegeId = (data['collegeId'] ?? '').toString().trim();
+          return dataCode == normalizedProgramCode &&
+              (dataCollegeId == collegeId || dataCollegeId == legacyCollegeId);
+        });
+        final programData = <String, dynamic>{
           'programCode': program.code,
           'name': program.name,
-          'collegeId': college.code,
+          'collegeId': collegeId,
           'active': true,
           'sortOrder': j + 1,
-          'createdAt': now,
           'updatedAt': now,
-        }, SetOptions(merge: true));
+        };
+        if (!hasLegacyProgram) {
+          programData['createdAt'] = now;
+        }
+        batch.set(programDoc, programData, SetOptions(merge: true));
         programsCount++;
       }
     }

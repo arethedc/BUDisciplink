@@ -1,12 +1,13 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:apps/services/app_firestore.dart';
 
 class UserService {
   Future<void> ensureUserDocExists() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
-    final ref = FirebaseFirestore.instance.collection('users').doc(user.uid);
+    final ref = AppFirestore.instance.collection('users').doc(user.uid);
     final snap = await ref.get();
 
     if (!snap.exists) {
@@ -19,6 +20,7 @@ class UserService {
         'lastName': null,
         'displayName': user.displayName,
         'role': 'student',
+        'accountSource': 'self_signup',
         'accountStatus': 'active',
         'studentVerificationStatus': 'pending_email_verification',
         'status': 'pending_email_verification',
@@ -72,7 +74,7 @@ class UserService {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return {};
 
-    final doc = await FirebaseFirestore.instance
+    final doc = await AppFirestore.instance
         .collection('users')
         .doc(user.uid)
         .get();

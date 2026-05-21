@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:apps/services/app_firestore.dart';
 
 class ViolationTypesService {
   static const int _defaultBookingWindowDays = 3;
@@ -12,7 +13,7 @@ class ViolationTypesService {
 
   final FirebaseFirestore _db;
   ViolationTypesService({FirebaseFirestore? db})
-    : _db = db ?? FirebaseFirestore.instance;
+    : _db = db ?? AppFirestore.instance;
 
   CollectionReference<Map<String, dynamic>> get _categories =>
       _db.collection('violation_categories');
@@ -527,9 +528,8 @@ class ViolationTypesService {
         .toList(growable: false);
   }
 
-  Future<void> seedDefaultActionAndSanctionTypes() async {
+  Future<int> seedDefaultActionTypes() async {
     final batch = _db.batch();
-
     final now = FieldValue.serverTimestamp();
 
     final actionDefaults = <Map<String, dynamic>>[
@@ -590,6 +590,29 @@ class ViolationTypesService {
       },
     ];
 
+    for (final item in actionDefaults) {
+      final docRef = _setActions.doc(item['id'] as String);
+      batch.set(docRef, {
+        'label': item['label'],
+        'description': item['description'],
+        'meetingRequired': item['meetingRequired'],
+        'bookingWindowDays': item['bookingWindowDays'],
+        'graceWindowDays': item['graceWindowDays'],
+        'order': item['order'],
+        'isActive': true,
+        'createdAt': now,
+        'updatedAt': now,
+      }, SetOptions(merge: true));
+    }
+
+    await batch.commit();
+    return actionDefaults.length;
+  }
+
+  Future<int> seedDefaultSanctionTypes() async {
+    final batch = _db.batch();
+    final now = FieldValue.serverTimestamp();
+
     final sanctionDefaults = <Map<String, dynamic>>[
       {
         'id': 'none',
@@ -607,21 +630,6 @@ class ViolationTypesService {
       },
     ];
 
-    for (final item in actionDefaults) {
-      final docRef = _setActions.doc(item['id'] as String);
-      batch.set(docRef, {
-        'label': item['label'],
-        'description': item['description'],
-        'meetingRequired': item['meetingRequired'],
-        'bookingWindowDays': item['bookingWindowDays'],
-        'graceWindowDays': item['graceWindowDays'],
-        'order': item['order'],
-        'isActive': true,
-        'createdAt': now,
-        'updatedAt': now,
-      }, SetOptions(merge: true));
-    }
-
     for (final item in sanctionDefaults) {
       final docRef = _sanctionTypes.doc(item['id'] as String);
       batch.set(docRef, {
@@ -636,6 +644,13 @@ class ViolationTypesService {
     }
 
     await batch.commit();
+    return sanctionDefaults.length;
+  }
+
+  Future<Map<String, int>> seedDefaultActionAndSanctionTypes() async {
+    final actions = await seedDefaultActionTypes();
+    final sanctions = await seedDefaultSanctionTypes();
+    return <String, int>{'actions': actions, 'sanctions': sanctions};
   }
 
   // ============================================

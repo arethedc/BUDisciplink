@@ -4,11 +4,14 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:url_launcher/url_launcher.dart';
+import 'package:apps/services/link_opener.dart';
 
 import '../../services/violation_case_service.dart';
+import '../../services/institution_label_service.dart';
 import '../shared/widgets/modern_table_layout.dart';
 import '../shared/widgets/app_layout_tokens.dart';
+import '../shared/widgets/app_empty_state.dart';
+import 'package:apps/services/app_firestore.dart';
 
 class ViolationRecordsFilterPreset {
   final bool clearExisting;
@@ -40,12 +43,12 @@ class ViolationRecordsFilterPreset {
 
 class ViolationRecordsPage extends StatefulWidget {
   final ViolationRecordsFilterPreset? initialFilterPreset;
-  final String? initialSelectedCaseId;
+  final String? initialSelectedCaseCode;
 
   const ViolationRecordsPage({
     super.key,
     this.initialFilterPreset,
-    this.initialSelectedCaseId,
+    this.initialSelectedCaseCode,
   });
 
   @override
@@ -84,7 +87,7 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
   bool _showAdvancedFilters = false;
   final LayerLink _advancedFiltersLink = LayerLink();
   OverlayEntry? _advancedFiltersEntry;
-  String? _selectedCaseId;
+  String? _selectedCaseCode;
   bool _isRefreshingTable = false;
   final ValueNotifier<List<QueryDocumentSnapshot<Map<String, dynamic>>>>
   _visibleRecordDocs =
@@ -96,7 +99,10 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
   void initState() {
     super.initState();
     _applyInitialPreset(widget.initialFilterPreset);
-    _applyInitialSelectedCase(widget.initialSelectedCaseId, updateState: false);
+    _applyInitialSelectedCase(
+      widget.initialSelectedCaseCode,
+      updateState: false,
+    );
   }
 
   @override
@@ -105,10 +111,10 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
     if (!identical(oldWidget.initialFilterPreset, widget.initialFilterPreset)) {
       _applyInitialPreset(widget.initialFilterPreset);
     }
-    final oldCaseId = (oldWidget.initialSelectedCaseId ?? '').trim();
-    final newCaseId = (widget.initialSelectedCaseId ?? '').trim();
-    if (oldCaseId != newCaseId) {
-      _applyInitialSelectedCase(newCaseId, updateState: true);
+    final oldCaseCode = (oldWidget.initialSelectedCaseCode ?? '').trim();
+    final newCaseCode = (widget.initialSelectedCaseCode ?? '').trim();
+    if (oldCaseCode != newCaseCode) {
+      _applyInitialSelectedCase(newCaseCode, updateState: true);
     }
   }
 
@@ -126,7 +132,7 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
     if (preset == null) return;
 
     if (preset.clearExisting) {
-      _selectedCaseId = null;
+      _selectedCaseCode = null;
       _searchCtrl.clear();
       _searchQuery = '';
       _concernFilter = 'All';
@@ -178,18 +184,18 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
   }
 
   void _applyInitialSelectedCase(
-    String? rawCaseId, {
+    String? rawCaseCode, {
     required bool updateState,
   }) {
-    final caseId = (rawCaseId ?? '').trim();
+    final caseCode = (rawCaseCode ?? '').trim();
     if (updateState) {
       setState(() {
-        _selectedCaseId = caseId.isEmpty ? null : caseId;
+        _selectedCaseCode = caseCode.isEmpty ? null : caseCode;
       });
       return;
     }
-    if (caseId.isEmpty) return;
-    _selectedCaseId = caseId;
+    if (caseCode.isEmpty) return;
+    _selectedCaseCode = caseCode;
   }
 
   void _onSearchInputChanged(String value) {
@@ -348,7 +354,6 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final screenWidth = constraints.maxWidth;
-        final compactFilters = screenWidth < 920;
         final preferDesktopTable = screenWidth >= 900;
         final detailsWidth = (constraints.maxWidth * 0.33)
             .clamp(320.0, 420.0)
@@ -417,6 +422,23 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
                 if (!_matchesAdvancedFilters(data)) return false;
                 return true;
               }).toList();
+              if (_selectedCaseCode != null &&
+                  _selectedCaseCode!.isNotEmpty &&
+                  !filtered.any(
+                    (doc) => _caseCode(doc.data(), doc.id) == _selectedCaseCode,
+                  )) {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (!mounted) return;
+                  setState(() => _selectedCaseCode = null);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text(
+                        'Invalid or unsupported key. Use a valid violation caseCode.',
+                      ),
+                    ),
+                  );
+                });
+              }
               _visibleRecordDocs.value = filtered;
 
               final headerFilters = <Widget>[
@@ -425,8 +447,8 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
 
               return ModernTableLayout(
                 detailsWidth: detailsWidth,
-                showDetails: _selectedCaseId != null,
-                details: _selectedCaseId != null
+                showDetails: _selectedCaseCode != null,
+                details: _selectedCaseCode != null
                     ? ValueListenableBuilder<
                         List<QueryDocumentSnapshot<Map<String, dynamic>>>
                       >(
@@ -435,7 +457,8 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
                           QueryDocumentSnapshot<Map<String, dynamic>>?
                           selectedDoc;
                           for (final doc in docs) {
-                            if (doc.id == _selectedCaseId) {
+                            if (_caseCode(doc.data(), doc.id) ==
+                                _selectedCaseCode) {
                               selectedDoc = doc;
                               break;
                             }
@@ -446,11 +469,15 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
                           return _RecordDetailsPanel(
                             doc: selectedDoc,
                             onClose: () {
-                              setState(() => _selectedCaseId = null);
+                              setState(() => _selectedCaseCode = null);
                             },
                             onOpenCase: (nextDoc) {
-                              if (_selectedCaseId == nextDoc.id) return;
-                              setState(() => _selectedCaseId = nextDoc.id);
+                              final nextCode = _caseCode(
+                                nextDoc.data(),
+                                nextDoc.id,
+                              );
+                              if (_selectedCaseCode == nextCode) return;
+                              setState(() => _selectedCaseCode = nextCode);
                             },
                           );
                         },
@@ -461,30 +488,14 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
                   showTopControlsWhenTitleHidden: true,
                   showSearchBar: true,
                   searchBar: _buildHandbookStyleSearchBar(
-                    compactTrailingAction: _buildCompactFiltersButton(
-                      onTap: () {
-                        if (compactFilters) {
-                          _openCompactFiltersSheet(
-                            categoryOptions: categoryOptions,
-                            violationOptions: violationOptions,
-                            reporterOptions: reporterOptions,
-                            departmentProgramOptions: departmentProgramOptions,
-                            outcomeOptions: outcomeOptions,
-                            schoolYearOptions: schoolYearOptions,
-                            termOptions: termOptions,
-                          );
-                          return;
-                        }
-                        _openAdvancedFiltersSidePanel(
-                          categoryOptions: categoryOptions,
-                          violationOptions: violationOptions,
-                          reporterOptions: reporterOptions,
-                          departmentOptions: departmentProgramOptions,
-                          outcomeOptions: outcomeOptions,
-                          schoolYearOptions: schoolYearOptions,
-                          termOptions: termOptions,
-                        );
-                      },
+                    filterAction: _buildMoreFiltersButton(
+                      categoryOptions: categoryOptions,
+                      violationOptions: violationOptions,
+                      reporterOptions: reporterOptions,
+                      departmentProgramOptions: departmentProgramOptions,
+                      outcomeOptions: outcomeOptions,
+                      schoolYearOptions: schoolYearOptions,
+                      termOptions: termOptions,
                     ),
                   ),
                   tabs: null,
@@ -497,12 +508,8 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
                       child: filtered.isEmpty
                           ? _buildEmptyState()
                           : preferDesktopTable
-                          ? _buildDesktopTable(
-                              filtered,
-                            )
-                          : _buildMobileList(
-                              filtered,
-                            ),
+                          ? _buildDesktopTable(filtered)
+                          : _buildMobileList(filtered),
                     ),
                   ],
                 ),
@@ -514,7 +521,7 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
     );
   }
 
-  Widget _buildHandbookStyleSearchBar({Widget? compactTrailingAction}) {
+  Widget _buildHandbookStyleSearchBar({Widget? filterAction}) {
     final width = MediaQuery.sizeOf(context).width;
     final isDesktop = width >= 1000;
     final shouldConstrainWidth = width >= 900;
@@ -527,6 +534,7 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
     final borderRadius = isDesktop ? 16.0 : 18.0;
     final iconSize = isDesktop ? 24.0 : 22.0;
     final fontSize = isDesktop ? 15.0 : 13.5;
+    final hasFilters = _hasActiveFilters();
 
     final searchField = ValueListenableBuilder<TextEditingValue>(
       valueListenable: _searchCtrl,
@@ -639,12 +647,13 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
     Widget searchWithRefresh() {
       return Row(
         children: [
+          if (filterAction != null) ...[filterAction, const SizedBox(width: 8)],
           Expanded(child: searchField),
           const SizedBox(width: 8),
           refreshButton,
-          if (compactTrailingAction != null) ...[
+          if (hasFilters) ...[
             const SizedBox(width: 8),
-            compactTrailingAction,
+            _buildClearFiltersIconButton(),
           ],
         ],
       );
@@ -681,18 +690,10 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
   }
 
   Widget _buildEmptyState() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.inbox_outlined, size: 64, color: Colors.grey[300]),
-          const SizedBox(height: 16),
-          const Text(
-            'No cases found',
-            style: TextStyle(color: _hint, fontWeight: FontWeight.bold),
-          ),
-        ],
-      ),
+    return const AppEmptyState(
+      icon: Icons.inbox_outlined,
+      title: 'No cases found',
+      subtitle: 'There are no violation cases for the selected filters.',
     );
   }
 
@@ -757,8 +758,10 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
     required List<String> schoolYearOptions,
     required List<String> termOptions,
   }) {
-    return _toolbarFilterShell(
+    return Tooltip(
+      message: 'Advanced filters',
       child: InkWell(
+        customBorder: const CircleBorder(),
         onTap: () {
           _openAdvancedFiltersSidePanel(
             categoryOptions: categoryOptions,
@@ -770,16 +773,70 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
             termOptions: termOptions,
           );
         },
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.tune_rounded, size: 16),
-            const SizedBox(width: 8),
-            const Text(
-              'Show Filters',
-              style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12.5),
+        child: Container(
+          width: 44,
+          height: 44,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: _hasActiveFilters()
+                ? _primary.withValues(alpha: 0.12)
+                : Colors.white,
+            shape: BoxShape.circle,
+            border: Border.all(
+              color: _hasActiveFilters()
+                  ? _primary.withValues(alpha: 0.35)
+                  : Colors.black.withValues(alpha: 0.12),
             ),
-          ],
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.05),
+                blurRadius: 10,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: Icon(
+            Icons.tune_rounded,
+            size: 20,
+            color: _hasActiveFilters()
+                ? _primary
+                : _hint.withValues(alpha: 0.9),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildClearFiltersIconButton() {
+    final hasFilters = _hasActiveFilters();
+    return Tooltip(
+      message: 'Clear filters',
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: hasFilters ? _clearAllFilters : null,
+        child: Container(
+          width: 44,
+          height: 44,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: Colors.white,
+            shape: BoxShape.circle,
+            border: Border.all(color: Colors.black.withValues(alpha: 0.12)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.05),
+                blurRadius: 10,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: Icon(
+            Icons.filter_alt_off_rounded,
+            size: 19,
+            color: hasFilters
+                ? _primary.withValues(alpha: 0.9)
+                : _hint.withValues(alpha: 0.75),
+          ),
         ),
       ),
     );
@@ -968,9 +1025,8 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
                                   label: 'Violation Type',
                                   value: violationType,
                                   options: violationOptions,
-                                  onChanged: (v) => setModalState(
-                                    () => violationType = v,
-                                  ),
+                                  onChanged: (v) =>
+                                      setModalState(() => violationType = v),
                                 ),
                                 const SizedBox(height: 14),
                                 _panelDropdown(
@@ -1953,7 +2009,9 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
           children: [
             Expanded(
               child: Text(
-                value == null ? 'Select date' : DateFormat('MMM d, yyyy').format(value),
+                value == null
+                    ? 'Select date'
+                    : DateFormat('MMM d, yyyy').format(value),
                 style: TextStyle(
                   color: value == null ? _hint : _textDark,
                   fontWeight: FontWeight.w800,
@@ -2046,22 +2104,6 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
         (chip) => Padding(
           padding: const EdgeInsets.only(right: 8),
           child: _buildActiveFilterFieldChip(chip),
-        ),
-      ),
-      OutlinedButton.icon(
-        onPressed: _clearAllFilters,
-        icon: const Icon(Icons.filter_alt_off_rounded, size: 16),
-        style: OutlinedButton.styleFrom(
-          foregroundColor: _primary,
-          side: BorderSide(color: _primary.withValues(alpha: 0.25)),
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10),
-          ),
-        ),
-        label: const Text(
-          'Clear All',
-          style: TextStyle(fontWeight: FontWeight.w800),
         ),
       ),
     ];
@@ -2208,7 +2250,9 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
     return chips;
   }
 
-  Widget _buildDesktopTable(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) {
+  Widget _buildDesktopTable(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+  ) {
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
       child: Container(
@@ -2225,7 +2269,7 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
         child: LayoutBuilder(
           builder: (context, constraints) {
             final tableWidth = constraints.maxWidth;
-            final detailsOpen = _selectedCaseId != null;
+            final detailsOpen = _selectedCaseCode != null;
             final compactTable = detailsOpen || tableWidth < 1120;
             final tableHorizontalMargin = compactTable ? 8.0 : 12.0;
             final tableColumnSpacing = compactTable ? 12.0 : 20.0;
@@ -2376,8 +2420,8 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
                   ],
                   rows: docs.map((doc) {
                     final data = doc.data();
-                    final isSelected = _selectedCaseId == doc.id;
                     final code = _caseCode(data, doc.id);
+                    final isSelected = _selectedCaseCode == code;
                     final studentName = _studentName(data);
                     final studentNo = _studentNo(data);
                     final concern = _concernValue(data);
@@ -2392,7 +2436,7 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
                       }),
                       onSelectChanged: (_) {
                         setState(() {
-                          _selectedCaseId = isSelected ? null : doc.id;
+                          _selectedCaseCode = isSelected ? null : code;
                         });
                       },
                       cells: [
@@ -2489,22 +2533,20 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
     );
   }
 
-  Widget _buildMobileList(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) {
+  Widget _buildMobileList(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+  ) {
     return ListView.builder(
       padding: const EdgeInsets.all(14),
       itemCount: docs.length,
       itemBuilder: (context, index) {
         final doc = docs[index];
-        final isSelected = _selectedCaseId == doc.id;
-        return _buildCaseCard(
-          doc.id,
-          doc.data(),
-          isSelected,
-          () {
-            setState(() => _selectedCaseId = doc.id);
-            _openMobileDetails(context, doc);
-          },
-        );
+        final code = _caseCode(doc.data(), doc.id);
+        final isSelected = _selectedCaseCode == code;
+        return _buildCaseCard(doc.id, doc.data(), isSelected, () {
+          setState(() => _selectedCaseCode = code);
+          _openMobileDetails(context, doc);
+        });
       },
     );
   }
@@ -2530,9 +2572,7 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
           color: isSelected ? _primary.withValues(alpha: 0.05) : Colors.white,
           borderRadius: BorderRadius.circular(AppRadii.xl),
           border: Border.all(
-            color: isSelected
-                ? _primary
-                : Colors.black.withValues(alpha: 0.05),
+            color: isSelected ? _primary : Colors.black.withValues(alpha: 0.05),
             width: isSelected ? 2 : 1,
           ),
           boxShadow: [
@@ -2614,38 +2654,37 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       builder: (sheetContext) {
-        final media = MediaQuery.of(sheetContext);
-        final reservedTop = media.padding.top + kToolbarHeight + 8;
-        final modalHeight = (media.size.height - reservedTop)
-            .clamp(420.0, media.size.height * 0.92)
-            .toDouble();
-        return SafeArea(
-          top: false,
-          child: SizedBox(
-            height: modalHeight,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-              child: _RecordDetailsPanel(
-                doc: doc,
-                onClose: () => Navigator.of(sheetContext).pop(),
-                onOpenCase: (nextDoc) async {
-                  Navigator.of(sheetContext).pop();
-                  await Future<void>.delayed(const Duration(milliseconds: 120));
-                  if (!context.mounted) return;
-                  await _openMobileDetails(context, nextDoc);
-                },
-              ),
+        return FractionallySizedBox(
+          heightFactor: 0.92,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+            child: _RecordDetailsPanel(
+              doc: doc,
+              onClose: () => Navigator.of(sheetContext).pop(),
+              onOpenCase: (nextDoc) async {
+                Navigator.of(sheetContext).pop();
+                await Future<void>.delayed(const Duration(milliseconds: 120));
+                if (!context.mounted) return;
+                setState(
+                  () =>
+                      _selectedCaseCode = _caseCode(nextDoc.data(), nextDoc.id),
+                );
+                await _openMobileDetails(context, nextDoc);
+              },
             ),
           ),
         );
       },
     );
+    if (!mounted) return;
+    if (_selectedCaseCode == _caseCode(doc.data(), doc.id)) {
+      setState(() => _selectedCaseCode = null);
+    }
   }
 
   bool _matchesSearch(Map<String, dynamic> data, String docId) {
     if (_searchQuery.isEmpty) return true;
     final hay = [
-      docId,
       _caseCode(data, docId),
       _studentName(data),
       _studentNo(data),
@@ -2751,7 +2790,7 @@ class _ViolationRecordsPageState extends State<ViolationRecordsPage> {
   static String _caseCode(Map<String, dynamic> data, String docId) {
     final caseCode = _value(data['caseCode']);
     if (caseCode.isNotEmpty) return caseCode;
-    return docId.length > 8 ? docId.substring(0, 8) : docId;
+    return '';
   }
 
   static String _studentName(Map<String, dynamic> data) {
@@ -2916,38 +2955,31 @@ class _RecordDetailsPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(AppRadii.xl),
-        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.03),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
+      color: Colors.white,
       child: Column(
         children: [
           Container(
             padding: const EdgeInsets.fromLTRB(14, 14, 10, 8),
             child: Row(
               children: [
-                const Icon(
-                  Icons.assignment_outlined,
-                  color: Color(0xFF1B5E20),
-                  size: 20,
-                ),
-                const SizedBox(width: 8),
                 const Expanded(
-                  child: Text(
-                    'Case Details',
-                    style: TextStyle(
-                      color: Color(0xFF1B5E20),
-                      fontWeight: FontWeight.w900,
-                      fontSize: 17,
-                    ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.assignment_outlined,
+                        color: Color(0xFF1B5E20),
+                        size: 20,
+                      ),
+                      SizedBox(width: 8),
+                      Text(
+                        'Violation Details',
+                        style: TextStyle(
+                          color: Color(0xFF1B5E20),
+                          fontWeight: FontWeight.w900,
+                          fontSize: 17,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
                 IconButton(
@@ -2963,9 +2995,9 @@ class _RecordDetailsPanel extends StatelessWidget {
           const SizedBox(height: 8),
           const Divider(height: 1),
           Expanded(
-            child: ListView(
+            child: SingleChildScrollView(
               padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
-              children: [_RecordDetailsContent(doc: doc, onOpenCase: onOpenCase)],
+              child: _RecordDetailsContent(doc: doc, onOpenCase: onOpenCase),
             ),
           ),
         ],
@@ -2979,6 +3011,8 @@ class _RecordDetailsContent extends StatelessWidget {
   final ValueChanged<QueryDocumentSnapshot<Map<String, dynamic>>>? onOpenCase;
 
   const _RecordDetailsContent({required this.doc, this.onOpenCase});
+
+  String _safeStr(dynamic value) => (value ?? '').toString().trim();
 
   @override
   Widget build(BuildContext context) {
@@ -2996,6 +3030,7 @@ class _RecordDetailsContent extends StatelessWidget {
     final category = _ViolationRecordsPageState._categoryValue(data);
     final violation = _ViolationRecordsPageState._violationTypeValue(data);
     final reporter = _ViolationRecordsPageState._reporterValue(data);
+    final status = _ViolationRecordsPageState._value(data['status']);
     final narrative = _ViolationRecordsPageState._value(
       data['narrative'] ?? data['description'],
     );
@@ -3032,6 +3067,7 @@ class _RecordDetailsContent extends StatelessWidget {
           child: Row(
             children: [
               FutureBuilder<String>(
+                key: ValueKey('violation-record-photo-${doc.id}-$studentUid'),
                 future: studentPhotoFuture,
                 initialData: '',
                 builder: (context, snapshot) {
@@ -3055,10 +3091,14 @@ class _RecordDetailsContent extends StatelessWidget {
                             width: 46,
                             height: 46,
                             decoration: BoxDecoration(
-                              color: const Color(0xFF1B5E20).withValues(alpha: 0.12),
+                              color: const Color(
+                                0xFF1B5E20,
+                              ).withValues(alpha: 0.12),
                               borderRadius: BorderRadius.circular(AppRadii.md),
                               border: Border.all(
-                                color: const Color(0xFF1B5E20).withValues(alpha: 0.25),
+                                color: const Color(
+                                  0xFF1B5E20,
+                                ).withValues(alpha: 0.25),
                               ),
                             ),
                             child: photoUrl.isEmpty
@@ -3068,10 +3108,15 @@ class _RecordDetailsContent extends StatelessWidget {
                                     size: 24,
                                   )
                                 : ClipRRect(
-                                    borderRadius: BorderRadius.circular(AppRadii.md - 1),
+                                    borderRadius: BorderRadius.circular(
+                                      AppRadii.md - 1,
+                                    ),
                                     child: Image.network(
                                       photoUrl,
+                                      key: ValueKey(photoUrl),
                                       fit: BoxFit.cover,
+                                      webHtmlElementStrategy:
+                                          WebHtmlElementStrategy.prefer,
                                       errorBuilder: (_, __, ___) => const Icon(
                                         Icons.person_rounded,
                                         color: Color(0xFF1B5E20),
@@ -3089,8 +3134,13 @@ class _RecordDetailsContent extends StatelessWidget {
                                 height: 17,
                                 decoration: BoxDecoration(
                                   color: const Color(0xFF1B5E20),
-                                  borderRadius: BorderRadius.circular(AppRadii.pill),
-                                  border: Border.all(color: Colors.white, width: 1.3),
+                                  borderRadius: BorderRadius.circular(
+                                    AppRadii.pill,
+                                  ),
+                                  border: Border.all(
+                                    color: Colors.white,
+                                    width: 1.3,
+                                  ),
                                 ),
                                 child: const Icon(
                                   Icons.open_in_full_rounded,
@@ -3127,12 +3177,23 @@ class _RecordDetailsContent extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(height: 2),
-                    Text(
-                      'Program: ${program.isEmpty ? '--' : program}',
-                      style: const TextStyle(
-                        color: Color(0xFF6D7F62),
-                        fontWeight: FontWeight.w700,
+                    FutureBuilder<String>(
+                      future: InstitutionLabelService.resolveProgramLabel(
+                        program,
                       ),
+                      initialData: '--',
+                      builder: (context, snapshot) {
+                        final resolvedProgram = _safeStr(snapshot.data).isEmpty
+                            ? '--'
+                            : _safeStr(snapshot.data);
+                        return Text(
+                          'Program: $resolvedProgram',
+                          style: const TextStyle(
+                            color: Color(0xFF6D7F62),
+                            fontWeight: FontWeight.w700,
+                          ),
+                        );
+                      },
                     ),
                   ],
                 ),
@@ -3142,7 +3203,7 @@ class _RecordDetailsContent extends StatelessWidget {
         ),
         const SizedBox(height: 12),
         _DetailCard(
-          title: 'Incident Summary',
+          title: 'Violation Summary',
           titleTrailing: FutureBuilder<_RecordOffenseIndicator>(
             future: offenseFuture,
             initialData: const _RecordOffenseIndicator(
@@ -3178,7 +3239,9 @@ class _RecordDetailsContent extends StatelessWidget {
                 child: Text(
                   indicator.label,
                   style: TextStyle(
-                    color: isRepeat ? Colors.orange.shade800 : const Color(0xFF1B5E20),
+                    color: isRepeat
+                        ? Colors.orange.shade800
+                        : const Color(0xFF1B5E20),
                     fontWeight: FontWeight.w900,
                     fontSize: 11.5,
                   ),
@@ -3188,42 +3251,24 @@ class _RecordDetailsContent extends StatelessWidget {
           ),
           child: Column(
             children: [
+              _kv('Case Code', caseCode),
+              const SizedBox(height: 8),
+              _kv('Status', status.isEmpty ? '--' : toTitleCase(status)),
+              const SizedBox(height: 8),
               _kv('Concern', concern),
               const SizedBox(height: 8),
               _kv('Category', category),
               const SizedBox(height: 8),
               _kv('Violation Type', violation),
               const SizedBox(height: 8),
-              _kv('Date Reported', dateReportedText),
-              const SizedBox(height: 8),
               _kv('Date of Incident', dateOfIncidentText),
+              const SizedBox(height: 8),
+              _kv('Date Reported', dateReportedText),
               const SizedBox(height: 8),
               _kv('Reported By', reporter),
               const SizedBox(height: 8),
-              _kv('Case Code', caseCode),
+              _kv('Description', narrative.isEmpty ? '--' : narrative),
             ],
-          ),
-        ),
-        const SizedBox(height: 12),
-        _DetailCard(
-          title: 'Incident Description',
-          child: Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: Colors.black.withValues(alpha: 0.03),
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
-            ),
-            child: Text(
-              narrative.isEmpty ? '--' : narrative,
-              style: const TextStyle(
-                color: Color(0xFF1F2A1F),
-                fontWeight: FontWeight.w600,
-                height: 1.4,
-                fontSize: 14.5,
-              ),
-            ),
           ),
         ),
         const SizedBox(height: 12),
@@ -3290,7 +3335,8 @@ class _StudentCaseHistoryCard extends StatefulWidget {
   });
 
   @override
-  State<_StudentCaseHistoryCard> createState() => _StudentCaseHistoryCardState();
+  State<_StudentCaseHistoryCard> createState() =>
+      _StudentCaseHistoryCardState();
 }
 
 class _StudentCaseHistoryCardState extends State<_StudentCaseHistoryCard> {
@@ -3317,7 +3363,8 @@ class _StudentCaseHistoryCardState extends State<_StudentCaseHistoryCard> {
     required String categoryKey,
     required String categoryLabel,
     required List<QueryDocumentSnapshot<Map<String, dynamic>>> priorCases,
-    required List<QueryDocumentSnapshot<Map<String, dynamic>>> allCasesInCategory,
+    required List<QueryDocumentSnapshot<Map<String, dynamic>>>
+    allCasesInCategory,
     required bool isCurrentCategory,
   }) {
     final isExpanded = _expandedCategories.contains(categoryKey);
@@ -3433,94 +3480,106 @@ class _StudentCaseHistoryCardState extends State<_StudentCaseHistoryCard> {
               Padding(
                 padding: const EdgeInsets.all(10),
                 child: Column(
-                  children: sortedPrior.map((caseDoc) {
-                    final data = caseDoc.data();
-                    final offenseIndex =
-                        sortedAll.indexWhere((doc) => doc.id == caseDoc.id) + 1;
-                    final type = _ViolationRecordsPageState._violationTypeValue(data);
-                    final status = _ViolationRecordsPageState._value(data['status']);
-                    final severity = _ViolationRecordsPageState._value(
-                      data['finalSeverity'] ?? data['concern'],
-                    );
-                    final date = _historyDate(data);
-                    final dateText = date == null
-                        ? '--'
-                        : DateFormat('MMM d, yyyy').format(date);
+                  children: sortedPrior
+                      .map((caseDoc) {
+                        final data = caseDoc.data();
+                        final offenseIndex =
+                            sortedAll.indexWhere(
+                              (doc) => doc.id == caseDoc.id,
+                            ) +
+                            1;
+                        final type =
+                            _ViolationRecordsPageState._violationTypeValue(
+                              data,
+                            );
+                        final status = _ViolationRecordsPageState._value(
+                          data['status'],
+                        );
+                        final severity = _ViolationRecordsPageState._value(
+                          data['finalSeverity'] ?? data['concern'],
+                        );
+                        final date = _historyDate(data);
+                        final dateText = date == null
+                            ? '--'
+                            : DateFormat('MMM d, yyyy').format(date);
 
-                    return Container(
-                      margin: const EdgeInsets.only(bottom: 8),
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(9),
-                        onTap: () {
-                          showDialog<void>(
-                            context: context,
-                            builder: (_) => _HistoryCaseDetailsDialogRecord(
-                              caseDoc: caseDoc,
-                              offenseLabel: '${_ordinal(offenseIndex)} Offense',
-                              categoryLabel: categoryLabel,
-                              onOpenCase: widget.onOpenCase,
-                            ),
-                          );
-                        },
-                        child: Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.all(10),
-                          decoration: BoxDecoration(
-                            color: Colors.black.withValues(alpha: 0.02),
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          child: InkWell(
                             borderRadius: BorderRadius.circular(9),
-                            border: Border.all(
-                              color: Colors.black.withValues(alpha: 0.06),
-                            ),
-                          ),
-                          child: Row(
-                            children: [
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
+                            onTap: () {
+                              showDialog<void>(
+                                context: context,
+                                builder: (_) => _HistoryCaseDetailsDialogRecord(
+                                  caseDoc: caseDoc,
+                                  offenseLabel:
                                       '${_ordinal(offenseIndex)} Offense',
-                                      style: const TextStyle(
-                                        color: Color(0xFF1F2A1F),
-                                        fontWeight: FontWeight.w900,
-                                        fontSize: 12,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 3),
-                                    Text(
-                                      type.isEmpty ? '--' : type,
-                                      style: const TextStyle(
-                                        color: Color(0xFF1F2A1F),
-                                        fontWeight: FontWeight.w800,
-                                        fontSize: 12.2,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 2),
-                                    Text(
-                                      '$dateText - ${status.isEmpty ? '--' : toTitleCase(status)}${severity.isEmpty ? '' : ' - ${toTitleCase(severity)}'}',
-                                      style: const TextStyle(
-                                        color: Color(0xFF6D7F62),
-                                        fontWeight: FontWeight.w700,
-                                        fontSize: 11.1,
-                                      ),
-                                    ),
-                                  ],
+                                  categoryLabel: categoryLabel,
+                                  onOpenCase: widget.onOpenCase,
+                                ),
+                              );
+                            },
+                            child: Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withValues(alpha: 0.02),
+                                borderRadius: BorderRadius.circular(9),
+                                border: Border.all(
+                                  color: Colors.black.withValues(alpha: 0.06),
                                 ),
                               ),
-                              if (widget.onOpenCase != null) ...[
-                                const SizedBox(width: 8),
-                                const Icon(
-                                  Icons.open_in_new_rounded,
-                                  color: Color(0xFF1B5E20),
-                                  size: 16,
-                                ),
-                              ],
-                            ],
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          '${_ordinal(offenseIndex)} Offense',
+                                          style: const TextStyle(
+                                            color: Color(0xFF1F2A1F),
+                                            fontWeight: FontWeight.w900,
+                                            fontSize: 12,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 3),
+                                        Text(
+                                          type.isEmpty ? '--' : type,
+                                          style: const TextStyle(
+                                            color: Color(0xFF1F2A1F),
+                                            fontWeight: FontWeight.w800,
+                                            fontSize: 12.2,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          '$dateText - ${status.isEmpty ? '--' : toTitleCase(status)}${severity.isEmpty ? '' : ' - ${toTitleCase(severity)}'}',
+                                          style: const TextStyle(
+                                            color: Color(0xFF6D7F62),
+                                            fontWeight: FontWeight.w700,
+                                            fontSize: 11.1,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  if (widget.onOpenCase != null) ...[
+                                    const SizedBox(width: 8),
+                                    const Icon(
+                                      Icons.open_in_new_rounded,
+                                      color: Color(0xFF1B5E20),
+                                      size: 16,
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ),
                           ),
-                        ),
-                      ),
-                    );
-                  }).toList(growable: false),
+                        );
+                      })
+                      .toList(growable: false),
                 ),
               ),
           ],
@@ -3539,7 +3598,7 @@ class _StudentCaseHistoryCardState extends State<_StudentCaseHistoryCard> {
     }
 
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance
+      stream: AppFirestore.instance
           .collection('violation_cases')
           .where('studentUid', isEqualTo: widget.studentUid)
           .snapshots(),
@@ -3569,20 +3628,28 @@ class _StudentCaseHistoryCardState extends State<_StudentCaseHistoryCard> {
         final labelsByKey = <String, String>{};
 
         for (final doc in activeDocs) {
-          final rawCategory = _ViolationRecordsPageState._categoryValue(doc.data());
+          final rawCategory = _ViolationRecordsPageState._categoryValue(
+            doc.data(),
+          );
           final categoryKey = _normalizeCategoryKey(rawCategory);
           groupedAllByKey.putIfAbsent(categoryKey, () => []).add(doc);
         }
         for (final doc in priorDocs) {
-          final rawCategory = _ViolationRecordsPageState._categoryValue(doc.data());
+          final rawCategory = _ViolationRecordsPageState._categoryValue(
+            doc.data(),
+          );
           final categoryKey = _normalizeCategoryKey(rawCategory);
           final categoryLabel = _displayCategoryLabel(rawCategory);
           groupedByKey.putIfAbsent(categoryKey, () => []).add(doc);
           labelsByKey.putIfAbsent(categoryKey, () => categoryLabel);
         }
 
-        final currentCategoryKey = _normalizeCategoryKey(widget.currentCategory);
-        final currentCategoryLabel = _displayCategoryLabel(widget.currentCategory);
+        final currentCategoryKey = _normalizeCategoryKey(
+          widget.currentCategory,
+        );
+        final currentCategoryLabel = _displayCategoryLabel(
+          widget.currentCategory,
+        );
         groupedByKey.putIfAbsent(
           currentCategoryKey,
           () => <QueryDocumentSnapshot<Map<String, dynamic>>>[],
@@ -3646,7 +3713,8 @@ class _StudentCaseHistoryCardState extends State<_StudentCaseHistoryCard> {
                   groupedAllByKey[categoryKey] ??
                   <QueryDocumentSnapshot<Map<String, dynamic>>>[];
               final categoryLabel =
-                  labelsByKey[categoryKey] ?? _displayCategoryLabel(categoryKey);
+                  labelsByKey[categoryKey] ??
+                  _displayCategoryLabel(categoryKey);
               return _buildCategoryCard(
                 categoryKey: categoryKey,
                 categoryLabel: categoryLabel,
@@ -3667,7 +3735,11 @@ class _DetailCard extends StatelessWidget {
   final Widget? titleTrailing;
   final Widget child;
 
-  const _DetailCard({required this.title, this.titleTrailing, required this.child});
+  const _DetailCard({
+    required this.title,
+    this.titleTrailing,
+    required this.child,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -3757,12 +3829,18 @@ class _HistoryCaseDetailsDialogRecord extends StatelessWidget {
     final caseCode = _ViolationRecordsPageState._caseCode(d, caseDoc.id);
     final violation = _ViolationRecordsPageState._violationTypeValue(d);
     final status = _ViolationRecordsPageState._value(d['status']);
-    final severity = _ViolationRecordsPageState._value(d['finalSeverity'] ?? d['concern']);
+    final severity = _ViolationRecordsPageState._value(
+      d['finalSeverity'] ?? d['concern'],
+    );
     final reportedAt = _tsToDate(d['createdAt']);
     final incidentAt =
-        _tsToDate(d['incidentAt']) ?? _tsToDate(d['incidentDate']) ?? _tsToDate(d['dateOfIncident']);
+        _tsToDate(d['incidentAt']) ??
+        _tsToDate(d['incidentDate']) ??
+        _tsToDate(d['dateOfIncident']);
     final reportedBy = _ViolationRecordsPageState._reporterValue(d);
-    final narrative = _ViolationRecordsPageState._value(d['narrative'] ?? d['description']);
+    final narrative = _ViolationRecordsPageState._value(
+      d['narrative'] ?? d['description'],
+    );
 
     return AlertDialog(
       backgroundColor: Colors.white,
@@ -3899,7 +3977,9 @@ Future<_RecordOffenseIndicator> _resolveRecordOffenseIndicator({
   required String currentCaseId,
   required String currentCategory,
 }) async {
-  if (studentUid.isEmpty || currentCategory.trim().isEmpty || currentCategory == '--') {
+  if (studentUid.isEmpty ||
+      currentCategory.trim().isEmpty ||
+      currentCategory == '--') {
     return const _RecordOffenseIndicator(
       label: '--',
       subtitle: 'No category available for offense progression.',
@@ -3907,26 +3987,26 @@ Future<_RecordOffenseIndicator> _resolveRecordOffenseIndicator({
     );
   }
 
-  final snap = await FirebaseFirestore.instance
+  final snap = await AppFirestore.instance
       .collection('violation_cases')
       .where('studentUid', isEqualTo: studentUid)
       .get();
 
-  final activeCases = snap.docs.where((d) => !_isCancelledCase(d.data())).toList();
+  final activeCases = snap.docs
+      .where((d) => !_isCancelledCase(d.data()))
+      .toList();
   final key = currentCategory.trim().toLowerCase();
-  final sameCategory = activeCases
-      .where((d) {
-        final category = _ViolationRecordsPageState._categoryValue(d.data())
-            .trim()
-            .toLowerCase();
+  final sameCategory =
+      activeCases.where((d) {
+        final category = _ViolationRecordsPageState._categoryValue(
+          d.data(),
+        ).trim().toLowerCase();
         return category == key;
-      })
-      .toList()
-    ..sort((a, b) {
-      final ad = _offenseSortDate(a.data()) ?? DateTime(2000);
-      final bd = _offenseSortDate(b.data()) ?? DateTime(2000);
-      return ad.compareTo(bd);
-    });
+      }).toList()..sort((a, b) {
+        final ad = _offenseSortDate(a.data()) ?? DateTime(2000);
+        final bd = _offenseSortDate(b.data()) ?? DateTime(2000);
+        return ad.compareTo(bd);
+      });
 
   if (sameCategory.isEmpty) {
     return const _RecordOffenseIndicator(
@@ -3951,7 +4031,9 @@ Future<_RecordOffenseIndicator> _resolveRecordOffenseIndicator({
 }
 
 bool _isCancelledCase(Map<String, dynamic> data) {
-  final status = _ViolationRecordsPageState._value(data['status']).toLowerCase();
+  final status = _ViolationRecordsPageState._value(
+    data['status'],
+  ).toLowerCase();
   return status.contains('cancel');
 }
 
@@ -3961,7 +4043,8 @@ DateTime? _offenseSortDate(Map<String, dynamic> data) {
       _tsToDate(data['dateOfIncident']);
 }
 
-DateTime? _tsToDate(dynamic value) => value is Timestamp ? value.toDate() : null;
+DateTime? _tsToDate(dynamic value) =>
+    value is Timestamp ? value.toDate() : null;
 
 String _ordinal(int value) {
   final v = value.abs();
@@ -4038,7 +4121,17 @@ Future<String?> _resolveEvidenceUrl(String rawUrl) async {
 Future<String> _resolveImageSourceUrl(String source) async {
   final raw = source.trim();
   if (raw.isEmpty) return '';
-  if (raw.startsWith('http://') || raw.startsWith('https://')) return raw;
+  if (raw.startsWith('http://') || raw.startsWith('https://')) {
+    if (raw.contains('firebasestorage.googleapis.com') ||
+        raw.contains('firebasestorage.app')) {
+      try {
+        return await FirebaseStorage.instance.refFromURL(raw).getDownloadURL();
+      } catch (_) {
+        return raw;
+      }
+    }
+    return raw;
+  }
   final resolved = await _resolveEvidenceUrl(raw);
   return resolved ?? '';
 }
@@ -4072,21 +4165,27 @@ Future<String> _resolveStudentProfilePhotoUrl({
   if (uid.isEmpty) return '';
 
   try {
-    final userDoc = await FirebaseFirestore.instance.collection('users').doc(uid).get();
+    final userDoc = await AppFirestore.instance
+        .collection('users')
+        .doc(uid)
+        .get();
     final userData = userDoc.data() ?? const <String, dynamic>{};
     final studentProfile =
-        userData['studentProfile'] as Map<String, dynamic>? ?? const <String, dynamic>{};
+        userData['studentProfile'] as Map<String, dynamic>? ??
+        const <String, dynamic>{};
     final employeeProfile =
-        userData['employeeProfile'] as Map<String, dynamic>? ?? const <String, dynamic>{};
-    final source = (userData['photoUrl'] ??
-            userData['profilePhotoUrl'] ??
-            studentProfile['photoUrl'] ??
-            studentProfile['profilePhotoUrl'] ??
-            employeeProfile['photoUrl'] ??
-            employeeProfile['profilePhotoUrl'] ??
-            '')
-        .toString()
-        .trim();
+        userData['employeeProfile'] as Map<String, dynamic>? ??
+        const <String, dynamic>{};
+    final source =
+        (userData['photoUrl'] ??
+                userData['profilePhotoUrl'] ??
+                studentProfile['photoUrl'] ??
+                studentProfile['profilePhotoUrl'] ??
+                employeeProfile['photoUrl'] ??
+                employeeProfile['profilePhotoUrl'] ??
+                '')
+            .toString()
+            .trim();
     if (source.isEmpty) return '';
     return _resolveImageSourceUrl(source);
   } catch (_) {
@@ -4168,7 +4267,7 @@ class _EvidencePreviewGrid extends StatelessWidget {
                 }
                 final uri = Uri.tryParse(resolved);
                 if (uri != null) {
-                  await launchUrl(uri, mode: LaunchMode.externalApplication);
+                  await LinkOpener.openExternal(uri);
                 }
               },
               borderRadius: BorderRadius.circular(10),
@@ -4359,6 +4458,7 @@ class _ProfilePhotoViewerDialog extends StatelessWidget {
                     child: Image.network(
                       photoUrl,
                       fit: BoxFit.contain,
+                      webHtmlElementStrategy: WebHtmlElementStrategy.prefer,
                       loadingBuilder: (context, child, progress) {
                         if (progress == null) return child;
                         return const Center(

@@ -1,12 +1,16 @@
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:apps/pages/shared/widgets/app_inline_notice.dart';
 
 enum _AssistanceMode { verifyEmail, activation }
 
 class ForgotPasswordAssistancePage extends StatefulWidget {
-  const ForgotPasswordAssistancePage({super.key});
+  final String? email;
+  final String? mode;
+
+  const ForgotPasswordAssistancePage({super.key, this.email, this.mode});
 
   @override
   State<ForgotPasswordAssistancePage> createState() =>
@@ -31,29 +35,41 @@ class _ForgotPasswordAssistancePageState
     if (_initialized) return;
     _initialized = true;
 
+    final query = Uri.base.queryParameters;
     final args = ModalRoute.of(context)?.settings.arguments;
-    if (args is Map) {
-      final rawEmail = (args['email'] ?? '').toString().trim();
-      final rawMode = (args['mode'] ?? '').toString().trim().toLowerCase();
-      if (rawEmail.isNotEmpty) {
-        _email = rawEmail;
-      }
-      if (rawMode == 'activation') {
-        _mode = _AssistanceMode.activation;
-      } else {
-        _mode = _AssistanceMode.verifyEmail;
-      }
+    final rawEmail =
+        (widget.email ??
+                query['email'] ??
+                (args is Map ? args['email'] : null) ??
+                '')
+            .toString()
+            .trim();
+    final rawMode =
+        (widget.mode ??
+                query['mode'] ??
+                (args is Map ? args['mode'] : null) ??
+                '')
+            .toString()
+            .trim()
+            .toLowerCase();
+    if (rawEmail.isNotEmpty) {
+      _email = rawEmail;
+    }
+    if (rawMode == 'activation') {
+      _mode = _AssistanceMode.activation;
+    } else {
+      _mode = _AssistanceMode.verifyEmail;
     }
   }
 
   String _verifyContinueUrl() {
     if (!kIsWeb) return '';
-    return '${Uri.base.origin}/#/verify-email?prefillEmail=${Uri.encodeComponent(_email)}&source=signup';
+    return '${Uri.base.origin}/verify-email?prefillEmail=${Uri.encodeComponent(_email)}&source=signup';
   }
 
   String _setPasswordContinueUrl() {
     if (!kIsWeb) return '';
-    return '${Uri.base.origin}/#/set-password?prefillEmail=${Uri.encodeComponent(_email)}&source=signup';
+    return '${Uri.base.origin}/set-password?prefillEmail=${Uri.encodeComponent(_email)}&source=signup';
   }
 
   Future<void> _sendAssistanceEmail() async {
@@ -111,11 +127,13 @@ class _ForgotPasswordAssistancePageState
   }
 
   void _goToLogin() {
-    Navigator.pushNamedAndRemoveUntil(
-      context,
-      '/login',
-      (_) => false,
-      arguments: {'prefillEmail': _email},
+    context.go(
+      Uri(
+        path: '/login',
+        queryParameters: <String, String>{
+          if (_email.trim().isNotEmpty) 'prefillEmail': _email.trim(),
+        },
+      ).toString(),
     );
   }
 
@@ -251,4 +269,3 @@ class _ForgotPasswordAssistancePageState
     );
   }
 }
-

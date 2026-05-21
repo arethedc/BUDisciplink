@@ -2,6 +2,7 @@ import 'package:apps/services/counseling_case_workflow_service.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:apps/services/app_firestore.dart';
 
 class CounselingHomePage extends StatelessWidget {
   const CounselingHomePage({super.key});
@@ -167,7 +168,7 @@ class CounselingHomePage extends StatelessWidget {
     return Container(
       color: bg,
       child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-        stream: FirebaseFirestore.instance
+        stream: AppFirestore.instance
             .collection('counseling_cases')
             .orderBy('createdAt', descending: true)
             .limit(200)

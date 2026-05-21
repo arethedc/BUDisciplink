@@ -7,8 +7,8 @@
   },
   "main": "index.js",
   "scripts": {
-    "deploy": "firebase deploy --only functions",
-    "serve": "firebase emulators:start --only functions"
+    "deploy": "node ../scripts/sync_firebase_target.js && firebase deploy --only functions",
+    "serve": "node ../scripts/sync_firebase_target.js && firebase emulators:start --only functions"
   },
   "dependencies": {
     "@genkit-ai/googleai": "^1.10.0",

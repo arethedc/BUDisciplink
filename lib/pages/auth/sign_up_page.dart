@@ -2,6 +2,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import '../shared/widgets/app_branding.dart';
 
 import '../../services/user_service.dart';
@@ -92,7 +93,7 @@ class _SignUpPageState extends State<SignUpPage> {
   String _resolveVerifyContinueUrl(String email) {
     if (kIsWeb) {
       final safeEmail = Uri.encodeQueryComponent(email.trim());
-      return '${Uri.base.origin}/#/verify-email?prefillEmail=$safeEmail&source=signup';
+      return '${Uri.base.origin}/verify-email?prefillEmail=$safeEmail&source=signup';
     }
     const configured = String.fromEnvironment(
       'SELF_SIGNUP_VERIFY_CONTINUE_URL',
@@ -103,26 +104,23 @@ class _SignUpPageState extends State<SignUpPage> {
   Future<void> _sendVerifyEmailUsingSmtp(User user, String email) async {
     final continueUrl = _resolveVerifyContinueUrl(email);
 
-    if (continueUrl.isNotEmpty) {
-      try {
-        final callable = FirebaseFunctions.instanceFor(
-          region: 'asia-east1',
-        ).httpsCallable('sendCurrentUserVerifyEmailLink');
-        await callable.call(<String, dynamic>{
-          'email': email,
-          'continueUrl': continueUrl,
-        });
-        return;
-      } catch (_) {}
+    if (continueUrl.isEmpty) {
+      throw StateError(
+        'Missing verify-email continue URL for self-signup email flow.',
+      );
     }
 
-    if (continueUrl.isNotEmpty && kIsWeb) {
-      await user.sendEmailVerification(
-        ActionCodeSettings(url: continueUrl, handleCodeInApp: true),
-      );
-      return;
+    final callable = FirebaseFunctions.instanceFor(
+      region: 'asia-east1',
+    ).httpsCallable('sendCurrentUserVerifyEmailLink');
+    final res = await callable.call<Map<dynamic, dynamic>>(<String, dynamic>{
+      'email': email,
+      'continueUrl': continueUrl,
+    });
+    final data = res.data.cast<dynamic, dynamic>();
+    if (data['mailQueued'] != true) {
+      throw StateError('Verification email was not queued.');
     }
-    await user.sendEmailVerification();
   }
 
   @override
@@ -167,20 +165,28 @@ class _SignUpPageState extends State<SignUpPage> {
       // 2) Send verification email (prefer SMTP extension via callable)
       await _sendVerifyEmailUsingSmtp(user, email);
 
-      // 3) Create users/{uid} using UserService (Option A: pending_profile)
-      //    This prevents conflicting field sets and ensures status flow is correct.
+      // 3) Create users/{uid} using UserService (pending_email_verification status).
       await UserService().ensureUserDocExists();
 
-      // 4) Stay logged in and go to Verify Email page
+      // 4) Route to verify page — user stays signed in so userChanges() stream works.
       if (!mounted) return;
-      Navigator.pushNamedAndRemoveUntil(
-        context,
-        '/verify-email',
-        (r) => false,
-        arguments: {'source': 'signup', 'prefillEmail': email},
+      context.go(
+        Uri(
+          path: '/verify-email',
+          queryParameters: {
+            'source': 'signup',
+            'prefillEmail': email,
+            'verificationEmailAlreadySent': 'true',
+          },
+        ).toString(),
       );
     } on FirebaseAuthException catch (e) {
       setState(() => _error = e.message ?? e.code);
+    } on FirebaseFunctionsException catch (e) {
+      final message = e.code == 'resource-exhausted' || e.code == 'internal'
+          ? 'Account created, but Firebase is temporarily blocking verification emails. Please wait before requesting another link.'
+          : e.message ?? 'Could not send verification email.';
+      setState(() => _error = message);
     } catch (e) {
       setState(() => _error = e.toString());
     } finally {
@@ -568,10 +574,7 @@ class _SignUpPageState extends State<SignUpPage> {
                                 ? null
                                 : () {
                                     // Avoid stacking: replace signup with login
-                                    Navigator.pushReplacementNamed(
-                                      context,
-                                      '/login',
-                                    );
+                                    context.go('/login');
                                   },
                             style: TextButton.styleFrom(
                               foregroundColor: primary,

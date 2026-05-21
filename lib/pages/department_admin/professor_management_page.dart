@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../osa_admin/user_management_page.dart';
+import '../super_admin/user_management_page.dart';
 
 class ProfessorManagementPage extends StatelessWidget {
   const ProfessorManagementPage({super.key});

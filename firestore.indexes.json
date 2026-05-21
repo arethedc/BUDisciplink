@@ -419,6 +419,38 @@
           "order": "ASCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "counseling_meeting_slots",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolYearId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "termId",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "counseling_meeting_slots",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolYearId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "termId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": []

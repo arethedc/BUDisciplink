@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 
 import 'academic_settings_service.dart';
 import 'violation_types_service.dart';
+import 'package:apps/services/app_firestore.dart';
 
 class ViolationCaseWorkflow {
   static const statusSubmitted = 'Submitted';
@@ -173,7 +174,7 @@ class ViolationSanctionTypes {
 class ViolationCaseService {
   static const int defaultCaseStreamLimit = 600;
 
-  final _db = FirebaseFirestore.instance;
+  final _db = AppFirestore.instance;
   final _academicSvc = AcademicSettingsService();
   final _typesSvc = ViolationTypesService();
 
@@ -370,8 +371,7 @@ class ViolationCaseService {
         // Keep existing fallback if sync fails.
       }
     }
-    final incidentTermId =
-        (syId == null || syId.isEmpty)
+    final incidentTermId = (syId == null || syId.isEmpty)
         ? activeTermId
         : await _resolveTermIdForIncidentDate(
             schoolYearId: syId,

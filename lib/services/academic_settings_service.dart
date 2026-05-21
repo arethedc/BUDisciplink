@@ -1,9 +1,10 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:apps/services/app_firestore.dart';
 
 class AcademicSettingsService {
   final FirebaseFirestore _db;
   AcademicSettingsService({FirebaseFirestore? db})
-    : _db = db ?? FirebaseFirestore.instance;
+    : _db = db ?? AppFirestore.instance;
 
   CollectionReference<Map<String, dynamic>> get _years =>
       _db.collection('academic_years');
@@ -98,12 +99,6 @@ class AcademicSettingsService {
   DateTime _dayOnly(DateTime value) =>
       DateTime(value.year, value.month, value.day);
 
-  bool _sameDay(DateTime a, DateTime b) =>
-      a.year == b.year && a.month == b.month && a.day == b.day;
-
-  DateTime _dayAfter(DateTime value) =>
-      DateTime(value.year, value.month, value.day).add(const Duration(days: 1));
-
   bool _hasCompleteValidTermDates(Map<String, TermDates> termDates) {
     DateTime? startOf(String key) => termDates[key]?.startAt?.toDate();
     DateTime? endOf(String key) => termDates[key]?.endAt?.toDate();
@@ -137,9 +132,6 @@ class AcademicSettingsService {
 
     if (!t1End.isBefore(t2Start)) return false;
     if (!t2End.isBefore(t3Start)) return false;
-
-    if (!_sameDay(_dayAfter(t1End), t2Start)) return false;
-    if (!_sameDay(_dayAfter(t2End), t3Start)) return false;
 
     return true;
   }

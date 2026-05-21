@@ -8,20 +8,19 @@ import 'package:intl/intl.dart';
 import '../../services/counseling_case_workflow_service.dart';
 import '../../services/counseling_setup_service.dart';
 import '../../services/osa_meeting_schedule_service.dart';
+import '../osa_admin/widgets/osa_common_widgets.dart';
 import '../shared/widgets/modern_table_layout.dart';
+import '../shared/widgets/app_empty_state.dart';
 import 'package:apps/pages/shared/widgets/app_inline_notice.dart';
+import 'package:apps/services/app_firestore.dart';
 
-enum _StudentCounselingTab {
-  all,
-  needsBooking,
-  scheduled,
-  underReview,
-  completed,
-  cancelled,
-}
+enum _StudentCounselingTab { active, history }
 
 class StudentCounselingPage extends StatefulWidget {
-  const StudentCounselingPage({super.key});
+  final String? initialTab;
+  final ValueChanged<String>? onTabChanged;
+
+  const StudentCounselingPage({super.key, this.initialTab, this.onTabChanged});
 
   @override
   State<StudentCounselingPage> createState() => _StudentCounselingPageState();
@@ -44,12 +43,8 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
   final _counselingSetupService = CounselingSetupService();
   final ValueNotifier<Map<_StudentCounselingTab, int>> _tabCounts =
       ValueNotifier<Map<_StudentCounselingTab, int>>({
-        _StudentCounselingTab.all: 0,
-        _StudentCounselingTab.needsBooking: 0,
-        _StudentCounselingTab.scheduled: 0,
-        _StudentCounselingTab.underReview: 0,
-        _StudentCounselingTab.completed: 0,
-        _StudentCounselingTab.cancelled: 0,
+        _StudentCounselingTab.active: 0,
+        _StudentCounselingTab.history: 0,
       });
 
   String _studentUid = '';
@@ -61,10 +56,12 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
   String _counselingType = 'academic';
   bool _loading = false;
   bool _loadingProfile = true;
+  bool _checkingCounselingSetup = true;
+  bool _hasCounselingSetup = false;
   bool _sweepRunning = false;
   bool _isRefreshingTable = false;
   String? _selectedCaseId;
-  _StudentCounselingTab _tab = _StudentCounselingTab.all;
+  _StudentCounselingTab _tab = _StudentCounselingTab.active;
   String _searchQuery = '';
   Timer? _searchDebounce;
 
@@ -72,36 +69,49 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
   final Set<String> _schoolSelected = <String>{};
   final Set<String> _relationshipSelected = <String>{};
   final Set<String> _homeSelected = <String>{};
-  List<String> _moodOptions = List<String>.from(
-    CounselingSetupConfig.defaults.moodsBehaviors,
-  );
-  List<String> _schoolOptions = List<String>.from(
-    CounselingSetupConfig.defaults.schoolConcerns,
-  );
-  List<String> _relationshipOptions = List<String>.from(
-    CounselingSetupConfig.defaults.relationships,
-  );
-  List<String> _homeOptions = List<String>.from(
-    CounselingSetupConfig.defaults.homeConcerns,
-  );
+  List<String> _moodOptions = <String>[];
+  List<String> _schoolOptions = <String>[];
+  List<String> _relationshipOptions = <String>[];
+  List<String> _homeOptions = <String>[];
 
   @override
   void initState() {
     super.initState();
+    _tab = _tabFromKey(widget.initialTab);
     _runStudentSafetySweep();
     _loadCounselingSetup();
     _loadStudentProfile();
   }
 
+  @override
+  void didUpdateWidget(covariant StudentCounselingPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.initialTab != widget.initialTab) {
+      final nextTab = _tabFromKey(widget.initialTab);
+      if (nextTab != _tab) {
+        setState(() {
+          _tab = nextTab;
+          _selectedCaseId = null;
+        });
+      }
+    }
+  }
+
   Future<void> _loadCounselingSetup() async {
+    if (mounted) {
+      setState(() {
+        _checkingCounselingSetup = true;
+      });
+    }
     try {
       final config = await _counselingSetupService.getConfig();
       if (!mounted) return;
       setState(() {
-        _moodOptions = List<String>.from(config.moodsBehaviors);
-        _schoolOptions = List<String>.from(config.schoolConcerns);
-        _relationshipOptions = List<String>.from(config.relationships);
-        _homeOptions = List<String>.from(config.homeConcerns);
+        _hasCounselingSetup = config.hasMinimumCounselingSetup;
+        _moodOptions = List<String>.from(config.academicPerformanceInformation);
+        _schoolOptions = List<String>.from(config.physicalAttributes);
+        _relationshipOptions = List<String>.from(config.crisisIndicators);
+        _homeOptions = List<String>.from(config.atypicalBehavior);
         _moodsSelected.removeWhere((item) => !_moodOptions.contains(item));
         _schoolSelected.removeWhere((item) => !_schoolOptions.contains(item));
         _relationshipSelected.removeWhere(
@@ -110,7 +120,18 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
         _homeSelected.removeWhere((item) => !_homeOptions.contains(item));
       });
     } catch (_) {
-      // Keep defaults if setup cannot be loaded.
+      // Keep empty options if setup cannot be loaded.
+      if (mounted) {
+        setState(() {
+          _hasCounselingSetup = false;
+        });
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _checkingCounselingSetup = false;
+        });
+      }
     }
   }
 
@@ -150,7 +171,7 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
     _studentEmail = user.email?.trim() ?? '';
 
     try {
-      final snap = await FirebaseFirestore.instance
+      final snap = await AppFirestore.instance
           .collection('users')
           .doc(user.uid)
           .get();
@@ -233,6 +254,16 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
   Future<bool> _submit() async {
     FocusManager.instance.primaryFocus?.unfocus();
     if (_loading || _loadingProfile) return false;
+    if (_checkingCounselingSetup || !_hasCounselingSetup) {
+      if (!mounted) return false;
+      AppScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Counseling setup is not yet available.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return false;
+    }
     if (_studentUid.isEmpty) {
       AppScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -262,26 +293,27 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
         studentProgramId: _programId,
         counselingType: _counselingType,
         reasons: {
-          'moodsBehaviors': _moodsSelected.toList()..sort(),
-          'schoolConcerns': _schoolSelected.toList()..sort(),
-          'relationships': _relationshipSelected.toList()..sort(),
-          'homeConcerns': _homeSelected.toList()..sort(),
-          'otherMood': _otherMoodCtrl.text.trim(),
-          'otherSchool': _otherSchoolCtrl.text.trim(),
-          'otherRelationship': _otherRelationshipCtrl.text.trim(),
-          'otherHome': _otherHomeCtrl.text.trim(),
+          'academicPerformanceInformation': _moodsSelected.toList()..sort(),
+          'physicalAttributes': _schoolSelected.toList()..sort(),
+          'crisisIndicators': _relationshipSelected.toList()..sort(),
+          'atypicalBehavior': _homeSelected.toList()..sort(),
+          'otherAcademicPerformance': _otherMoodCtrl.text.trim(),
+          'otherPhysicalAttributes': _otherSchoolCtrl.text.trim(),
+          'otherCrisisIndicators': _otherRelationshipCtrl.text.trim(),
+          'otherAtypicalBehavior': _otherHomeCtrl.text.trim(),
         },
         comments: _commentsCtrl.text.trim(),
       );
 
-      final caseDoc = await FirebaseFirestore.instance
+      final caseDoc = await AppFirestore.instance
           .collection('counseling_cases')
           .doc(caseId)
           .get();
       final caseData = caseDoc.data() ?? <String, dynamic>{};
       final canBookNow = caseDoc.exists && _canBook(caseData);
       final isScheduledNow = caseDoc.exists && _isScheduled(caseData);
-      final isAwaitingCallSlipNow = caseDoc.exists && _isAwaitingCallSlip(caseData);
+      final isAwaitingCallSlipNow =
+          caseDoc.exists && _isAwaitingCallSlip(caseData);
 
       if (!mounted) return false;
       AppScaffoldMessenger.of(context).showSnackBar(
@@ -321,18 +353,40 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
 
   String _tabLabel(_StudentCounselingTab tab) {
     switch (tab) {
-      case _StudentCounselingTab.all:
-        return 'All';
-      case _StudentCounselingTab.needsBooking:
-        return 'Needs Booking';
-      case _StudentCounselingTab.scheduled:
-        return 'Scheduled';
-      case _StudentCounselingTab.underReview:
-        return 'Under Review';
-      case _StudentCounselingTab.completed:
-        return 'Completed';
-      case _StudentCounselingTab.cancelled:
-        return 'Cancelled';
+      case _StudentCounselingTab.active:
+        return 'Active Referral';
+      case _StudentCounselingTab.history:
+        return 'History';
+    }
+  }
+
+  _StudentCounselingTab _tabFromKey(String? raw) {
+    final value = (raw ?? '').trim().toLowerCase();
+    switch (value) {
+      case 'history':
+        return _StudentCounselingTab.history;
+      case 'active':
+      default:
+        return _StudentCounselingTab.active;
+    }
+  }
+
+  String _tabKey(_StudentCounselingTab tab) {
+    switch (tab) {
+      case _StudentCounselingTab.history:
+        return 'history';
+      case _StudentCounselingTab.active:
+      default:
+        return 'active';
+    }
+  }
+
+  String _emptyCasesText() {
+    switch (_tab) {
+      case _StudentCounselingTab.active:
+        return 'No active counseling case';
+      case _StudentCounselingTab.history:
+        return 'No counseling history found';
     }
   }
 
@@ -367,12 +421,8 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
 
   void _updateTabCounts(List<QueryDocumentSnapshot<Map<String, dynamic>>> raw) {
     final next = <_StudentCounselingTab, int>{
-      _StudentCounselingTab.all: 0,
-      _StudentCounselingTab.needsBooking: 0,
-      _StudentCounselingTab.scheduled: 0,
-      _StudentCounselingTab.underReview: 0,
-      _StudentCounselingTab.completed: 0,
-      _StudentCounselingTab.cancelled: 0,
+      _StudentCounselingTab.active: 0,
+      _StudentCounselingTab.history: 0,
     };
 
     for (final doc in raw) {
@@ -411,18 +461,10 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
     _StudentCounselingTab tab,
   ) {
     switch (tab) {
-      case _StudentCounselingTab.all:
-        return true;
-      case _StudentCounselingTab.needsBooking:
-        return _canBook(data);
-      case _StudentCounselingTab.scheduled:
-        return _isScheduled(data);
-      case _StudentCounselingTab.underReview:
-        return _isUnderReview(data);
-      case _StudentCounselingTab.completed:
-        return _isCompleted(data);
-      case _StudentCounselingTab.cancelled:
-        return _isCancelled(data);
+      case _StudentCounselingTab.active:
+        return !_isCompleted(data) && !_isCancelled(data);
+      case _StudentCounselingTab.history:
+        return _isCompleted(data) || _isCancelled(data);
     }
   }
 
@@ -599,9 +641,13 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
         ),
         child: PopupMenuButton<String>(
           tooltip: 'More options',
-          enabled: !_loading,
+          enabled: !_loading && !_checkingCounselingSetup,
           padding: EdgeInsets.zero,
-          icon: const Icon(Icons.more_horiz_rounded, color: hintColor, size: 20),
+          icon: const Icon(
+            Icons.more_horiz_rounded,
+            color: hintColor,
+            size: 20,
+          ),
           onSelected: (value) {
             if (value == 'self_referral') onSelfReferral();
           },
@@ -623,7 +669,7 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
   }
 
   Future<void> _openBookingDialogForCaseId(String caseId) async {
-    final caseDoc = await FirebaseFirestore.instance
+    final caseDoc = await AppFirestore.instance
         .collection('counseling_cases')
         .doc(caseId)
         .get();
@@ -697,6 +743,80 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
         content: Text('Counseling appointment booked successfully.'),
         backgroundColor: primaryColor,
       ),
+    );
+  }
+
+  Future<void> _showCounselingSetupGateDialog() async {
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      builder: (dialogContext) {
+        final size = MediaQuery.of(dialogContext).size;
+        final scale = (size.width / 430).clamp(0.92, 1.12);
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: const EdgeInsets.symmetric(
+            horizontal: 14,
+            vertical: 18,
+          ),
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 620),
+              child: Container(
+                width: double.infinity,
+                padding: EdgeInsets.symmetric(
+                  horizontal: 24 * scale,
+                  vertical: 20 * scale,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(
+                    color: primaryColor.withValues(alpha: 0.10),
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.05),
+                      blurRadius: 20,
+                      offset: const Offset(0, 10),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    Text(
+                      'Counseling setup is not yet available',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: primaryColor,
+                        fontWeight: FontWeight.w900,
+                        fontSize: (17.0 * scale).clamp(17.0, 19.0),
+                        height: 1.12,
+                      ),
+                    ),
+                    SizedBox(height: 10 * scale),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 520),
+                      child: Text(
+                        'Please contact the counseling admin before submitting a referral on this page.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: hintColor,
+                          fontWeight: FontWeight.w700,
+                          fontSize: (13.0 * scale).clamp(12.8, 13.8),
+                          height: 1.25,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -778,10 +898,7 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
     return type.isEmpty ? 'General' : _titleCase(type);
   }
 
-  Widget _buildMyCasesSection(
-    double scale, {
-    required bool wideLayout,
-  }) {
+  Widget _buildMyCasesSection(double scale, {required bool wideLayout}) {
     if (_studentUid.isEmpty) {
       return const SizedBox.shrink();
     }
@@ -816,7 +933,7 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
           ),
           SizedBox(height: 10 * scale),
           StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-            stream: FirebaseFirestore.instance
+            stream: AppFirestore.instance
                 .collection('counseling_cases')
                 .where('studentUid', isEqualTo: _studentUid)
                 .snapshots(),
@@ -898,161 +1015,160 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
               }
 
               final cards = docs.map((doc) {
-                  final data = doc.data();
-                  final caseCode = (data['caseCode'] ?? doc.id).toString();
-                  final referralType = _prettyType(
-                    (data['counselingType'] ?? '').toString(),
-                  );
-                  final submittedAt =
-                      _toDate(data['createdAt']) ??
-                      _toDate(data['referralDate']);
-                  final scheduledAt = _toDate(data['scheduledAt']);
-                  final canBook = _canBook(data);
-                  final awaitingCallSlip = _isAwaitingCallSlip(data);
-                  final selected = _selectedCaseId == doc.id;
-                  final quickSummary = _buildReasonSummary(data);
+                final data = doc.data();
+                final caseCode = (data['caseCode'] ?? doc.id).toString();
+                final referralType = _prettyType(
+                  (data['counselingType'] ?? '').toString(),
+                );
+                final submittedAt =
+                    _toDate(data['createdAt']) ?? _toDate(data['referralDate']);
+                final scheduledAt = _toDate(data['scheduledAt']);
+                final canBook = _canBook(data);
+                final awaitingCallSlip = _isAwaitingCallSlip(data);
+                final selected = _selectedCaseId == doc.id;
+                final quickSummary = _buildReasonSummary(data);
 
-                  return InkWell(
-                    borderRadius: BorderRadius.circular(12),
-                    onTap: () {
-                      if (wideLayout) {
-                        setState(() {
-                          _selectedCaseId = doc.id;
-                        });
-                        return;
-                      }
-                      _openCaseDetailsSheet(
-                        caseId: doc.id,
-                        data: data,
-                        scale: scale,
-                      );
-                    },
-                    child: Container(
-                      width: double.infinity,
-                      margin: const EdgeInsets.only(bottom: 10),
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
+                return InkWell(
+                  borderRadius: BorderRadius.circular(12),
+                  onTap: () {
+                    if (wideLayout) {
+                      setState(() {
+                        _selectedCaseId = doc.id;
+                      });
+                      return;
+                    }
+                    _openCaseDetailsSheet(
+                      caseId: doc.id,
+                      data: data,
+                      scale: scale,
+                    );
+                  },
+                  child: Container(
+                    width: double.infinity,
+                    margin: const EdgeInsets.only(bottom: 10),
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: selected
+                          ? primaryColor.withValues(alpha: 0.06)
+                          : Colors.white,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
                         color: selected
-                            ? primaryColor.withValues(alpha: 0.06)
-                            : Colors.white,
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: selected
-                              ? primaryColor.withValues(alpha: 0.4)
-                              : Colors.black.withValues(alpha: 0.09),
-                          width: selected ? 1.5 : 1,
-                        ),
+                            ? primaryColor.withValues(alpha: 0.4)
+                            : Colors.black.withValues(alpha: 0.09),
+                        width: selected ? 1.5 : 1,
                       ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              Expanded(
-                                child: Text(
-                                  caseCode,
-                                  style: const TextStyle(
-                                    color: primaryColor,
-                                    fontWeight: FontWeight.w900,
-                                    fontSize: 13.5,
-                                  ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                caseCode,
+                                style: const TextStyle(
+                                  color: primaryColor,
+                                  fontWeight: FontWeight.w900,
+                                  fontSize: 13.5,
                                 ),
                               ),
-                              _buildStatusPill(data),
-                            ],
+                            ),
+                            _buildStatusPill(data),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          '$referralType Referral',
+                          style: const TextStyle(
+                            color: textDark,
+                            fontWeight: FontWeight.w800,
                           ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          submittedAt == null
+                              ? 'Submitted date not available'
+                              : 'Submitted ${DateFormat('MMM d, yyyy').format(submittedAt)}',
+                          style: const TextStyle(
+                            color: hintColor,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 12.5,
+                          ),
+                        ),
+                        if (scheduledAt != null) ...[
                           const SizedBox(height: 6),
                           Text(
-                            '$referralType Referral',
+                            'Scheduled: ${DateFormat('EEE, MMM d, yyyy h:mm a').format(scheduledAt)}',
                             style: const TextStyle(
-                              color: textDark,
+                              color: hintColor,
                               fontWeight: FontWeight.w800,
+                              fontSize: 12.5,
                             ),
                           ),
-                          const SizedBox(height: 2),
+                        ],
+                        if (quickSummary.isNotEmpty) ...[
+                          const SizedBox(height: 6),
                           Text(
-                            submittedAt == null
-                                ? 'Submitted date not available'
-                                : 'Submitted ${DateFormat('MMM d, yyyy').format(submittedAt)}',
+                            quickSummary,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
                               color: hintColor,
                               fontWeight: FontWeight.w700,
                               fontSize: 12.5,
                             ),
                           ),
-                          if (scheduledAt != null) ...[
-                            const SizedBox(height: 6),
-                            Text(
-                              'Scheduled: ${DateFormat('EEE, MMM d, yyyy h:mm a').format(scheduledAt)}',
-                              style: const TextStyle(
-                                color: hintColor,
-                                fontWeight: FontWeight.w800,
-                                fontSize: 12.5,
-                              ),
-                            ),
-                          ],
-                          if (quickSummary.isNotEmpty) ...[
-                            const SizedBox(height: 6),
-                            Text(
-                              quickSummary,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: hintColor,
-                                fontWeight: FontWeight.w700,
-                                fontSize: 12.5,
-                              ),
-                            ),
-                          ],
-                          if (awaitingCallSlip) ...[
-                            const SizedBox(height: 8),
-                            Container(
-                              width: double.infinity,
-                              padding: const EdgeInsets.all(10),
-                              decoration: BoxDecoration(
-                                color: Colors.orange.withValues(alpha: 0.11),
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(
-                                  color: Colors.orange.withValues(alpha: 0.30),
-                                ),
-                              ),
-                              child: Text(
-                                'Counseling will send your call slip before booking opens.',
-                                style: TextStyle(
-                                  color: Colors.orange.shade900,
-                                  fontWeight: FontWeight.w800,
-                                ),
-                              ),
-                            ),
-                          ],
-                          if (canBook && !wideLayout) ...[
-                            const SizedBox(height: 10),
-                            Align(
-                              alignment: Alignment.centerLeft,
-                              child: TextButton.icon(
-                                onPressed: () => _openBookingDialog(
-                                  caseId: doc.id,
-                                  data: data,
-                                ),
-                                icon: const Icon(
-                                  Icons.event_available_rounded,
-                                  size: 18,
-                                ),
-                                label: const Text('Book / Rebook'),
-                                style: TextButton.styleFrom(
-                                  foregroundColor: primaryColor,
-                                  textStyle: const TextStyle(
-                                    fontWeight: FontWeight.w900,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ],
                         ],
-                      ),
+                        if (awaitingCallSlip) ...[
+                          const SizedBox(height: 8),
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              color: Colors.orange.withValues(alpha: 0.11),
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(
+                                color: Colors.orange.withValues(alpha: 0.30),
+                              ),
+                            ),
+                            child: Text(
+                              'Counseling will send your call slip before booking opens.',
+                              style: TextStyle(
+                                color: Colors.orange.shade900,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ),
+                        ],
+                        if (canBook && !wideLayout) ...[
+                          const SizedBox(height: 10),
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: TextButton.icon(
+                              onPressed: () => _openBookingDialog(
+                                caseId: doc.id,
+                                data: data,
+                              ),
+                              icon: const Icon(
+                                Icons.event_available_rounded,
+                                size: 18,
+                              ),
+                              label: const Text('Book / Rebook'),
+                              style: TextButton.styleFrom(
+                                foregroundColor: primaryColor,
+                                textStyle: const TextStyle(
+                                  fontWeight: FontWeight.w900,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
-                  );
-                }).toList();
+                  ),
+                );
+              }).toList();
 
               if (!wideLayout) {
                 return Column(children: cards);
@@ -1062,10 +1178,7 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
               return Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Expanded(
-                    flex: 5,
-                    child: Column(children: cards),
-                  ),
+                  Expanded(flex: 5, child: Column(children: cards)),
                   SizedBox(width: 12 * scale),
                   Expanded(
                     flex: 4,
@@ -1097,10 +1210,7 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
       ),
       child: const Text(
         'Select a counseling case to view details.',
-        style: TextStyle(
-          color: hintColor,
-          fontWeight: FontWeight.w700,
-        ),
+        style: TextStyle(color: hintColor, fontWeight: FontWeight.w700),
       ),
     );
   }
@@ -1111,20 +1221,80 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
     required double scale,
   }) {
     final caseCode = (data['caseCode'] ?? caseId).toString();
-    final submittedAt = _toDate(data['createdAt']) ?? _toDate(data['referralDate']);
     final scheduledAt = _toDate(data['scheduledAt']);
-    final canBook = _canBook(data);
-    final missed = _isMissed(data);
-    final reasonSummary = _buildReasonSummary(data);
-    final comments = (data['comments'] ?? '').toString().trim();
+    final referralEntries = _referralEntriesFromCase(data);
 
-    Widget kv(String label, String value) {
-      return Padding(
-        padding: const EdgeInsets.only(bottom: 8),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _studentDetailCard(
+          title: 'Referral Summary',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _studentKv('Case Code', caseCode),
+              _studentKv('Status', _statusText(data)),
+              if (scheduledAt != null)
+                _studentKv(
+                  'Scheduled At',
+                  DateFormat('EEE, MMM d, yyyy h:mm a').format(scheduledAt),
+                ),
+            ],
+          ),
+        ),
+        SizedBox(height: 12 * scale),
+        _studentDetailCard(
+          title: 'Referral History',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              for (var i = 0; i < referralEntries.length; i++) ...[
+                _studentReferralEntryCard(referralEntries[i]),
+                if (i < referralEntries.length - 1) const SizedBox(height: 10),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _studentDetailCard({required String title, required Widget child}) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FBF8),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.black.withValues(alpha: 0.06)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: const TextStyle(
+              color: textDark,
+              fontWeight: FontWeight.w900,
+              fontSize: 14.5,
+            ),
+          ),
+          const SizedBox(height: 10),
+          child,
+        ],
+      ),
+    );
+  }
+
+  Widget _studentKv(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 104,
+            child: Text(
               label,
               style: const TextStyle(
                 color: hintColor,
@@ -1132,82 +1302,79 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
                 fontSize: 12,
               ),
             ),
-            const SizedBox(height: 2),
-            Text(
-              value.isEmpty ? '--' : value,
+          ),
+          Expanded(
+            child: Text(
+              value.trim().isEmpty ? '--' : value.trim(),
               style: const TextStyle(
                 color: textDark,
                 fontWeight: FontWeight.w800,
               ),
             ),
-          ],
-        ),
-      );
+          ),
+        ],
+      ),
+    );
+  }
+
+  List<Map<String, dynamic>> _referralEntriesFromCase(
+    Map<String, dynamic> data,
+  ) {
+    final raw = data['referralEntries'];
+    if (raw is Iterable) {
+      final entries = raw
+          .whereType<Map>()
+          .map((entry) => Map<String, dynamic>.from(entry))
+          .toList();
+      if (entries.isNotEmpty) return entries;
     }
+    return [
+      {
+        'counselingType': data['counselingType'],
+        'submittedAt': data['referralDate'] ?? data['createdAt'],
+        'comments': data['comments'],
+        'reasons': data['reasons'],
+      },
+    ];
+  }
+
+  Widget _studentReferralEntryCard(Map<String, dynamic> entry) {
+    final type = _prettyType(_safeStr(entry['counselingType']));
+    final submittedAt = _toDate(entry['submittedAt']);
+    final comments = _safeStr(entry['comments']);
+    final reasons =
+        (entry['reasons'] as Map<String, dynamic>?) ??
+        const <String, dynamic>{};
 
     return Container(
       width: double.infinity,
-      padding: EdgeInsets.all(14 * scale),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(12),
         border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  'Case Details',
-                  style: TextStyle(
-                    color: textDark,
-                    fontWeight: FontWeight.w900,
-                    fontSize: (15 * scale).clamp(15.0, 18.0),
-                  ),
-                ),
-              ),
-              _buildStatusPill(data),
-            ],
-          ),
-          SizedBox(height: 10 * scale),
-          kv('Case Code', caseCode),
-          kv('Referral Type', _prettyType((data['counselingType'] ?? '').toString())),
-          kv(
-            'Submitted',
-            submittedAt == null ? '--' : DateFormat('MMM d, yyyy').format(submittedAt),
-          ),
-          kv(
-            'Scheduled',
-            scheduledAt == null
-                ? 'Not yet scheduled'
-                : DateFormat('EEE, MMM d, yyyy h:mm a').format(scheduledAt),
-          ),
-          kv('Concern Summary', reasonSummary.isEmpty ? '--' : reasonSummary),
-          kv('Notes', comments.isEmpty ? '--' : comments),
-          if (canBook) ...[
-            SizedBox(height: 8 * scale),
-            SizedBox(
-              width: double.infinity,
-              height: 44,
-              child: ElevatedButton.icon(
-                onPressed: () => _openBookingDialog(caseId: caseId, data: data),
-                icon: const Icon(Icons.event_available_rounded, size: 18),
-                label: Text(
-                  missed ? 'Rebook Appointment' : 'Book Appointment',
-                  style: const TextStyle(fontWeight: FontWeight.w900),
-                ),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: primaryColor,
-                  foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                ),
-              ),
+          Text(
+            'Referral Entry',
+            style: const TextStyle(
+              color: textDark,
+              fontWeight: FontWeight.w900,
+              fontSize: 13.5,
             ),
-          ],
+          ),
+          const SizedBox(height: 8),
+          _studentKv('Type', type),
+          _studentKv(
+            'Submitted At',
+            submittedAt == null
+                ? '--'
+                : DateFormat('MMM d, yyyy - h:mm a').format(submittedAt),
+          ),
+          _studentKv('Comments', comments.isEmpty ? '--' : comments),
+          _studentConcernSection(reasons),
         ],
       ),
     );
@@ -1215,8 +1382,16 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
 
   String _buildReasonSummary(Map<String, dynamic> data) {
     final reasons = (data['reasons'] as Map<String, dynamic>?) ?? const {};
+    return _reasonSummaryFromReasons(reasons);
+  }
+
+  String _reasonSummaryFromReasons(Map<String, dynamic> reasons) {
     final items = <String>{};
     for (final key in const [
+      'academicPerformanceInformation',
+      'physicalAttributes',
+      'crisisIndicators',
+      'atypicalBehavior',
       'moodsBehaviors',
       'schoolConcerns',
       'relationships',
@@ -1233,6 +1408,115 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
     return items.join(', ');
   }
 
+  String _studentConcernGroupLabel(String key) {
+    switch (key.trim()) {
+      case 'academicPerformanceInformation':
+      case 'moodsBehaviors':
+        return 'Academic Performance Information';
+      case 'physicalAttributes':
+      case 'schoolConcerns':
+        return 'Physical Attributes';
+      case 'crisisIndicators':
+      case 'relationships':
+        return 'Crisis Indicators';
+      case 'atypicalBehavior':
+      case 'homeConcerns':
+        return 'Atypical Behavior';
+      default:
+        return _titleCase(key.replaceAll('_', ' '));
+    }
+  }
+
+  Widget _studentConcernList(Map<String, dynamic> reasons) {
+    final items = <Widget>[];
+    for (final entry in reasons.entries) {
+      final raw = entry.value;
+      final values = <String>[];
+      if (raw is Iterable) {
+        for (final item in raw) {
+          final text = item.toString().trim();
+          if (text.isNotEmpty) values.add(text);
+        }
+      } else {
+        final text = raw.toString().trim();
+        if (text.isNotEmpty) values.add(text);
+      }
+      if (values.isEmpty) continue;
+
+      items.add(
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                _studentConcernGroupLabel(entry.key.toString()),
+                style: const TextStyle(
+                  color: textDark,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 12.5,
+                ),
+              ),
+              const SizedBox(height: 4),
+              for (final value in values)
+                Padding(
+                  padding: const EdgeInsets.only(left: 8, bottom: 3),
+                  child: Text(
+                    '- $value',
+                    style: const TextStyle(
+                      color: textDark,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 12.5,
+                      height: 1.25,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (items.isEmpty) {
+      return const Text(
+        '--',
+        style: TextStyle(color: textDark, fontWeight: FontWeight.w800),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: items,
+    );
+  }
+
+  Widget _studentConcernSection(Map<String, dynamic> reasons) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SizedBox(
+            width: 104,
+            child: Text(
+              'Concern',
+              style: TextStyle(
+                color: hintColor,
+                fontWeight: FontWeight.w800,
+                fontSize: 12,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.only(top: 1),
+              child: _studentConcernList(reasons),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _openCaseDetailsSheet({
     required String caseId,
     required Map<String, dynamic> data,
@@ -1244,19 +1528,13 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
       backgroundColor: Colors.transparent,
       builder: (sheetContext) {
         return SafeArea(
-          child: Container(
-            margin: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: bg,
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(12),
-              child: _buildCaseDetailsPane(
-                caseId: caseId,
-                data: data,
-                scale: scale,
-              ),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: _buildCaseDetailsSheetShell(
+              sheetContext: sheetContext,
+              caseId: caseId,
+              data: data,
+              scale: scale,
             ),
           ),
         );
@@ -1269,13 +1547,21 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
     required bool stackActions,
     required double scale,
   }) async {
+    if (_checkingCounselingSetup) return;
+    if (!_hasCounselingSetup) {
+      await _showCounselingSetupGateDialog();
+      return;
+    }
     await showDialog<void>(
       context: context,
       barrierDismissible: !_loading,
       builder: (dialogContext) {
         return Dialog(
           backgroundColor: Colors.transparent,
-          insetPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 18),
+          insetPadding: const EdgeInsets.symmetric(
+            horizontal: 14,
+            vertical: 18,
+          ),
           child: Container(
             constraints: BoxConstraints(
               maxWidth: tablet ? 860 : 560,
@@ -1326,7 +1612,8 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
                     SizedBox(height: 12 * scale),
                     _buildSectionCard(
                       title: 'Referral Type',
-                      subtitle: 'Choose the type of counseling support you need.',
+                      subtitle:
+                          'Choose the type of counseling support you need.',
                       scale: scale,
                       child: _buildTypeCard(scale),
                     ),
@@ -1419,11 +1706,15 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
         final detailsPaneWidth = (constraints.maxWidth * 0.33)
             .clamp(320.0, 420.0)
             .toDouble();
-        void openSelfReferral() => _showSelfReferralDialog(
-          tablet: constraints.maxWidth >= 760,
-          stackActions: constraints.maxWidth < 640,
-          scale: scale,
-        );
+        void openSelfReferral() {
+          if (_checkingCounselingSetup) return;
+          _showSelfReferralDialog(
+            tablet: constraints.maxWidth >= 760,
+            stackActions: constraints.maxWidth < 640,
+            scale: scale,
+          );
+        }
+
         final compactOptions = _buildCompactHeaderOptionsButton(
           useCompactHeaderActions: useCompactHeaderActions,
           onSelfReferral: openSelfReferral,
@@ -1445,7 +1736,12 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
                     action: useCompactHeaderActions
                         ? null
                         : FilledButton.icon(
-                            onPressed: _loading ? null : openSelfReferral,
+                            onPressed:
+                                (_loading ||
+                                    _loadingProfile ||
+                                    _checkingCounselingSetup)
+                                ? null
+                                : openSelfReferral,
                             icon: const Icon(Icons.add_rounded, size: 18),
                             label: const Text(
                               'Self Referral',
@@ -1470,39 +1766,44 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
                     tabs: DefaultTabController(
                       length: _StudentCounselingTab.values.length,
                       initialIndex: _activeTabIndex,
-                      child: ValueListenableBuilder<Map<_StudentCounselingTab, int>>(
-                        valueListenable: _tabCounts,
-                        builder: (context, counts, _) {
-                          return TabBar(
-                            isScrollable: true,
-                            tabAlignment: TabAlignment.start,
-                            labelColor: primaryColor,
-                            indicatorColor: primaryColor,
-                            dividerColor: Colors.transparent,
-                            onTap: (index) {
-                              final nextTab = _StudentCounselingTab.values[index];
-                              if (nextTab == _tab) return;
-                              setState(() {
-                                _tab = nextTab;
-                                _selectedCaseId = null;
-                              });
+                      child:
+                          ValueListenableBuilder<
+                            Map<_StudentCounselingTab, int>
+                          >(
+                            valueListenable: _tabCounts,
+                            builder: (context, counts, _) {
+                              return TabBar(
+                                isScrollable: true,
+                                tabAlignment: TabAlignment.start,
+                                labelColor: primaryColor,
+                                indicatorColor: primaryColor,
+                                dividerColor: Colors.transparent,
+                                onTap: (index) {
+                                  final nextTab =
+                                      _StudentCounselingTab.values[index];
+                                  if (nextTab == _tab) return;
+                                  setState(() {
+                                    _tab = nextTab;
+                                    _selectedCaseId = null;
+                                  });
+                                  widget.onTabChanged?.call(_tabKey(nextTab));
+                                },
+                                tabs: _StudentCounselingTab.values
+                                    .map(
+                                      (tab) => Tab(
+                                        text:
+                                            '${_tabLabel(tab)} (${counts[tab] ?? 0})',
+                                      ),
+                                    )
+                                    .toList(growable: false),
+                              );
                             },
-                            tabs: _StudentCounselingTab.values
-                                .map(
-                                  (tab) => Tab(
-                                    text:
-                                        '${_tabLabel(tab)} (${counts[tab] ?? 0})',
-                                  ),
-                                )
-                                .toList(growable: false),
-                          );
-                        },
-                      ),
+                          ),
                     ),
                     filters: const [],
                   ),
                   body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                    stream: FirebaseFirestore.instance
+                    stream: AppFirestore.instance
                         .collection('counseling_cases')
                         .where('studentUid', isEqualTo: user.uid)
                         .snapshots(),
@@ -1518,57 +1819,48 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
                       _updateTabCounts(raw);
                       final query = _searchQuery.trim().toLowerCase();
 
-                      final docs = raw.where((doc) {
-                        final data = doc.data();
-                        if (!_matchesCounselingTab(data, _tab)) return false;
-                        if (query.isEmpty) return true;
+                      final docs =
+                          raw.where((doc) {
+                            final data = doc.data();
+                            if (!_matchesCounselingTab(data, _tab)) {
+                              return false;
+                            }
+                            if (query.isEmpty) return true;
 
-                        final caseCode = _safeStr(
-                          data['caseCode'] ?? doc.id,
-                        ).toLowerCase();
-                        final type = _prettyType(
-                          _safeStr(data['counselingType']),
-                        ).toLowerCase();
-                        final status = _statusText(data).toLowerCase();
-                        final date = _bestCaseDate(data);
-                        final dateText =
-                            date == null ? '' : _fmtShort(date).toLowerCase();
-                        final reasons = _buildReasonSummary(data).toLowerCase();
-                        return caseCode.contains(query) ||
-                            type.contains(query) ||
-                            status.contains(query) ||
-                            dateText.contains(query) ||
-                            reasons.contains(query);
-                      }).toList()
-                        ..sort((a, b) {
-                          final da = _bestCaseDate(a.data());
-                          final db = _bestCaseDate(b.data());
-                          if (da == null && db == null) return 0;
-                          if (da == null) return 1;
-                          if (db == null) return -1;
-                          return db.compareTo(da);
-                        });
+                            final caseCode = _safeStr(
+                              data['caseCode'] ?? doc.id,
+                            ).toLowerCase();
+                            final type = _prettyType(
+                              _safeStr(data['counselingType']),
+                            ).toLowerCase();
+                            final status = _statusText(data).toLowerCase();
+                            final date = _bestCaseDate(data);
+                            final dateText = date == null
+                                ? ''
+                                : _fmtShort(date).toLowerCase();
+                            final reasons = _buildReasonSummary(
+                              data,
+                            ).toLowerCase();
+                            return caseCode.contains(query) ||
+                                type.contains(query) ||
+                                status.contains(query) ||
+                                dateText.contains(query) ||
+                                reasons.contains(query);
+                          }).toList()..sort((a, b) {
+                            final da = _bestCaseDate(a.data());
+                            final db = _bestCaseDate(b.data());
+                            if (da == null && db == null) return 0;
+                            if (da == null) return 1;
+                            if (db == null) return -1;
+                            return db.compareTo(da);
+                          });
 
                       if (docs.isEmpty) {
-                        return Center(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(
-                                Icons.inbox_outlined,
-                                size: 64,
-                                color: Colors.grey[300],
-                              ),
-                              const SizedBox(height: 16),
-                              const Text(
-                                'No cases found',
-                                style: TextStyle(
-                                  color: hintColor,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                            ],
-                          ),
+                        return AppEmptyState(
+                          icon: Icons.support_agent_outlined,
+                          title: _emptyCasesText(),
+                          subtitle:
+                              'Counseling requests and appointment history will appear here.',
                         );
                       }
 
@@ -1581,7 +1873,26 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
                       }
 
                       if (desktopWide) {
+                        if (_tab == _StudentCounselingTab.active &&
+                            docs.length == 1) {
+                          final doc = docs.first;
+                          return _buildDirectActiveCaseView(
+                            caseId: doc.id,
+                            data: doc.data(),
+                            scale: scale,
+                          );
+                        }
                         return _buildDesktopCounselingTable(docs);
+                      }
+
+                      if (_tab == _StudentCounselingTab.active &&
+                          docs.length == 1) {
+                        final doc = docs.first;
+                        return _buildDirectActiveCaseView(
+                          caseId: doc.id,
+                          data: doc.data(),
+                          scale: scale,
+                        );
                       }
 
                       return ListView.builder(
@@ -1600,10 +1911,16 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
                       );
                     },
                   ),
-                  showDetails: desktopWide && _selectedCaseId != null,
-                  details: desktopWide && _selectedCaseId != null
+                  showDetails:
+                      desktopWide &&
+                      _tab != _StudentCounselingTab.active &&
+                      _selectedCaseId != null,
+                  details:
+                      desktopWide &&
+                          _tab != _StudentCounselingTab.active &&
+                          _selectedCaseId != null
                       ? StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-                          stream: FirebaseFirestore.instance
+                          stream: AppFirestore.instance
                               .collection('counseling_cases')
                               .doc(_selectedCaseId)
                               .snapshots(),
@@ -1611,7 +1928,9 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
                             if (!snap.hasData) return const SizedBox();
                             final doc = snap.data!;
                             if (!doc.exists) {
-                              return const Center(child: Text('Case not found'));
+                              return const Center(
+                                child: Text('Case not found'),
+                              );
                             }
                             return _buildDesktopDetailsContainer(
                               caseId: doc.id,
@@ -1624,6 +1943,142 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
                 ),
         );
       },
+    );
+  }
+
+  Widget _buildDirectActiveCaseView({
+    required String caseId,
+    required Map<String, dynamic> data,
+    required double scale,
+  }) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final maxHeight = constraints.maxHeight.isFinite
+            ? constraints.maxHeight
+            : 640.0;
+        return Center(
+          child: Container(
+            height: maxHeight,
+            margin: const EdgeInsets.symmetric(horizontal: 20),
+            constraints: const BoxConstraints(maxWidth: 720),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+            ),
+            child: Column(
+              children: [
+                Container(
+                  padding: const EdgeInsets.fromLTRB(14, 14, 10, 8),
+                  child: const Row(
+                    children: [
+                      Icon(
+                        Icons.assignment_outlined,
+                        color: primaryColor,
+                        size: 20,
+                      ),
+                      SizedBox(width: 8),
+                      Text(
+                        'Referral Details',
+                        style: TextStyle(
+                          color: primaryColor,
+                          fontWeight: FontWeight.w900,
+                          fontSize: 17,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Divider(height: 1),
+                Expanded(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
+                    child: _buildCaseDetailsPane(
+                      caseId: caseId,
+                      data: data,
+                      scale: scale,
+                    ),
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+                  decoration: BoxDecoration(
+                    border: Border(
+                      top: BorderSide(
+                        color: Colors.black.withValues(alpha: 0.08),
+                      ),
+                    ),
+                  ),
+                  child: _buildStudentCaseActions(caseId: caseId, data: data),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildStudentCaseActions({
+    required String caseId,
+    required Map<String, dynamic> data,
+  }) {
+    final canBook = _canBook(data);
+    final scheduled = _isScheduled(data);
+    final missed = _isMissed(data);
+
+    if (canBook) {
+      return SizedBox(
+        width: double.infinity,
+        height: 44,
+        child: ElevatedButton.icon(
+          onPressed: () => _openBookingDialog(caseId: caseId, data: data),
+          icon: const Icon(Icons.event_available_rounded, size: 18),
+          label: Text(
+            missed ? 'Rebook Appointment' : 'Book Appointment',
+            style: const TextStyle(fontWeight: FontWeight.w900),
+          ),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: primaryColor,
+            foregroundColor: Colors.white,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
+          ),
+        ),
+      );
+    }
+
+    if (scheduled) {
+      return SizedBox(
+        width: double.infinity,
+        height: 44,
+        child: OutlinedButton.icon(
+          onPressed: null,
+          icon: const Icon(Icons.event_repeat_rounded, size: 18),
+          label: const Text(
+            'Request Rebook',
+            style: TextStyle(fontWeight: FontWeight.w900),
+          ),
+          style: OutlinedButton.styleFrom(
+            foregroundColor: primaryColor,
+            side: BorderSide(color: primaryColor.withValues(alpha: 0.35)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return const Text(
+      'No actions available for the current case status.',
+      style: TextStyle(
+        color: hintColor,
+        fontWeight: FontWeight.w700,
+        fontSize: 12.5,
+        height: 1.35,
+      ),
     );
   }
 
@@ -1675,7 +2130,11 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
               final typeCellWidth = colWidth(1.25, 112, compactMinWidth: 92);
               final statusCellWidth = colWidth(1.30, 118, compactMinWidth: 98);
               final dateCellWidth = colWidth(1.20, 112, compactMinWidth: 92);
-              final concernCellWidth = colWidth(1.80, 190, compactMinWidth: 140);
+              final concernCellWidth = colWidth(
+                1.80,
+                190,
+                compactMinWidth: 140,
+              );
 
               return SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
@@ -1732,12 +2191,12 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
                           final doc = docs[i];
                           final data = doc.data();
                           final isSelected = _selectedCaseId == doc.id;
-                          final caseCode = _safeStr(
-                            data['caseCode'],
-                          ).isEmpty
+                          final caseCode = _safeStr(data['caseCode']).isEmpty
                               ? doc.id
                               : _safeStr(data['caseCode']);
-                          final type = _prettyType(_safeStr(data['counselingType']));
+                          final type = _prettyType(
+                            _safeStr(data['counselingType']),
+                          );
                           final status = _statusText(data);
                           final date = _bestCaseDate(data);
                           final concern = _buildReasonSummary(data);
@@ -1951,20 +2410,107 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      useSafeArea: true,
-      showDragHandle: true,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (_) => SizedBox(
-        height: MediaQuery.of(context).size.height * 0.92,
-        child: SingleChildScrollView(
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
           padding: const EdgeInsets.all(12),
-          child: _buildCaseDetailsPane(
+          child: _buildCaseDetailsSheetShell(
+            sheetContext: sheetContext,
             caseId: doc.id,
             data: doc.data(),
             scale: 1.0,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCaseDetailsSheetShell({
+    required BuildContext sheetContext,
+    required String caseId,
+    required Map<String, dynamic> data,
+    required double scale,
+  }) {
+    return SizedBox(
+      height: MediaQuery.of(sheetContext).size.height * 0.92,
+      child: OsaPanelCard(
+        radius: 24,
+        withShadow: true,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(24),
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(18, 14, 10, 10),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Container(
+                            width: 42,
+                            height: 42,
+                            decoration: BoxDecoration(
+                              color: primaryColor.withValues(alpha: 0.08),
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: primaryColor.withValues(alpha: 0.14),
+                              ),
+                            ),
+                            child: const Icon(
+                              Icons.fact_check_outlined,
+                              color: primaryColor,
+                              size: 20,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          const Text(
+                            'Counseling Case Details',
+                            style: TextStyle(
+                              color: textDark,
+                              fontWeight: FontWeight.w900,
+                              fontSize: 18,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          const Text(
+                            'Review your case summary, counseling status, and submitted referral history.',
+                            style: TextStyle(
+                              color: hintColor,
+                              fontWeight: FontWeight.w700,
+                              fontSize: 12.8,
+                              height: 1.4,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.of(sheetContext).pop(),
+                      tooltip: 'Close',
+                      icon: const Icon(Icons.close_rounded, color: hintColor),
+                    ),
+                  ],
+                ),
+              ),
+              Divider(
+                height: 1,
+                thickness: 1,
+                color: Colors.black.withValues(alpha: 0.06),
+              ),
+              Expanded(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+                  child: _buildCaseDetailsPane(
+                    caseId: caseId,
+                    data: data,
+                    scale: scale,
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       ),
@@ -2051,7 +2597,7 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
     final left = Column(
       children: [
         _reasonGroupCard(
-          title: 'Moods / Behaviors',
+          title: 'Academic Performance Information',
           options: _moodOptions,
           selected: _moodsSelected,
           otherController: _otherMoodCtrl,
@@ -2060,7 +2606,7 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
         ),
         SizedBox(height: 10 * scale),
         _reasonGroupCard(
-          title: 'Relationships',
+          title: 'Physical Attributes',
           options: _relationshipOptions,
           selected: _relationshipSelected,
           otherController: _otherRelationshipCtrl,
@@ -2073,7 +2619,7 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
     final right = Column(
       children: [
         _reasonGroupCard(
-          title: 'School Concerns',
+          title: 'Crisis Indicators',
           options: _schoolOptions,
           selected: _schoolSelected,
           otherController: _otherSchoolCtrl,
@@ -2082,7 +2628,7 @@ class _StudentCounselingPageState extends State<StudentCounselingPage> {
         ),
         SizedBox(height: 10 * scale),
         _reasonGroupCard(
-          title: 'Home Concerns',
+          title: 'Atypical Behavior',
           options: _homeOptions,
           selected: _homeSelected,
           otherController: _otherHomeCtrl,

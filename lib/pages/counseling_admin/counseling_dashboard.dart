@@ -1,36 +1,98 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../shared/handbook/hb_handbook_page.dart';
 import '../shared/notifications/app_notifications_ui.dart';
 import '../shared/profile/unified_profile_page.dart';
-import '../shared/welcome_screen_page.dart';
 import '../shared/widgets/app_branding.dart';
 import '../shared/widgets/app_theme_tokens.dart';
 import '../shared/widgets/logout_confirm_dialog.dart';
 import '../shared/widgets/responsive_layout_tokens.dart';
 import '../shared/widgets/role_shell_scaffold.dart';
+import 'package:apps/services/app_router.dart';
 import '../professor/MySubmittedReportPage.dart';
 import '../professor/professor_counseling_page.dart';
 import '../professor/violation_report_page.dart';
 import '../osa_admin/counseling_setup_page.dart';
+import 'counseling_analytics_page.dart';
 import 'counseling_meeting_schedule_page.dart';
-import 'archive/counseling_appointments_page.dart';
-import 'archive/counseling_home_page.dart';
+import 'counseling_appointments_page.dart';
+import 'counseling_home_page.dart';
+import 'package:apps/services/app_firestore.dart';
+import 'package:apps/services/counseling_setup_status_service.dart';
 
 class CounselingDashboard extends StatefulWidget {
-  const CounselingDashboard({super.key});
+  final String section;
+  final String? tabDeepLink;
+  final String? handbookSectionId;
+  final String? handbookHighlightText;
+
+  const CounselingDashboard({
+    super.key,
+    this.section = 'dashboard',
+    this.tabDeepLink,
+    this.handbookSectionId,
+    this.handbookHighlightText,
+  });
+
+  static const _sectionToIndex = <String, int>{
+    'dashboard': 0,
+    'handbook': 1,
+    'review': 2,
+    'referral': 3,
+    'report': 4,
+    'my-reports': 5,
+    'records': 6,
+    'analytics': 7,
+    'meeting-schedule': 8,
+    'setup': 9,
+    'profile': 10,
+    'notifications': 11,
+  };
+
+  static const _indexToSection = <int, String>{
+    0: 'dashboard',
+    1: 'handbook',
+    2: 'review',
+    3: 'referral',
+    4: 'report',
+    5: 'my-reports',
+    6: 'records',
+    7: 'analytics',
+    8: 'meeting-schedule',
+    9: 'setup',
+    10: 'profile',
+    11: 'notifications',
+  };
+
+  static int indexForSection(String section) => _sectionToIndex[section] ?? 0;
+
+  static String sectionForIndex(int index) =>
+      _indexToSection[index] ?? 'dashboard';
+
+  static String pathForSection(String section, {Map<String, String>? query}) {
+    final base = AppRoutes.withSection(AppRoutes.counselingAdmin, section);
+    if (query == null || query.isEmpty) return base;
+    return Uri(path: base, queryParameters: query).toString();
+  }
 
   @override
   State<CounselingDashboard> createState() => _CounselingDashboardState();
 }
 
 class _CounselingDashboardState extends State<CounselingDashboard> {
-  int _currentIndex = 0;
+  static final Map<String, String> _sessionTabBySection = <String, String>{};
+  late int _currentIndex;
   bool _settingsOpen = false;
   bool _showDesktopNotifications = false;
+  bool _counselingSetupChecked = false;
+  bool _counselingMeetingScheduleModalShown = false;
   static const List<int> _mobileNavIndexes = <int>[0, 1, 2, 5, 6, 7];
+  static const int _notificationsIndex = 11;
 
   static const bg = AppColors.background;
   static const primary = AppColors.primary;
@@ -38,22 +100,85 @@ class _CounselingDashboardState extends State<CounselingDashboard> {
   static const textDark = AppColors.textDark;
   static const surface = AppColors.surface;
 
+  @override
+  void initState() {
+    super.initState();
+    _currentIndex = CounselingDashboard.indexForSection(widget.section);
+    final incomingTab = (widget.tabDeepLink ?? '').trim();
+    final incomingSection = widget.section.trim();
+    if (incomingTab.isNotEmpty &&
+        (incomingSection == 'review' ||
+            incomingSection == 'my-reports' ||
+            incomingSection == 'records')) {
+      _sessionTabBySection[incomingSection] = incomingTab;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _ensureSectionTabQuery();
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _maybeShowCounselingSetupModal();
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant CounselingDashboard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final nextIndex = CounselingDashboard.indexForSection(widget.section);
+    if (_currentIndex != nextIndex) {
+      setState(() => _currentIndex = nextIndex);
+    }
+    final incomingTab = (widget.tabDeepLink ?? '').trim();
+    final incomingSection = widget.section.trim();
+    if (incomingTab.isNotEmpty &&
+        (incomingSection == 'review' ||
+            incomingSection == 'my-reports' ||
+            incomingSection == 'records')) {
+      _sessionTabBySection[incomingSection] = incomingTab;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _ensureSectionTabQuery();
+    });
+  }
+
   List<Widget> get _pages => [
     const CounselingHomePage(),
-    const HbHandbookPage(hideTopHeader: true),
-    const CounselingAppointmentsPage(),
+    HbHandbookPage(
+      hideTopHeader: true,
+      initialSectionId: widget.handbookSectionId,
+      initialHighlightText: widget.handbookHighlightText,
+      openSelectedOnMobile: true,
+    ),
+    CounselingAppointmentsPage(
+      initialTab: _effectiveTabForSection('review'),
+      onTabChanged: (tabKey) => _syncSectionTab('review', tabKey),
+    ),
     const ProfessorCounselingPage(),
     const ViolationReportPage(),
     MySubmittedCasesPage(
-      onOpenViolationReport: _openViolationReportModal,
-      onOpenCounselingReferral: _openCounselingReferralModal,
+      onOpenViolationReport: () => _go(4),
+      onOpenCounselingReferral: () => _go(3),
+      initialTab: _effectiveTabForSection('my-reports'),
+      onTabChanged: (tabKey) => _syncSectionTab('my-reports', tabKey),
     ),
-    const _CounselingRecordsPlaceholderPage(),
-    const _CounselingAnalyticsPlaceholderPage(),
+    CounselingRecordsPage(
+      initialTab: _effectiveTabForSection('records'),
+      onTabChanged: (tabKey) => _syncSectionTab('records', tabKey),
+    ),
+    const CounselingAnalyticsPage(),
     const CounselingMeetingSchedulePage(),
     const CounselingSetupPage(),
     const UnifiedProfilePage(),
+    AppNotificationsContent(onBack: () => _go(0)),
   ];
+
+  String? _effectiveTabForSection(String section) {
+    if (widget.section == section) {
+      final explicit = (widget.tabDeepLink ?? '').trim();
+      if (explicit.isNotEmpty) return explicit;
+    }
+    final remembered = (_sessionTabBySection[section] ?? '').trim();
+    return remembered.isEmpty ? null : remembered;
+  }
 
   final List<_NavItem> _navItems = const [
     _NavItem(Icons.dashboard_rounded, 'Dashboard'),
@@ -90,6 +215,8 @@ class _CounselingDashboardState extends State<CounselingDashboard> {
         return 'Counseling Setup';
       case 10:
         return 'Profile';
+      case _notificationsIndex:
+        return 'Notifications';
       default:
         return 'Counseling Portal';
     }
@@ -100,57 +227,258 @@ class _CounselingDashboardState extends State<CounselingDashboard> {
   }
 
   Future<void> _goAsync(int i) async {
-    if (i == 3) {
-      await _openCounselingReferralModal();
-      return;
-    }
-    if (i == 4) {
-      await _openViolationReportModal();
-      return;
-    }
-    if (!mounted) return;
-    setState(() => _currentIndex = i);
+    final section = CounselingDashboard.sectionForIndex(i);
+    final tab = _defaultTabForSection(section);
+    final target = CounselingDashboard.pathForSection(
+      section,
+      query: tab == null ? null : <String, String>{'tab': tab},
+    );
+    if (GoRouterState.of(context).uri.toString() == target) return;
+    context.go(target);
   }
 
-  Future<void> _openFormModal({
+  String? _defaultTabForSection(String section) {
+    final remembered = (_sessionTabBySection[section] ?? '').trim();
+    if (remembered.isNotEmpty) return remembered;
+    switch (section) {
+      case 'review':
+      case 'records':
+        return 'all';
+      case 'my-reports':
+        return 'violation';
+      default:
+        return null;
+    }
+  }
+
+  void _ensureSectionTabQuery() {
+    if (!mounted) return;
+    final section = CounselingDashboard.sectionForIndex(_currentIndex);
+    final defaultTab = _defaultTabForSection(section);
+    if (defaultTab == null) return;
+    final currentUri = GoRouterState.of(context).uri;
+    final currentTab = (currentUri.queryParameters['tab'] ?? '').trim();
+    if (currentTab.isNotEmpty) return;
+    final target = CounselingDashboard.pathForSection(
+      section,
+      query: <String, String>{'tab': defaultTab},
+    );
+    if (target == currentUri.toString()) return;
+    context.replace(target);
+  }
+
+  void _syncSectionTab(String section, String tabKey) {
+    final currentSection = CounselingDashboard.sectionForIndex(_currentIndex);
+    if (currentSection != section) return;
+    _sessionTabBySection[section] = tabKey;
+    final currentUri = GoRouterState.of(context).uri;
+    final currentTab = (currentUri.queryParameters['tab'] ?? '').trim();
+    if (currentTab == tabKey) return;
+    final target = CounselingDashboard.pathForSection(
+      section,
+      query: <String, String>{'tab': tabKey},
+    );
+    if (target == currentUri.toString()) return;
+    context.go(target);
+  }
+
+  Future<CounselingSetupStatus?> _loadCounselingSetupStatus() async {
+    try {
+      return await CounselingSetupStatusService().load();
+    } catch (error) {
+      debugPrint('Failed to load counseling setup status: $error');
+      return null;
+    }
+  }
+
+  String _meetingScheduleReminderKey(String userId) {
+    return 'counseling_meeting_schedule_seen_term_$userId';
+  }
+
+  Future<String?> _loadLastSeenMeetingScheduleKey(String userId) async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_meetingScheduleReminderKey(userId));
+  }
+
+  Future<void> _markMeetingScheduleSeen({
+    required String userId,
+    required CounselingSetupStatus status,
+  }) async {
+    final schoolYearId = status.activeSchoolYearId.trim();
+    final termId = status.activeTermId.trim();
+    if (schoolYearId.isEmpty || termId.isEmpty) return;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _meetingScheduleReminderKey(userId),
+      '$schoolYearId::$termId',
+    );
+  }
+
+  Future<void> _maybeShowCounselingSetupModal() async {
+    if (_counselingSetupChecked || !mounted || _currentIndex != 0) return;
+    _counselingSetupChecked = true;
+
+    final status = await _loadCounselingSetupStatus();
+    if (!mounted || status == null || _currentIndex != 0) return;
+
+    if (!status.hasCounselingSetup) {
+      await _showCounselingSetupModal(status);
+    }
+
+    if (!mounted || _currentIndex != 0) return;
+    await _maybeShowMeetingScheduleModalIfNeeded(status: status);
+  }
+
+  Future<void> _maybeShowMeetingScheduleModalIfNeeded({
+    CounselingSetupStatus? status,
+  }) async {
+    if (_counselingMeetingScheduleModalShown ||
+        !mounted ||
+        _currentIndex != 0) {
+      return;
+    }
+
+    final resolvedStatus = status ?? await _loadCounselingSetupStatus();
+    if (!mounted || resolvedStatus == null || _currentIndex != 0) return;
+    if (resolvedStatus.hasMeetingScheduleSetup) return;
+
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+    final currentKey =
+        '${resolvedStatus.activeSchoolYearId}::${resolvedStatus.activeTermId}';
+    final lastSeenKey = await _loadLastSeenMeetingScheduleKey(user.uid);
+    if (lastSeenKey == currentKey) return;
+
+    _counselingMeetingScheduleModalShown = true;
+    await _showMeetingScheduleModal(resolvedStatus);
+    await _markMeetingScheduleSeen(userId: user.uid, status: resolvedStatus);
+  }
+
+  Future<void> _showCounselingSetupModal(CounselingSetupStatus status) async {
+    await _showSetupDialog(
+      title: 'Counseling setup required',
+      subtitle:
+          'Complete the minimum setup below before referrals can be submitted.',
+      icon: Icons.checklist_rtl_rounded,
+      sections: [
+        _buildSetupSection(
+          title: 'Minimum setup',
+          subtitle:
+              'This is the minimum counseling setup required for referrals.',
+          children: [
+            _buildSetupChecklistRow(
+              label: 'Counseling group',
+              ready: status.hasCounselingGroups,
+              missingHint: 'Add at least one active counseling group.',
+            ),
+            const SizedBox(height: 8),
+            _buildSetupChecklistRow(
+              label: 'Counseling item',
+              ready: status.hasCounselingItems,
+              missingHint:
+                  'Add at least one active counseling item inside a group.',
+            ),
+          ],
+        ),
+      ],
+      primaryLabel: 'Open Counseling Setup',
+      primaryIcon: Icons.open_in_new_rounded,
+      onPrimaryPressed: () => _go(9),
+    );
+  }
+
+  Future<void> _showMeetingScheduleModal(CounselingSetupStatus status) async {
+    await _showSetupDialog(
+      title: 'Meeting schedule required',
+      subtitle:
+          'The active semester changed. Confirm the schedule template before students reserve slots.',
+      icon: Icons.calendar_month_rounded,
+      sections: [
+        _buildSetupSection(
+          title: 'Meeting schedule',
+          subtitle:
+              'Use the current semester to keep booking slots aligned with the active term.',
+          children: [
+            _buildSetupChecklistRow(
+              label: 'Active semester',
+              ready: status.hasActiveTerm,
+              missingHint:
+                  'Set an active semester before generating meeting slots.',
+            ),
+            const SizedBox(height: 8),
+            _buildSetupChecklistRow(
+              label: 'Meeting schedule template',
+              ready:
+                  status.hasMeetingScheduleTemplate ||
+                  status.hasMeetingScheduleSlots,
+              missingHint:
+                  'Create the meeting schedule template for the active term.',
+            ),
+          ],
+        ),
+      ],
+      primaryLabel: 'Open Meeting Schedule',
+      primaryIcon: Icons.open_in_new_rounded,
+      onPrimaryPressed: () => _go(8),
+    );
+  }
+
+  Future<void> _showSetupDialog({
     required String title,
-    required Widget child,
-    String? subtitle,
+    required String subtitle,
+    required IconData icon,
+    required List<Widget> sections,
+    required String primaryLabel,
+    required IconData primaryIcon,
+    required VoidCallback onPrimaryPressed,
   }) async {
     await showDialog<void>(
       context: context,
-      barrierDismissible: false,
+      barrierDismissible: true,
       builder: (dialogContext) {
-        final isFlatHeaderModal =
-            title == 'Report Violation' || title == 'Counselling Referral';
-        final size = MediaQuery.of(dialogContext).size;
-        final isDesktop = size.width >= 900;
-        final maxWidth = isDesktop ? 1180.0 : size.width - 20;
-        final maxHeight = size.height * 0.92;
         return Dialog(
-          insetPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
-          clipBehavior: Clip.antiAlias,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          child: SizedBox(
-            width: maxWidth,
-            height: maxHeight,
-            child: Column(
-              children: [
-                Container(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 10, 10),
-                  decoration: BoxDecoration(
-                    color: isFlatHeaderModal ? Colors.white : surface,
-                    border: isFlatHeaderModal
-                        ? null
-                        : Border(
-                            bottom: BorderSide(
-                              color: Colors.black.withValues(alpha: 0.08),
-                            ),
-                          ),
+          insetPadding: const EdgeInsets.symmetric(
+            horizontal: 20,
+            vertical: 24,
+          ),
+          backgroundColor: Colors.transparent,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 820),
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.fromLTRB(28, 26, 28, 22),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(24),
+                border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.05),
+                    blurRadius: 24,
+                    offset: const Offset(0, 12),
                   ),
-                  child: Row(
+                ],
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      Container(
+                        width: 46,
+                        height: 46,
+                        decoration: BoxDecoration(
+                          color: primary.withValues(alpha: 0.10),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: primary.withValues(alpha: 0.18),
+                          ),
+                        ),
+                        child: Icon(icon, color: primary),
+                      ),
+                      const SizedBox(width: 14),
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -159,39 +487,41 @@ class _CounselingDashboardState extends State<CounselingDashboard> {
                             Text(
                               title,
                               style: const TextStyle(
+                                color: primary,
+                                fontSize: 22,
                                 fontWeight: FontWeight.w900,
-                                color: textDark,
-                                fontSize: 16,
+                                letterSpacing: -0.3,
                               ),
                             ),
-                            if ((subtitle ?? '').trim().isNotEmpty) ...[
-                              const SizedBox(height: 4),
-                              Text(
-                                subtitle!.trim(),
-                                style: TextStyle(
-                                  color: hint.withValues(alpha: 0.95),
-                                  fontWeight: FontWeight.w700,
-                                  fontSize: 12.5,
-                                ),
+                            const SizedBox(height: 5),
+                            Text(
+                              subtitle,
+                              style: const TextStyle(
+                                color: hint,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w700,
+                                height: 1.35,
                               ),
-                            ],
+                            ),
                           ],
-                        ),
-                      ),
-                      IconButton(
-                        tooltip: 'Close',
-                        onPressed: () => Navigator.of(dialogContext).pop(),
-                        icon: const Icon(Icons.close_rounded, size: 20),
-                        style: IconButton.styleFrom(
-                          backgroundColor: Colors.black.withValues(alpha: 0.06),
-                          visualDensity: VisualDensity.compact,
                         ),
                       ),
                     ],
                   ),
-                ),
-                Expanded(child: child),
-              ],
+                  const SizedBox(height: 18),
+                  ...sections,
+                  const SizedBox(height: 18),
+                  _buildSetupDialogActions(
+                    dialogContext: dialogContext,
+                    primaryLabel: primaryLabel,
+                    primaryIcon: primaryIcon,
+                    onPrimaryPressed: () {
+                      Navigator.of(dialogContext).pop();
+                      onPrimaryPressed();
+                    },
+                  ),
+                ],
+              ),
             ),
           ),
         );
@@ -199,23 +529,168 @@ class _CounselingDashboardState extends State<CounselingDashboard> {
     );
   }
 
-  Future<void> _openCounselingReferralModal() async {
-    await _openFormModal(
-      title: 'Counselling Referral',
-      child: const ProfessorCounselingPage(),
+  Widget _buildSetupDialogActions({
+    required BuildContext dialogContext,
+    required String primaryLabel,
+    required IconData primaryIcon,
+    required VoidCallback onPrimaryPressed,
+  }) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final stacked = constraints.maxWidth < 640;
+        final primaryButton = FilledButton.icon(
+          onPressed: onPrimaryPressed,
+          style: FilledButton.styleFrom(
+            backgroundColor: primary,
+            foregroundColor: Colors.white,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          ),
+          icon: Icon(primaryIcon, size: 18),
+          label: Text(
+            primaryLabel,
+            style: const TextStyle(fontWeight: FontWeight.w900),
+          ),
+        );
+
+        if (stacked) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  TextButton(
+                    onPressed: () => Navigator.of(dialogContext).pop(),
+                    child: const Text(
+                      'Later',
+                      style: TextStyle(
+                        color: hint,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ),
+                  const Spacer(),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Align(alignment: Alignment.centerRight, child: primaryButton),
+            ],
+          );
+        }
+
+        return Row(
+          children: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text(
+                'Later',
+                style: TextStyle(color: hint, fontWeight: FontWeight.w900),
+              ),
+            ),
+            const Spacer(),
+            primaryButton,
+          ],
+        );
+      },
     );
   }
 
-  Future<void> _openViolationReportModal() async {
-    await _openFormModal(
-      title: 'Report Violation',
-      subtitle: 'Search a student, complete incident details, and submit.',
-      child: ViolationReportPage(
-        onOpenMyReportsInShell: () {
-          Navigator.of(context, rootNavigator: true).pop();
-          _go(5);
-        },
+  Widget _buildSetupSection({
+    required String title,
+    required String subtitle,
+    required List<Widget> children,
+  }) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.025),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
       ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: const TextStyle(
+              color: textDark,
+              fontWeight: FontWeight.w900,
+              fontSize: 14,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            subtitle,
+            style: const TextStyle(
+              color: hint,
+              fontSize: 12.5,
+              fontWeight: FontWeight.w700,
+              height: 1.35,
+            ),
+          ),
+          const SizedBox(height: 12),
+          ...children,
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSetupChecklistRow({
+    required String label,
+    required bool ready,
+    required String missingHint,
+  }) {
+    final color = ready ? const Color(0xFF2F855A) : const Color(0xFFC53030);
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          margin: const EdgeInsets.only(top: 2),
+          width: 22,
+          height: 22,
+          decoration: BoxDecoration(
+            color: ready
+                ? const Color(0xFF2F855A).withValues(alpha: 0.10)
+                : const Color(0xFFC53030).withValues(alpha: 0.10),
+            shape: BoxShape.circle,
+            border: Border.all(color: color.withValues(alpha: 0.18)),
+          ),
+          child: Icon(
+            ready ? Icons.check_rounded : Icons.close_rounded,
+            size: 14,
+            color: color,
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: const TextStyle(
+                  color: textDark,
+                  fontWeight: FontWeight.w900,
+                  fontSize: 13.5,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                ready ? 'Ready' : missingHint,
+                style: TextStyle(
+                  color: ready ? const Color(0xFF2F855A) : hint,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 12.2,
+                  height: 1.3,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 
@@ -238,14 +713,7 @@ class _CounselingDashboardState extends State<CounselingDashboard> {
 
   Future<void> _openNotificationsPage() async {
     _closeDesktopNotifications();
-    await Navigator.of(context).push(
-      PageRouteBuilder<void>(
-        pageBuilder: (context, animation, secondaryAnimation) =>
-            const AppNotificationsPage(),
-        transitionDuration: Duration.zero,
-        reverseTransitionDuration: Duration.zero,
-      ),
-    );
+    _go(_notificationsIndex);
   }
 
   Future<void> _logout() async {
@@ -253,12 +721,7 @@ class _CounselingDashboardState extends State<CounselingDashboard> {
     if (!mounted || !confirmed) return;
     await FirebaseAuth.instance.signOut();
     if (!mounted) return;
-
-    Navigator.pushAndRemoveUntil(
-      context,
-      MaterialPageRoute(builder: (_) => const WelcomeScreen()),
-      (route) => false,
-    );
+    context.go('/welcome');
   }
 
   String _displayName(Map<String, dynamic> data, User user) {
@@ -276,6 +739,24 @@ class _CounselingDashboardState extends State<CounselingDashboard> {
   String _email(Map<String, dynamic> data, User user) {
     final e = (data['email'] ?? user.email ?? '').toString().trim();
     return e.isEmpty ? '--' : e;
+  }
+
+  String _profilePhotoUrl(Map<String, dynamic> data) {
+    final direct = (data['photoUrl'] ?? '').toString().trim();
+    if (direct.isNotEmpty) return direct;
+    final profilePhoto = (data['profilePhotoUrl'] ?? '').toString().trim();
+    if (profilePhoto.isNotEmpty) return profilePhoto;
+    final studentProfile = data['studentProfile'] as Map<String, dynamic>?;
+    final nestedStudentPhoto = (studentProfile?['photoUrl'] ?? '')
+        .toString()
+        .trim();
+    if (nestedStudentPhoto.isNotEmpty) return nestedStudentPhoto;
+    final employeeProfile = data['employeeProfile'] as Map<String, dynamic>?;
+    final nestedEmployeePhoto = (employeeProfile?['photoUrl'] ?? '')
+        .toString()
+        .trim();
+    if (nestedEmployeePhoto.isNotEmpty) return nestedEmployeePhoto;
+    return '';
   }
 
   String _title(Map<String, dynamic> data) {
@@ -303,7 +784,7 @@ class _CounselingDashboardState extends State<CounselingDashboard> {
     }
 
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance
+      stream: AppFirestore.instance
           .collection('users')
           .doc(user.uid)
           .snapshots(),
@@ -312,6 +793,7 @@ class _CounselingDashboardState extends State<CounselingDashboard> {
         final accountName = _displayName(data, user);
         final accountEmail = _email(data, user);
         final accountTitle = _title(data);
+        final profilePhotoUrl = _profilePhotoUrl(data);
 
         return LayoutBuilder(
           builder: (context, constraints) {
@@ -338,6 +820,7 @@ class _CounselingDashboardState extends State<CounselingDashboard> {
               accountTitle: accountTitle,
               accountEmail: accountEmail,
               accountName: accountName,
+              profilePhotoUrl: profilePhotoUrl,
             );
 
             return RoleShellScaffold(
@@ -375,6 +858,7 @@ class _CounselingDashboardState extends State<CounselingDashboard> {
                   accountTitle: accountTitle,
                   accountEmail: accountEmail,
                   accountName: accountName,
+                  profilePhotoUrl: profilePhotoUrl,
                 ),
               ),
               sidebar: menuPanel,
@@ -450,6 +934,7 @@ class _CounselMenuPanel extends StatelessWidget {
   final String accountTitle;
   final String accountEmail;
   final String accountName;
+  final String profilePhotoUrl;
 
   const _CounselMenuPanel({
     required this.currentIndex,
@@ -467,7 +952,84 @@ class _CounselMenuPanel extends StatelessWidget {
     required this.accountTitle,
     required this.accountEmail,
     required this.accountName,
+    required this.profilePhotoUrl,
   });
+
+  bool _isHttpPhotoUrl(String value) {
+    return value.startsWith('http://') || value.startsWith('https://');
+  }
+
+  Future<String> _resolvePhotoUrl(String source) async {
+    final value = source.trim();
+    if (value.isEmpty) return '';
+    if (_isHttpPhotoUrl(value)) {
+      if (value.contains('firebasestorage.googleapis.com') ||
+          value.contains('firebasestorage.app')) {
+        try {
+          return await FirebaseStorage.instance
+              .refFromURL(value)
+              .getDownloadURL();
+        } catch (_) {
+          return value;
+        }
+      }
+      return value;
+    }
+    try {
+      if (value.startsWith('gs://')) {
+        return await FirebaseStorage.instance
+            .refFromURL(value)
+            .getDownloadURL();
+      }
+      return await FirebaseStorage.instance.ref(value).getDownloadURL();
+    } catch (_) {
+      return '';
+    }
+  }
+
+  Widget _buildProfileAvatar() {
+    final source = profilePhotoUrl.trim();
+    const fallback = Icon(
+      Icons.person_outline_rounded,
+      size: 24,
+      color: Colors.white,
+    );
+    final fallbackAvatar = const CircleAvatar(
+      backgroundColor: Colors.white24,
+      child: fallback,
+    );
+
+    Widget photoAvatar(String url) {
+      return ClipOval(
+        child: Image.network(
+          url,
+          width: 40,
+          height: 40,
+          fit: BoxFit.cover,
+          webHtmlElementStrategy: WebHtmlElementStrategy.prefer,
+          errorBuilder: (_, _, _) => fallbackAvatar,
+        ),
+      );
+    }
+
+    if (source.isEmpty) return fallbackAvatar;
+    if (_isHttpPhotoUrl(source)) {
+      return FutureBuilder<String>(
+        future: _resolvePhotoUrl(source),
+        builder: (context, snapshot) {
+          final resolved = (snapshot.data ?? source).trim();
+          return resolved.isEmpty ? fallbackAvatar : photoAvatar(resolved);
+        },
+      );
+    }
+    return FutureBuilder<String>(
+      future: _resolvePhotoUrl(source),
+      builder: (context, snapshot) {
+        final resolved = (snapshot.data ?? '').trim();
+        return resolved.isEmpty ? fallbackAvatar : photoAvatar(resolved);
+      },
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -527,11 +1089,7 @@ class _CounselMenuPanel extends StatelessWidget {
                           color: Colors.white.withValues(alpha: 0.16),
                           borderRadius: BorderRadius.circular(10),
                         ),
-                        child: const Icon(
-                          Icons.person_outline_rounded,
-                          size: 24,
-                          color: Colors.white,
-                        ),
+                        child: _buildProfileAvatar(),
                       ),
                       const SizedBox(width: 10),
                       Expanded(
@@ -781,85 +1339,6 @@ class _CounselSubItem extends StatelessWidget {
                   fontWeight: active ? FontWeight.w900 : FontWeight.w700,
                   fontSize: 13,
                 ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _CounselingRecordsPlaceholderPage extends StatelessWidget {
-  const _CounselingRecordsPlaceholderPage();
-
-  @override
-  Widget build(BuildContext context) {
-    return const _CounselingPlaceholderScaffold(
-      icon: Icons.folder_open_rounded,
-      title: 'Counselling Records',
-      subtitle: 'This module is not yet implemented.',
-    );
-  }
-}
-
-class _CounselingAnalyticsPlaceholderPage extends StatelessWidget {
-  const _CounselingAnalyticsPlaceholderPage();
-
-  @override
-  Widget build(BuildContext context) {
-    return const _CounselingPlaceholderScaffold(
-      icon: Icons.insights_rounded,
-      title: 'Counselling Analytics',
-      subtitle: 'This module is not yet implemented.',
-    );
-  }
-}
-
-class _CounselingPlaceholderScaffold extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final String subtitle;
-
-  const _CounselingPlaceholderScaffold({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Container(
-        constraints: const BoxConstraints(maxWidth: 520),
-        margin: const EdgeInsets.all(20),
-        padding: const EdgeInsets.fromLTRB(18, 20, 18, 20),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 42, color: AppColors.primary),
-            const SizedBox(height: 10),
-            Text(
-              title,
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                color: AppColors.textDark,
-                fontWeight: FontWeight.w900,
-                fontSize: 20,
-              ),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              subtitle,
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                color: AppColors.hint,
-                fontWeight: FontWeight.w700,
               ),
             ),
           ],

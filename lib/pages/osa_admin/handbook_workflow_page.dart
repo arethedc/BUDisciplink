@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -7,6 +8,7 @@ import 'package:flutter/material.dart';
 import '../shared/widgets/app_layout_tokens.dart';
 import 'widgets/osa_common_widgets.dart';
 import 'package:apps/pages/shared/widgets/app_inline_notice.dart';
+import 'package:apps/services/app_firestore.dart';
 
 class HandbookWorkflowPage extends StatefulWidget {
   final ValueChanged<String>? onOpenEditorForVersion;
@@ -26,20 +28,19 @@ class _HandbookWorkflowPageState extends State<HandbookWorkflowPage> {
   static const _colHbSection = 'hb_section';
   static const _colHbContents = 'hb_contents';
 
-  final FirebaseFirestore _db = FirebaseFirestore.instance;
+  final FirebaseFirestore _db = AppFirestore.instance;
 
-  bool _loading = true;
   bool _busy = false;
-  String? _error;
-
-  String? _activeVersionId;
-
-  final List<_VersionEntry> _versions = <_VersionEntry>[];
 
   @override
   void initState() {
     super.initState();
     _reload();
+  }
+
+  @override
+  void dispose() {
+    super.dispose();
   }
 
   String _normalizeStatus(String raw) {
@@ -264,9 +265,9 @@ class _HandbookWorkflowPageState extends State<HandbookWorkflowPage> {
     );
   }
 
-  int _defaultSchoolYearStart() {
+  int _defaultSchoolYearStartFromEntries(Iterable<_VersionEntry> entries) {
     final starts = <int>[];
-    for (final entry in _versions) {
+    for (final entry in entries) {
       final fromId = _extractSchoolYearStart(entry.id);
       if (fromId != null) starts.add(fromId);
       final fromLabel = _extractSchoolYearStart(entry.label);
@@ -279,6 +280,12 @@ class _HandbookWorkflowPageState extends State<HandbookWorkflowPage> {
     final now = DateTime.now();
     final currentSchoolYearStart = now.month >= 6 ? now.year : now.year - 1;
     return currentSchoolYearStart + 1;
+  }
+
+  Future<int> _resolveDefaultSchoolYearStart() async {
+    final versionsSnap = await _db.collection(_colHbVersion).get();
+    final entries = _versionEntriesFromDocs(versionsSnap.docs, null);
+    return _defaultSchoolYearStartFromEntries(entries);
   }
 
   Future<_GeneratedVersionCode> _generateVersionCodeForSchoolYear(
@@ -325,25 +332,13 @@ class _HandbookWorkflowPageState extends State<HandbookWorkflowPage> {
 
     var nextSequence = maxSequence + 1;
     var versionCode = '$prefix$nextSequence';
-    while ((await _db.collection(_colHbVersion).doc(versionCode).get()).exists) {
+    while ((await _db.collection(_colHbVersion).doc(versionCode).get())
+        .exists) {
       nextSequence += 1;
       versionCode = '$prefix$nextSequence';
     }
 
     return _GeneratedVersionCode(code: versionCode, sequence: nextSequence);
-  }
-
-  Future<Set<String>> _discoverVersionIds() async {
-    final found = <String>{};
-
-    final nodeSnap = await _db.collection(_colHbSection).get();
-    for (final doc in nodeSnap.docs) {
-      final data = doc.data();
-      final id = (data['versionId'] ?? '').toString().trim();
-      if (id.isNotEmpty) found.add(id);
-    }
-
-    return found;
   }
 
   Future<Map<String, dynamic>> _loadEditorMeta() async {
@@ -376,11 +371,65 @@ class _HandbookWorkflowPageState extends State<HandbookWorkflowPage> {
     await _commitChunkedBatch(writes);
   }
 
+  List<_VersionEntry> _versionEntriesFromDocs(
+    Iterable<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+    String? activeVersionId,
+  ) {
+    final map = <String, _VersionEntry>{};
+    for (final doc in docs) {
+      final id = doc.id.trim();
+      if (id.isEmpty || id == 'current') continue;
+      final data = doc.data();
+      final seqRaw = data['sequence'];
+      int? sequence;
+      if (seqRaw is int) {
+        sequence = seqRaw;
+      } else if (seqRaw is num) {
+        sequence = seqRaw.toInt();
+      } else if (seqRaw != null) {
+        sequence = int.tryParse(seqRaw.toString().trim());
+      }
+      final originRaw = (data['origin'] ?? '').toString().trim().toLowerCase();
+      final isOriginal = originRaw == 'original'
+          ? true
+          : originRaw == 'duplicate'
+          ? false
+          : sequence == 1;
+      map[id] = _VersionEntry(
+        id: id,
+        label: (data['label'] ?? id).toString().trim(),
+        isOriginal: isOriginal,
+        note: (data['note'] ?? '').toString().trim().isEmpty
+            ? null
+            : (data['note'] ?? '').toString().trim(),
+        updatedAt: _asDateTime(data['updatedAt'] ?? data['createdAt']),
+      );
+    }
+
+    final versions = map.values.toList()
+      ..sort((a, b) {
+        final aIsActive = a.id == activeVersionId;
+        final bIsActive = b.id == activeVersionId;
+        if (aIsActive && !bIsActive) return -1;
+        if (!aIsActive && bIsActive) return 1;
+
+        final aTime = a.updatedAt;
+        final bTime = b.updatedAt;
+        if (aTime != null && bTime != null) {
+          final timeCompare = bTime.compareTo(aTime);
+          if (timeCompare != 0) return timeCompare;
+        } else if (aTime != null) {
+          return -1;
+        } else if (bTime != null) {
+          return 1;
+        }
+        return b.id.compareTo(a.id);
+      });
+
+    return versions;
+  }
+
   Future<void> _reload() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
     try {
       final meta = await _loadEditorMeta();
       final activeVersionIdRaw = (meta['activeVersionId'] ?? '')
@@ -389,9 +438,8 @@ class _HandbookWorkflowPageState extends State<HandbookWorkflowPage> {
       final activeVersionId = activeVersionIdRaw.isEmpty
           ? null
           : activeVersionIdRaw;
-      final editingVersionIdRaw = (meta['editingVersionId'] ?? activeVersionIdRaw)
-          .toString()
-          .trim();
+      final editingVersionIdRaw =
+          (meta['editingVersionId'] ?? activeVersionIdRaw).toString().trim();
       final editingVersionId = editingVersionIdRaw.isEmpty
           ? null
           : editingVersionIdRaw;
@@ -401,87 +449,8 @@ class _HandbookWorkflowPageState extends State<HandbookWorkflowPage> {
         activeVersionId: activeVersionId,
         versionsSnap: versionsSnap,
       );
-      final map = <String, _VersionEntry>{};
-      for (final doc in versionsSnap.docs) {
-        final id = doc.id.trim();
-        if (id.isEmpty || id == 'current') continue;
-        final data = doc.data();
-        final seqRaw = data['sequence'];
-        int? sequence;
-        if (seqRaw is int) {
-          sequence = seqRaw;
-        } else if (seqRaw is num) {
-          sequence = seqRaw.toInt();
-        } else if (seqRaw != null) {
-          sequence = int.tryParse(seqRaw.toString().trim());
-        }
-        final originRaw = (data['origin'] ?? '').toString().trim().toLowerCase();
-        final isOriginal = originRaw == 'original'
-            ? true
-            : originRaw == 'duplicate'
-            ? false
-            : sequence == 1;
-        map[id] = _VersionEntry(
-          id: id,
-          label: (data['label'] ?? id).toString().trim(),
-          isOriginal: isOriginal,
-          note: (data['note'] ?? '').toString().trim().isEmpty
-              ? null
-              : (data['note'] ?? '').toString().trim(),
-          updatedAt: _asDateTime(data['updatedAt'] ?? data['createdAt']),
-        );
-      }
-
-      final discovered = await _discoverVersionIds();
-      if (activeVersionId != null) discovered.add(activeVersionId);
-      if (editingVersionId != null) discovered.add(editingVersionId);
-      for (final id in discovered) {
-        map.putIfAbsent(
-          id,
-          () => _VersionEntry(
-            id: id,
-            label: id,
-            isOriginal: true,
-            note: null,
-            updatedAt: null,
-          ),
-        );
-      }
-
-      final versions = map.values.toList()
-        ..sort((a, b) {
-          final aIsActive = a.id == activeVersionId;
-          final bIsActive = b.id == activeVersionId;
-          if (aIsActive && !bIsActive) return -1;
-          if (!aIsActive && bIsActive) return 1;
-
-          final aTime = a.updatedAt;
-          final bTime = b.updatedAt;
-          if (aTime != null && bTime != null) {
-            final timeCompare = bTime.compareTo(aTime);
-            if (timeCompare != 0) return timeCompare;
-          } else if (aTime != null) {
-            return -1;
-          } else if (bTime != null) {
-            return 1;
-          }
-          return b.id.compareTo(a.id);
-        });
-
-      if (!mounted) return;
-      setState(() {
-        _activeVersionId = activeVersionId;
-        _versions
-          ..clear()
-          ..addAll(versions);
-        _loading = false;
-      });
     } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _loading = false;
-        _error = e.toString();
-      });
+      debugPrint('Handbook reload failed: $e');
     }
   }
 
@@ -509,6 +478,15 @@ class _HandbookWorkflowPageState extends State<HandbookWorkflowPage> {
 
   Future<void> _editVersion(_VersionEntry entry) async {
     await _setBusyWhile(() async {
+      final versionSnap = await _db
+          .collection(_colHbVersion)
+          .doc(entry.id)
+          .get();
+      if (!versionSnap.exists) {
+        await _reload();
+        _showSnack('That handbook version no longer exists.', isError: true);
+        return;
+      }
       await _db.collection(_colHbVersion).doc('current').set({
         'editingVersionId': entry.id,
         'editingVersionLabel': entry.label,
@@ -527,8 +505,9 @@ class _HandbookWorkflowPageState extends State<HandbookWorkflowPage> {
   }
 
   Future<void> _setActiveVersion(_VersionEntry target) async {
-    final activeId = _activeVersionId;
-    if (activeId != null && activeId == target.id) return;
+    final meta = await _loadEditorMeta();
+    final activeId = (meta['activeVersionId'] ?? '').toString().trim();
+    if (activeId.isNotEmpty && activeId == target.id) return;
 
     final ok = await showDialog<bool>(
       context: context,
@@ -596,16 +575,14 @@ class _HandbookWorkflowPageState extends State<HandbookWorkflowPage> {
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
 
-      if (activeId != null &&
-          activeId.trim().isNotEmpty &&
-          activeId != target.id) {
-        final previousLabel =
-            _versions
-                .where((v) => v.id == activeId)
-                .map((v) => v.label)
-                .cast<String?>()
-                .firstWhere((_) => true, orElse: () => activeId) ??
-            activeId;
+      if (activeId.isNotEmpty && activeId != target.id) {
+        final previousSnap = await _db
+            .collection(_colHbVersion)
+            .doc(activeId)
+            .get();
+        final previousLabel = (previousSnap.data()?['label'] ?? activeId)
+            .toString()
+            .trim();
         batch.set(_db.collection(_colHbVersion).doc(activeId), {
           'label': previousLabel,
           'status': 'inactive',
@@ -622,6 +599,127 @@ class _HandbookWorkflowPageState extends State<HandbookWorkflowPage> {
       } catch (_) {}
       await _reload();
       _showSnack('Active handbook set to ${target.label}');
+    });
+  }
+
+  Future<void> _deleteVersion(_VersionEntry entry) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => _buildWorkflowStyledDialog(
+        context: context,
+        icon: Icons.delete_outline_rounded,
+        title: 'Delete Handbook Version',
+        subtitle: 'This will remove the version and its handbook entries.',
+        width: 520,
+        content: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.red.withValues(alpha: 0.06),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.red.withValues(alpha: 0.16)),
+          ),
+          child: Text(
+            'Delete "${entry.label}"? This cannot be undone.',
+            style: const TextStyle(
+              color: _textDark,
+              fontWeight: FontWeight.w700,
+              fontSize: 13,
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            style: _modalSecondaryButtonStyle(),
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(context, true),
+            style: _modalPrimaryButtonStyle(
+              backgroundColor: Colors.red.shade700,
+            ),
+            icon: const Icon(Icons.delete_rounded, size: 18),
+            label: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    await _setBusyWhile(() async {
+      final versionRef = _db.collection(_colHbVersion).doc(entry.id);
+      final meta = await _loadEditorMeta();
+      final activeId = (meta['activeVersionId'] ?? '').toString().trim();
+      final versionSnap = await versionRef.get();
+      if (!versionSnap.exists) {
+        await _reload();
+        _showSnack('That handbook version was already deleted.');
+        return;
+      }
+
+      final sectionsSnap = await _db
+          .collection(_colHbSection)
+          .where('versionId', isEqualTo: entry.id)
+          .get();
+      final contentsSnap = await _db
+          .collection(_colHbContents)
+          .where('versionId', isEqualTo: entry.id)
+          .get();
+
+      final ops = <void Function(WriteBatch batch)>[];
+      for (final doc in sectionsSnap.docs) {
+        ops.add((batch) => batch.delete(doc.reference));
+      }
+      for (final doc in contentsSnap.docs) {
+        ops.add((batch) => batch.delete(doc.reference));
+      }
+      ops.add((batch) => batch.delete(versionRef));
+      await _commitChunkedBatch(ops);
+
+      final currentVersions = _versionEntriesFromDocs(
+        (await _db.collection(_colHbVersion).get()).docs,
+        activeId.isEmpty ? null : activeId,
+      ).where((v) => v.id != entry.id).toList();
+      final nextActive = currentVersions.isEmpty
+          ? null
+          : currentVersions.firstWhere(
+              (v) => v.id == activeId,
+              orElse: () => currentVersions.first,
+            );
+
+      final currentUpdates = <String, dynamic>{
+        'updatedAt': FieldValue.serverTimestamp(),
+      };
+      if (nextActive == null) {
+        currentUpdates.addAll({
+          'activeVersionId': FieldValue.delete(),
+          'activeVersionLabel': FieldValue.delete(),
+          'editingVersionId': FieldValue.delete(),
+          'editingVersionLabel': FieldValue.delete(),
+        });
+      } else {
+        currentUpdates.addAll({
+          'activeVersionId': nextActive.id,
+          'activeVersionLabel': nextActive.label,
+          'editingVersionId': nextActive.id,
+          'editingVersionLabel': nextActive.label,
+        });
+      }
+      await _db
+          .collection(_colHbVersion)
+          .doc('current')
+          .set(currentUpdates, SetOptions(merge: true));
+
+      try {
+        await _appendHandbookVersionLog(
+          versionId: entry.id,
+          action: 'delete_version',
+        );
+      } catch (_) {}
+
+      await _reload();
+      _showSnack('Deleted ${entry.label}');
     });
   }
 
@@ -803,13 +901,12 @@ class _HandbookWorkflowPageState extends State<HandbookWorkflowPage> {
     required String title,
     String? cloneFromVersionId,
   }) async {
-    final defaultStartYear = _defaultSchoolYearStart();
+    final defaultStartYear = await _resolveDefaultSchoolYearStart();
     final currentYear = DateTime.now().year;
     final selectableStartYears = <int>{
       for (int y = currentYear - 5; y <= currentYear + 5; y++) y,
       defaultStartYear,
-    }.toList()
-      ..sort();
+    }.toList()..sort();
 
     final noteController = TextEditingController();
     final result = await showDialog<_CreateVersionInput>(
@@ -906,8 +1003,7 @@ class _HandbookWorkflowPageState extends State<HandbookWorkflowPage> {
                           );
                         },
                   style: _modalPrimaryButtonStyle(),
-                  icon: const Icon(Icons.arrow_forward_rounded, size: 18),
-                  label: const Text('Continue'),
+                  label: const Text('Create'),
                 ),
               ],
             );
@@ -930,10 +1026,7 @@ class _HandbookWorkflowPageState extends State<HandbookWorkflowPage> {
 
     final schoolYear = _normalizeSchoolYearValue(input.schoolYear);
     if (schoolYear == null) {
-      _showSnack(
-        'Use school year format: SY 2025-2026',
-        isError: true,
-      );
+      _showSnack('Use school year format: SY 2025-2026', isError: true);
       return;
     }
 
@@ -1001,9 +1094,7 @@ class _HandbookWorkflowPageState extends State<HandbookWorkflowPage> {
         await _appendHandbookVersionLog(
           versionId: entry.id,
           action: 'update_note',
-          details: <String, dynamic>{
-            'hasNote': updatedNote.isNotEmpty,
-          },
+          details: <String, dynamic>{'hasNote': updatedNote.isNotEmpty},
         );
       } catch (_) {}
       await _reload();
@@ -1036,7 +1127,14 @@ class _HandbookWorkflowPageState extends State<HandbookWorkflowPage> {
   }
 
   Widget _buildVersionCard(_VersionEntry entry) {
-    final isActive = entry.id == _activeVersionId;
+    return _buildVersionCardForActiveId(entry, null);
+  }
+
+  Widget _buildVersionCardForActiveId(
+    _VersionEntry entry,
+    String? activeVersionId,
+  ) {
+    final isActive = entry.id == activeVersionId;
     final canSetActive = !isActive;
     final versionKindLabel = entry.isOriginal ? 'Original' : 'Duplicate';
 
@@ -1045,7 +1143,9 @@ class _HandbookWorkflowPageState extends State<HandbookWorkflowPage> {
         final compact = constraints.maxWidth < 520;
 
         Widget compactStatusIndicator(bool active) {
-          final color = active ? const Color(0xFF2E7D32) : const Color(0xFF9E9E9E);
+          final color = active
+              ? const Color(0xFF2E7D32)
+              : const Color(0xFF9E9E9E);
           final label = active ? 'Active' : 'Inactive';
           return Row(
             mainAxisSize: MainAxisSize.min,
@@ -1100,6 +1200,9 @@ class _HandbookWorkflowPageState extends State<HandbookWorkflowPage> {
               case 'publish':
                 _setActiveVersion(entry);
                 break;
+              case 'delete':
+                _deleteVersion(entry);
+                break;
             }
           },
           itemBuilder: (context) => [
@@ -1150,15 +1253,33 @@ class _HandbookWorkflowPageState extends State<HandbookWorkflowPage> {
                   ],
                 ),
               ),
+            PopupMenuItem<String>(
+              value: 'delete',
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.delete_outline_rounded,
+                    size: 18,
+                    color: Colors.red.shade700,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Delete',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w700,
+                      color: Colors.red.shade700,
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ],
           child: Container(
             height: 40,
             width: 40,
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(AppRadii.md),
-              border: Border.all(
-                color: _textDark.withValues(alpha: 0.20),
-              ),
+              border: Border.all(color: _textDark.withValues(alpha: 0.20)),
               color: Colors.white,
             ),
             child: const Icon(Icons.more_vert_rounded, size: 18),
@@ -1287,7 +1408,8 @@ class _HandbookWorkflowPageState extends State<HandbookWorkflowPage> {
 
   Widget _buildPaneHeader({required Widget action}) {
     const title = 'Handbook Versions';
-    const subtitle = 'Create and manage handbook versions by school year.';
+    const subtitle =
+        'Create, open, and manage handbook versions by school year.';
 
     return Container(
       color: Colors.white,
@@ -1362,28 +1484,78 @@ class _HandbookWorkflowPageState extends State<HandbookWorkflowPage> {
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    if (_loading) {
-      return const Center(child: CircularProgressIndicator());
-    }
-
-    if (_error != null) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(AppSpacing.lg),
-          child: Text(
-            _error!,
-            textAlign: TextAlign.center,
-            style: const TextStyle(
-              color: Colors.red,
-              fontWeight: FontWeight.w700,
-            ),
+  Widget _buildEmptyVersionsState({required VoidCallback onCreate}) {
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 620),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 26),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.03),
+                blurRadius: 18,
+                offset: const Offset(0, 10),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Text(
+                'No handbook versions yet',
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: _textDark,
+                  fontWeight: FontWeight.w900,
+                  fontSize: 18,
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Create the first handbook version to start managing sections and content for a school year.',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: _hint,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 12.8,
+                  height: 1.35,
+                ),
+              ),
+              const SizedBox(height: 18),
+              FilledButton.icon(
+                onPressed: _busy ? null : onCreate,
+                style: FilledButton.styleFrom(
+                  backgroundColor: _primary,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 20,
+                    vertical: 13,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                icon: const Icon(Icons.add_rounded, size: 18),
+                label: const Text(
+                  'Create Draft',
+                  style: TextStyle(fontWeight: FontWeight.w900),
+                ),
+              ),
+            ],
           ),
         ),
-      );
-    }
+      ),
+    );
+  }
 
+  @override
+  Widget build(BuildContext context) {
     return Theme(
       data: _uniformUiTheme(context),
       child: Container(
@@ -1402,35 +1574,121 @@ class _HandbookWorkflowPageState extends State<HandbookWorkflowPage> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          _buildPaneHeader(
-                            action: _buildPanelHeaderActionButton(
-                              onPressed: _busy
-                                  ? null
-                                  : () => _onCreateDraftPressed(),
-                              icon: Icons.add_rounded,
-                              label: 'Create Draft',
-                            ),
-                          ),
-                          const Divider(height: 1),
-                          const SizedBox(height: 12),
                           Expanded(
-                            child: _versions.isEmpty
-                                ? const Center(
-                                    child: Text(
-                                      'No versions found.',
-                                      style: TextStyle(
-                                        color: _hint,
-                                        fontWeight: FontWeight.w800,
-                                      ),
-                                    ),
-                                  )
-                                : ListView.separated(
-                                    itemCount: _versions.length,
-                                    separatorBuilder: (_, _) =>
-                                        const SizedBox(height: 10),
-                                    itemBuilder: (context, index) =>
-                                        _buildVersionCard(_versions[index]),
-                                  ),
+                            child:
+                                StreamBuilder<
+                                  DocumentSnapshot<Map<String, dynamic>>
+                                >(
+                                  stream: _db
+                                      .collection(_colHbVersion)
+                                      .doc('current')
+                                      .snapshots(),
+                                  builder: (context, metaSnapshot) {
+                                    if (metaSnapshot.hasError) {
+                                      return Center(
+                                        child: Text(
+                                          'Failed to load handbook state.',
+                                          textAlign: TextAlign.center,
+                                          style: TextStyle(
+                                            color: Colors.red.shade700,
+                                            fontWeight: FontWeight.w800,
+                                          ),
+                                        ),
+                                      );
+                                    }
+
+                                    final activeVersionId = metaSnapshot.data
+                                        ?.data()?['activeVersionId']
+                                        ?.toString()
+                                        .trim();
+                                    final currentActiveId =
+                                        (activeVersionId ?? '').isEmpty
+                                        ? null
+                                        : activeVersionId;
+
+                                    return StreamBuilder<
+                                      QuerySnapshot<Map<String, dynamic>>
+                                    >(
+                                      stream: _db
+                                          .collection(_colHbVersion)
+                                          .snapshots(),
+                                      builder: (context, snapshot) {
+                                        if (snapshot.hasError) {
+                                          return Center(
+                                            child: Text(
+                                              'Failed to load handbook versions.',
+                                              textAlign: TextAlign.center,
+                                              style: TextStyle(
+                                                color: Colors.red.shade700,
+                                                fontWeight: FontWeight.w800,
+                                              ),
+                                            ),
+                                          );
+                                        }
+
+                                        final versions = snapshot.hasData
+                                            ? _versionEntriesFromDocs(
+                                                snapshot.data!.docs,
+                                                currentActiveId,
+                                              )
+                                            : const <_VersionEntry>[];
+
+                                        final headerAction = versions.isEmpty
+                                            ? const SizedBox.shrink()
+                                            : _buildPanelHeaderActionButton(
+                                                onPressed: _busy
+                                                    ? null
+                                                    : () =>
+                                                          _onCreateDraftPressed(),
+                                                icon: Icons.add_rounded,
+                                                label: 'Create Draft',
+                                              );
+
+                                        if (versions.isEmpty) {
+                                          return Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              _buildPaneHeader(
+                                                action: headerAction,
+                                              ),
+                                              const SizedBox(height: 12),
+                                              Expanded(
+                                                child: _buildEmptyVersionsState(
+                                                  onCreate: () =>
+                                                      _onCreateDraftPressed(),
+                                                ),
+                                              ),
+                                            ],
+                                          );
+                                        }
+
+                                        return Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            _buildPaneHeader(
+                                              action: headerAction,
+                                            ),
+                                            const SizedBox(height: 12),
+                                            Expanded(
+                                              child: ListView.separated(
+                                                itemCount: versions.length,
+                                                separatorBuilder: (_, _) =>
+                                                    const SizedBox(height: 10),
+                                                itemBuilder: (context, index) =>
+                                                    _buildVersionCardForActiveId(
+                                                      versions[index],
+                                                      currentActiveId,
+                                                    ),
+                                              ),
+                                            ),
+                                          ],
+                                        );
+                                      },
+                                    );
+                                  },
+                                ),
                           ),
                         ],
                       ),
@@ -1480,5 +1738,3 @@ class _GeneratedVersionCode {
 
   const _GeneratedVersionCode({required this.code, required this.sequence});
 }
-
-

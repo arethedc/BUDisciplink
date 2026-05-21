@@ -1,12 +1,13 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:apps/services/app_firestore.dart';
 
 /// Migration Script: Run this to organize existing flat user data into nested profiles.
-/// 
+///
 /// How to use:
 /// Call [UserMigration.migrateToNestedProfiles()] from a temporary button or during app init (once).
 class UserMigration {
   static Future<void> migrateToNestedProfiles() async {
-    final db = FirebaseFirestore.instance;
+    final db = AppFirestore.instance;
     final usersSnap = await db.collection('users').get();
 
     WriteBatch batch = db.batch();
@@ -14,9 +15,10 @@ class UserMigration {
 
     for (var doc in usersSnap.docs) {
       final data = doc.data();
-      
+
       // Skip if already migrated
-      if (data.containsKey('studentProfile') || data.containsKey('employeeProfile')) {
+      if (data.containsKey('studentProfile') ||
+          data.containsKey('employeeProfile')) {
         continue;
       }
 
@@ -33,7 +35,8 @@ class UserMigration {
       // 2. Move Employee fields
       final employeeProfile = {
         'employeeNo': data['employeeNo'],
-        'department': data['department'] ?? data['collegeId'], // Fallback if applicable
+        'department':
+            data['department'] ?? data['collegeId'], // Fallback if applicable
       };
       updates['employeeProfile'] = employeeProfile;
 
@@ -42,7 +45,8 @@ class UserMigration {
       updates['employeeNo'] = FieldValue.delete();
       updates['collegeId'] = FieldValue.delete();
       updates['programId'] = FieldValue.delete();
-      updates['section'] = FieldValue.delete(); // Also cleanup section as requested
+      updates['section'] =
+          FieldValue.delete(); // Also cleanup section as requested
 
       batch.update(doc.reference, updates);
       count++;
@@ -57,7 +61,7 @@ class UserMigration {
     if (count % 500 != 0) {
       await batch.commit();
     }
-    
+
     print('Migration complete. Updated $count users.');
   }
 }

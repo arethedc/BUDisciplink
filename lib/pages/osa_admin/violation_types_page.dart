@@ -1,7 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
-import '../../services/violation_case_migration.dart';
 import '../../services/violation_types_service.dart';
 import 'package:apps/pages/shared/widgets/app_inline_notice.dart';
 import 'widgets/osa_common_widgets.dart';
@@ -183,6 +182,146 @@ Widget _buildPanelHeaderActionButton({
   );
 }
 
+Widget _buildNoDataSetupCard({
+  required String title,
+  required String subtitle,
+  required String primaryButtonLabel,
+  required IconData primaryIcon,
+  required VoidCallback primaryOnPressed,
+  String? secondaryButtonLabel,
+  IconData? secondaryIcon,
+  VoidCallback? secondaryOnPressed,
+  double maxWidth = 640,
+}) {
+  return Center(
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxWidth: maxWidth),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.fromLTRB(28, 28, 28, 26),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.04),
+                blurRadius: 24,
+                offset: const Offset(0, 12),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                title,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: _text,
+                  fontWeight: FontWeight.w900,
+                  fontSize: 22,
+                  letterSpacing: -0.2,
+                ),
+              ),
+              const SizedBox(height: 8),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 500),
+                child: Text(
+                  subtitle,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: _hint,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 13.5,
+                    height: 1.45,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 22),
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final stacked = constraints.maxWidth < 520;
+                  final primaryButton = FilledButton.icon(
+                    onPressed: primaryOnPressed,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: _primary,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 22,
+                        vertical: 15,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                    ),
+                    icon: Icon(primaryIcon, size: 18),
+                    label: Text(
+                      primaryButtonLabel,
+                      style: const TextStyle(fontWeight: FontWeight.w900),
+                    ),
+                  );
+
+                  final hasSecondary =
+                      secondaryButtonLabel != null &&
+                      secondaryOnPressed != null &&
+                      secondaryIcon != null;
+                  final secondaryButton = hasSecondary
+                      ? OutlinedButton.icon(
+                          onPressed: secondaryOnPressed,
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: _primary,
+                            side: BorderSide(
+                              color: _primary.withValues(alpha: 0.35),
+                            ),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 18,
+                              vertical: 15,
+                            ),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                          ),
+                          icon: Icon(secondaryIcon, size: 18),
+                          label: Text(
+                            secondaryButtonLabel,
+                            style: const TextStyle(fontWeight: FontWeight.w900),
+                          ),
+                        )
+                      : null;
+
+                  if (secondaryButton == null) return primaryButton;
+
+                  if (stacked) {
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        primaryButton,
+                        const SizedBox(height: 12),
+                        secondaryButton,
+                      ],
+                    );
+                  }
+
+                  return Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Flexible(child: primaryButton),
+                      const SizedBox(width: 12),
+                      Flexible(child: secondaryButton),
+                    ],
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
 InputDecoration _modalDecor({
   required String label,
   required IconData icon,
@@ -236,7 +375,10 @@ String _meetingStatusSummary({
 }
 
 class ViolationTypesPage extends StatefulWidget {
-  const ViolationTypesPage({super.key});
+  final String? initialTab;
+  final ValueChanged<String>? onTabChanged;
+
+  const ViolationTypesPage({super.key, this.initialTab, this.onTabChanged});
 
   @override
   State<ViolationTypesPage> createState() => _ViolationTypesPageState();
@@ -249,23 +391,76 @@ class _ViolationTypesPageState extends State<ViolationTypesPage>
 
   _SettingsSection _section = _SettingsSection.violations;
   bool _seeding = false;
-  bool _migratingCaseTypes = false;
   bool _seedingDefaults = false;
 
   _SettingsSection get _activeSection =>
       _sectionFromIndex(_sectionController.index);
 
+  _SettingsSection _sectionFromKey(String? raw) {
+    final value = (raw ?? '').trim().toLowerCase();
+    switch (value) {
+      case 'sanctions':
+      case 'sanction':
+        return _SettingsSection.sanctionTypes;
+      case 'actions':
+      case 'action':
+        return _SettingsSection.setActions;
+      case 'violations':
+      case 'violation':
+      default:
+        return _SettingsSection.violations;
+    }
+  }
+
+  String _sectionKey(_SettingsSection section) {
+    switch (section) {
+      case _SettingsSection.sanctionTypes:
+        return 'sanctions';
+      case _SettingsSection.setActions:
+        return 'actions';
+      case _SettingsSection.violations:
+      default:
+        return 'violations';
+    }
+  }
+
   @override
   void initState() {
     super.initState();
     _sectionController = TabController(length: 3, vsync: this);
+    final initialSection = _sectionFromKey(widget.initialTab);
+    _section = initialSection;
+    _sectionController.index = switch (initialSection) {
+      _SettingsSection.violations => 0,
+      _SettingsSection.sanctionTypes => 1,
+      _SettingsSection.setActions => 2,
+    };
     _sectionController.addListener(() {
       if (_sectionController.indexIsChanging) return;
       final next = _sectionFromIndex(_sectionController.index);
       if (next != _section) {
         setState(() => _section = next);
+        widget.onTabChanged?.call(_sectionKey(next));
       }
     });
+  }
+
+  @override
+  void didUpdateWidget(covariant ViolationTypesPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.initialTab == widget.initialTab) return;
+    final nextSection = _sectionFromKey(widget.initialTab);
+    final nextIndex = switch (nextSection) {
+      _SettingsSection.violations => 0,
+      _SettingsSection.sanctionTypes => 1,
+      _SettingsSection.setActions => 2,
+    };
+    if (_sectionController.index != nextIndex) {
+      _sectionController.index = nextIndex;
+    }
+    if (_section != nextSection) {
+      setState(() => _section = nextSection);
+    }
   }
 
   @override
@@ -379,8 +574,10 @@ class _ViolationTypesPageState extends State<ViolationTypesPage>
 
     setState(() => _seedingDefaults = true);
     try {
-      await _svc.seedDefaultActionAndSanctionTypes();
-      _showSnack('Default violation config seeded.');
+      final result = await _svc.seedDefaultActionAndSanctionTypes();
+      _showSnack(
+        'Seeded ${result['actions']} actions and ${result['sanctions']} sanctions.',
+      );
     } catch (e) {
       _showSnack('Seed defaults failed: $e', error: true);
     } finally {
@@ -388,18 +585,18 @@ class _ViolationTypesPageState extends State<ViolationTypesPage>
     }
   }
 
-  Future<void> _runCaseTypeMigration() async {
+  Future<void> _seedDefaultActionTypes() async {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: _bg,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
         title: const Text(
-          'Run Case Type Migration?',
+          'Seed Default Actions?',
           style: TextStyle(fontWeight: FontWeight.w900, color: _primary),
         ),
         content: const Text(
-          'This will backfill actionTypeCode and sanctionTypeCode for existing violation cases.',
+          'This will seed the default violation action types if they are missing.',
           style: TextStyle(color: _text, fontWeight: FontWeight.w700),
         ),
         actions: [
@@ -414,7 +611,7 @@ class _ViolationTypesPageState extends State<ViolationTypesPage>
             style: _modalPrimaryButtonStyle(),
             onPressed: () => Navigator.pop(ctx, true),
             child: const Text(
-              'Run Migration',
+              'Seed Actions',
               style: TextStyle(fontWeight: FontWeight.w900),
             ),
           ),
@@ -423,116 +620,61 @@ class _ViolationTypesPageState extends State<ViolationTypesPage>
     );
     if (confirm != true) return;
 
-    setState(() => _migratingCaseTypes = true);
+    setState(() => _seedingDefaults = true);
     try {
-      final result = await ViolationCaseMigration()
-          .migrateActionAndSanctionTypes();
-      _showSnack(
-        'Migration done. Scanned ${result['scanned']}, updated ${result['updated']}.',
-      );
+      final count = await _svc.seedDefaultActionTypes();
+      _showSnack('Seeded $count action types.');
     } catch (e) {
-      _showSnack('Migration failed: $e', error: true);
+      _showSnack('Seed actions failed: $e', error: true);
     } finally {
-      if (mounted) setState(() => _migratingCaseTypes = false);
+      if (mounted) setState(() => _seedingDefaults = false);
     }
   }
 
-  Future<void> _openSeedAndMigrateTools() async {
-    final busy = _migratingCaseTypes || _seeding || _seedingDefaults;
-    if (busy) return;
-    await showModalBottomSheet<void>(
+  Future<void> _seedDefaultSanctionTypes() async {
+    final confirm = await showDialog<bool>(
       context: context,
-      backgroundColor: _bg,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (ctx) {
-        Widget actionTile({
-          required IconData icon,
-          required String title,
-          required String subtitle,
-          required Future<void> Function() onTap,
-        }) {
-          return ListTile(
-            leading: Icon(icon, color: _primary),
-            title: Text(
-              title,
-              style: const TextStyle(fontWeight: FontWeight.w900, color: _text),
-            ),
-            subtitle: Text(
-              subtitle,
-              style: const TextStyle(
-                color: _hint,
-                fontWeight: FontWeight.w700,
-                fontSize: 12,
-              ),
-            ),
-            onTap: () async {
-              Navigator.of(ctx).pop();
-              await onTap();
-            },
-          );
-        }
-
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 44,
-                  height: 4,
-                  margin: const EdgeInsets.only(bottom: 10),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.16),
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                ),
-                const ListTile(
-                  contentPadding: EdgeInsets.symmetric(horizontal: 8),
-                  title: Text(
-                    'Seed & Migrate Tools',
-                    style: TextStyle(
-                      fontWeight: FontWeight.w900,
-                      color: _primary,
-                      fontSize: 16,
-                    ),
-                  ),
-                  subtitle: Text(
-                    'Run setup and maintenance actions from one place.',
-                    style: TextStyle(
-                      color: _hint,
-                      fontWeight: FontWeight.w700,
-                      fontSize: 12,
-                    ),
-                  ),
-                ),
-                actionTile(
-                  icon: Icons.sync_alt_rounded,
-                  title: 'Migrate Case Types',
-                  subtitle: 'Backfill action and sanction codes in cases.',
-                  onTap: _runCaseTypeMigration,
-                ),
-                actionTile(
-                  icon: Icons.download_rounded,
-                  title: 'Seed Default Violation Data',
-                  subtitle:
-                      'Create default categories and specific violations.',
-                  onTap: _seedData,
-                ),
-                actionTile(
-                  icon: Icons.auto_fix_high_rounded,
-                  title: 'Seed Violation Config',
-                  subtitle: 'Create default action/sanction settings.',
-                  onTap: _seedDefaultActionAndSanctionTypes,
-                ),
-              ],
+      builder: (ctx) => AlertDialog(
+        backgroundColor: _bg,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: const Text(
+          'Seed Default Sanctions?',
+          style: TextStyle(fontWeight: FontWeight.w900, color: _primary),
+        ),
+        content: const Text(
+          'This will seed the default sanction types if they are missing.',
+          style: TextStyle(color: _text, fontWeight: FontWeight.w700),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text(
+              'Cancel',
+              style: TextStyle(fontWeight: FontWeight.w900, color: _hint),
             ),
           ),
-        );
-      },
+          FilledButton(
+            style: _modalPrimaryButtonStyle(),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text(
+              'Seed Sanctions',
+              style: TextStyle(fontWeight: FontWeight.w900),
+            ),
+          ),
+        ],
+      ),
     );
+    if (confirm != true) return;
+
+    setState(() => _seedingDefaults = true);
+    try {
+      final count = await _svc.seedDefaultSanctionTypes();
+      _showSnack('Seeded $count sanction types.');
+    } catch (e) {
+      _showSnack('Seed sanctions failed: $e', error: true);
+    } finally {
+      if (mounted) setState(() => _seedingDefaults = false);
+    }
   }
 
   @override
@@ -543,65 +685,11 @@ class _ViolationTypesPageState extends State<ViolationTypesPage>
       body: Column(
         children: [
           Container(
-            padding: const EdgeInsets.fromLTRB(24, 20, 24, 12),
+            padding: const EdgeInsets.fromLTRB(24, 10, 24, 0),
             color: Colors.white,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                LayoutBuilder(
-                  builder: (context, constraints) {
-                    final compact = constraints.maxWidth < 980;
-                    final toolsButton = OutlinedButton.icon(
-                      onPressed:
-                          _migratingCaseTypes || _seeding || _seedingDefaults
-                          ? null
-                          : _openSeedAndMigrateTools,
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: _primary,
-                      ),
-                      icon: _migratingCaseTypes || _seeding || _seedingDefaults
-                          ? const SizedBox(
-                              width: 14,
-                              height: 14,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: _primary,
-                              ),
-                            )
-                          : const Icon(Icons.build_circle_outlined),
-                      label: Text(
-                        _migratingCaseTypes
-                            ? 'Migrating...'
-                            : _seeding
-                            ? 'Seeding violation data...'
-                            : _seedingDefaults
-                            ? 'Seeding config...'
-                            : 'Seed & Migrate Tools',
-                      ),
-                    );
-                    if (compact) {
-                      return Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          _buildSectionTabs(),
-                          const SizedBox(height: 10),
-                          Align(
-                            alignment: Alignment.centerRight,
-                            child: toolsButton,
-                          ),
-                        ],
-                      );
-                    }
-                    return Row(
-                      children: [
-                        Expanded(child: _buildSectionTabs()),
-                        const SizedBox(width: 12),
-                        toolsButton,
-                      ],
-                    );
-                  },
-                ),
-              ],
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: _buildSectionTabs(),
             ),
           ),
           const Divider(height: 1),
@@ -671,7 +759,13 @@ class _ViolationTypesPageState extends State<ViolationTypesPage>
         Tab(text: 'Sanctions'),
         Tab(text: 'Actions'),
       ],
-      onTap: (index) => setState(() => _section = _sectionFromIndex(index)),
+      onTap: (index) {
+        final next = _sectionFromIndex(index);
+        if (next != _section) {
+          setState(() => _section = next);
+        }
+        widget.onTabChanged?.call(_sectionKey(next));
+      },
     );
   }
 
@@ -729,7 +823,7 @@ class _ViolationHierarchyPaneState extends State<_ViolationHierarchyPane> {
       builder: (_) => _AddCategoryDialog(initialConcern: concern),
     );
     if (created == true) {
-      _showPaneSnack('Category added.');
+      _showPaneSnack('Category rows saved.');
     }
   }
 
@@ -756,16 +850,18 @@ class _ViolationHierarchyPaneState extends State<_ViolationHierarchyPane> {
   Future<void> _openAddTypeForCategory({
     required String concern,
     required String categoryId,
+    required String categoryName,
   }) async {
     final created = await showDialog<bool>(
       context: context,
       builder: (_) => _AddViolationTypeDialog(
         initialConcern: concern,
         initialCategoryId: categoryId,
+        initialCategoryName: categoryName,
       ),
     );
     if (created == true) {
-      _showPaneSnack('Specific violation added.');
+      _showPaneSnack('Specific violation rows saved.');
     }
   }
 
@@ -784,6 +880,49 @@ class _ViolationHierarchyPaneState extends State<_ViolationHierarchyPane> {
     );
     if (updated == true) {
       _showPaneSnack('Specific violation updated.');
+    }
+  }
+
+  Future<void> _seedDefaultViolationData() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: _bg,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: const Text(
+          'Seed Default Violation Data?',
+          style: TextStyle(fontWeight: FontWeight.w900, color: _primary),
+        ),
+        content: const Text(
+          'This will create the default violation categories and specific violations if they are missing.',
+          style: TextStyle(color: _text, fontWeight: FontWeight.w700),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text(
+              'Cancel',
+              style: TextStyle(fontWeight: FontWeight.w900, color: _hint),
+            ),
+          ),
+          FilledButton(
+            style: _modalPrimaryButtonStyle(),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text(
+              'Seed Data',
+              style: TextStyle(fontWeight: FontWeight.w900),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+
+    try {
+      await _svc.seedDefaultData();
+      _showPaneSnack('Default violation data seeded.');
+    } catch (e) {
+      _showPaneSnack('Seed failed: $e', error: true);
     }
   }
 
@@ -923,7 +1062,7 @@ class _ViolationHierarchyPaneState extends State<_ViolationHierarchyPane> {
             )
             .toList();
 
-        if (listDocs.isEmpty) {
+        if (allCategories.isEmpty) {
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -932,22 +1071,18 @@ class _ViolationHierarchyPaneState extends State<_ViolationHierarchyPane> {
                 subtitle: _concernLabel(concern),
                 onBack: () => setState(() => _selectedConcern = null),
               ),
-              _buildStatusFilterBar(
-                allCount: allCount,
-                activeCount: activeCount,
-                inactiveCount: inactiveCount,
-              ),
               Expanded(
-                child: Center(
-                  child: Text(
-                    query.isNotEmpty
-                        ? 'No matching categories.'
-                        : 'No categories for this filter.',
-                    style: const TextStyle(
-                      color: _hint,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
+                child: _buildNoDataSetupCard(
+                  title: 'No categories yet',
+                  subtitle:
+                      'Create the first category so specific violations can be grouped under this concern.',
+                  primaryButtonLabel: 'Add Category',
+                  primaryIcon: Icons.add_rounded,
+                  primaryOnPressed: () => _openAddCategoryForConcern(concern),
+                  secondaryButtonLabel: 'Seed Default Violation Data',
+                  secondaryIcon: Icons.download_rounded,
+                  secondaryOnPressed: _seedDefaultViolationData,
+                  maxWidth: 720,
                 ),
               ),
             ],
@@ -973,35 +1108,48 @@ class _ViolationHierarchyPaneState extends State<_ViolationHierarchyPane> {
               inactiveCount: inactiveCount,
             ),
             Expanded(
-              child: ListView.builder(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                itemCount: listDocs.length,
-                itemBuilder: (context, index) {
-                  final doc = listDocs[index];
-                  final data = doc.data();
-                  return Container(
-                    margin: const EdgeInsets.only(bottom: 10),
-                    child: _CategoryListTile(
-                      title: (data['name'] ?? '').toString(),
-                      active: data['isActive'] != false,
-                      showStatus: _statusFilter == _StatusFilterOption.all,
-                      onEdit: () => _openEditCategory(
-                        categoryId: doc.id,
-                        concern: concern,
-                        name: (data['name'] ?? '').toString(),
-                        isActive: data['isActive'] != false,
+              child: listDocs.isEmpty
+                  ? Center(
+                      child: Text(
+                        query.isNotEmpty
+                            ? 'No matching categories.'
+                            : 'No categories for this filter.',
+                        style: const TextStyle(
+                          color: _hint,
+                          fontWeight: FontWeight.w700,
+                        ),
                       ),
-                      onTap: () {
-                        setState(() {
-                          _selectedCategoryId = doc.id;
-                          _selectedCategoryName = (data['name'] ?? '')
-                              .toString();
-                        });
+                    )
+                  : ListView.builder(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                      itemCount: listDocs.length,
+                      itemBuilder: (context, index) {
+                        final doc = listDocs[index];
+                        final data = doc.data();
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 10),
+                          child: _CategoryListTile(
+                            title: (data['name'] ?? '').toString(),
+                            active: data['isActive'] != false,
+                            showStatus:
+                                _statusFilter == _StatusFilterOption.all,
+                            onEdit: () => _openEditCategory(
+                              categoryId: doc.id,
+                              concern: concern,
+                              name: (data['name'] ?? '').toString(),
+                              isActive: data['isActive'] != false,
+                            ),
+                            onTap: () {
+                              setState(() {
+                                _selectedCategoryId = doc.id;
+                                _selectedCategoryName = (data['name'] ?? '')
+                                    .toString();
+                              });
+                            },
+                          ),
+                        );
                       },
                     ),
-                  );
-                },
-              ),
             ),
           ],
         );
@@ -1064,6 +1212,7 @@ class _ViolationHierarchyPaneState extends State<_ViolationHierarchyPane> {
                 onPressed: () => _openAddTypeForCategory(
                   concern: _selectedConcern ?? 'basic',
                   categoryId: categoryId,
+                  categoryName: categoryName,
                 ),
                 icon: Icons.add_rounded,
                 label: 'Add Specific Violation',
@@ -1079,7 +1228,7 @@ class _ViolationHierarchyPaneState extends State<_ViolationHierarchyPane> {
                   ? Center(
                       child: Text(
                         query.isNotEmpty
-                            ? 'No specific violations found.'
+                            ? 'No matching specific violations.'
                             : 'No specific violations for this filter.',
                         style: const TextStyle(
                           color: _hint,
@@ -1444,15 +1593,54 @@ class _SanctionTypesPaneState extends State<_SanctionTypesPane> {
     if (updated == true) _showSnack('Sanction type updated.');
   }
 
-  Widget _buildHeader() {
+  Future<void> _seedDefaultSanctionTypes() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: _bg,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: const Text(
+          'Seed Default Sanctions?',
+          style: TextStyle(fontWeight: FontWeight.w900, color: _primary),
+        ),
+        content: const Text(
+          'This will create the default sanction types if they are missing.',
+          style: TextStyle(color: _text, fontWeight: FontWeight.w700),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text(
+              'Cancel',
+              style: TextStyle(fontWeight: FontWeight.w900, color: _hint),
+            ),
+          ),
+          FilledButton(
+            style: _modalPrimaryButtonStyle(),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text(
+              'Seed Sanctions',
+              style: TextStyle(fontWeight: FontWeight.w900),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+
+    try {
+      final count = await _svc.seedDefaultSanctionTypes();
+      _showSnack('Seeded $count sanction types.');
+    } catch (e) {
+      _showSnack('Seed sanctions failed: $e', error: true);
+    }
+  }
+
+  Widget _buildHeader({Widget? action}) {
     return _buildSettingsPanelHeader(
       title: 'Sanctions',
       subtitle: 'Manage sanction labels and availability.',
-      action: _buildPanelHeaderActionButton(
-        onPressed: _openAddDialog,
-        icon: Icons.add_rounded,
-        label: 'Add Sanction Type',
-      ),
+      action: action,
     );
   }
 
@@ -1497,6 +1685,7 @@ class _SanctionTypesPaneState extends State<_SanctionTypesPane> {
         if (!snap.hasData) {
           return const Center(child: CircularProgressIndicator());
         }
+        final query = widget.searchQuery.trim();
         final docsByQuery = snap.data!.docs.where((doc) {
           final data = doc.data();
           return _matches(
@@ -1522,10 +1711,39 @@ class _SanctionTypesPaneState extends State<_SanctionTypesPane> {
             )
             .toList();
 
+        if (snap.data!.docs.isEmpty) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildHeader(),
+              Expanded(
+                child: _buildNoDataSetupCard(
+                  title: 'No sanction types yet',
+                  subtitle:
+                      'Create the first sanction type so reports can point to a clear outcome.',
+                  primaryButtonLabel: 'Add Sanction Type',
+                  primaryIcon: Icons.add_rounded,
+                  primaryOnPressed: _openAddDialog,
+                  secondaryButtonLabel: 'Seed Default Sanctions',
+                  secondaryIcon: Icons.download_rounded,
+                  secondaryOnPressed: _seedDefaultSanctionTypes,
+                  maxWidth: 700,
+                ),
+              ),
+            ],
+          );
+        }
+
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _buildHeader(),
+            _buildHeader(
+              action: _buildPanelHeaderActionButton(
+                onPressed: _openAddDialog,
+                icon: Icons.add_rounded,
+                label: 'Add Sanction Type',
+              ),
+            ),
             _buildStatusFilterBar(
               allCount: allCount,
               activeCount: activeCount,
@@ -1535,9 +1753,9 @@ class _SanctionTypesPaneState extends State<_SanctionTypesPane> {
               child: listDocs.isEmpty
                   ? Center(
                       child: Text(
-                        widget.searchQuery.isEmpty
-                            ? 'No sanction types for this filter.'
-                            : 'No matching sanction types.',
+                        query.isNotEmpty
+                            ? 'No matching sanction types.'
+                            : 'No sanction types for this filter.',
                         style: const TextStyle(
                           color: _hint,
                           fontWeight: FontWeight.w700,
@@ -1637,15 +1855,54 @@ class _SetActionsPaneState extends State<_SetActionsPane> {
     if (updated == true) _showSnack('Action type updated.');
   }
 
-  Widget _buildHeader() {
+  Future<void> _seedDefaultActionTypes() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: _bg,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: const Text(
+          'Seed Default Actions?',
+          style: TextStyle(fontWeight: FontWeight.w900, color: _primary),
+        ),
+        content: const Text(
+          'This will create the default action types if they are missing.',
+          style: TextStyle(color: _text, fontWeight: FontWeight.w700),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text(
+              'Cancel',
+              style: TextStyle(fontWeight: FontWeight.w900, color: _hint),
+            ),
+          ),
+          FilledButton(
+            style: _modalPrimaryButtonStyle(),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text(
+              'Seed Actions',
+              style: TextStyle(fontWeight: FontWeight.w900),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+
+    try {
+      final count = await _svc.seedDefaultActionTypes();
+      _showSnack('Seeded $count action types.');
+    } catch (e) {
+      _showSnack('Seed actions failed: $e', error: true);
+    }
+  }
+
+  Widget _buildHeader({Widget? action}) {
     return _buildSettingsPanelHeader(
       title: 'Actions',
       subtitle: 'Manage set actions and meeting requirements.',
-      action: _buildPanelHeaderActionButton(
-        onPressed: _openAddDialog,
-        icon: Icons.add_rounded,
-        label: 'Add Action Type',
-      ),
+      action: action,
     );
   }
 
@@ -1690,6 +1947,7 @@ class _SetActionsPaneState extends State<_SetActionsPane> {
         if (!snap.hasData) {
           return const Center(child: CircularProgressIndicator());
         }
+        final query = widget.searchQuery.trim();
         final docsByQuery = snap.data!.docs.where((doc) {
           final data = doc.data();
           return _matches(
@@ -1715,10 +1973,39 @@ class _SetActionsPaneState extends State<_SetActionsPane> {
             )
             .toList();
 
+        if (snap.data!.docs.isEmpty) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildHeader(),
+              Expanded(
+                child: _buildNoDataSetupCard(
+                  title: 'No action types yet',
+                  subtitle:
+                      'Create the first action type so case handling has a clear step to follow.',
+                  primaryButtonLabel: 'Add Action Type',
+                  primaryIcon: Icons.add_rounded,
+                  primaryOnPressed: _openAddDialog,
+                  secondaryButtonLabel: 'Seed Default Actions',
+                  secondaryIcon: Icons.download_rounded,
+                  secondaryOnPressed: _seedDefaultActionTypes,
+                  maxWidth: 700,
+                ),
+              ),
+            ],
+          );
+        }
+
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _buildHeader(),
+            _buildHeader(
+              action: _buildPanelHeaderActionButton(
+                onPressed: _openAddDialog,
+                icon: Icons.add_rounded,
+                label: 'Add Action Type',
+              ),
+            ),
             _buildStatusFilterBar(
               allCount: allCount,
               activeCount: activeCount,
@@ -1728,9 +2015,9 @@ class _SetActionsPaneState extends State<_SetActionsPane> {
               child: listDocs.isEmpty
                   ? Center(
                       child: Text(
-                        widget.searchQuery.isEmpty
-                            ? 'No action types for this filter.'
-                            : 'No matching action types.',
+                        query.isNotEmpty
+                            ? 'No matching action types.'
+                            : 'No action types for this filter.',
                         style: const TextStyle(
                           color: _hint,
                           fontWeight: FontWeight.w700,
@@ -1800,7 +2087,7 @@ class _AddCategoryDialog extends StatefulWidget {
 
 class _AddCategoryDialogState extends State<_AddCategoryDialog> {
   final _svc = ViolationTypesService();
-  final _nameCtrl = TextEditingController();
+  final List<TextEditingController> _nameCtrls = [TextEditingController()];
   String _concern = 'basic';
   bool _saving = false;
 
@@ -1824,8 +2111,36 @@ class _AddCategoryDialogState extends State<_AddCategoryDialog> {
 
   @override
   void dispose() {
-    _nameCtrl.dispose();
+    for (final ctrl in _nameCtrls) {
+      ctrl.dispose();
+    }
     super.dispose();
+  }
+
+  void _addRow() {
+    setState(() => _nameCtrls.add(TextEditingController()));
+  }
+
+  void _removeRow(int index) {
+    if (_nameCtrls.length == 1) return;
+    final ctrl = _nameCtrls.removeAt(index);
+    ctrl.dispose();
+    setState(() {});
+  }
+
+  List<String> _validNames() {
+    return _nameCtrls
+        .map((ctrl) => ctrl.text.trim())
+        .where((name) => name.isNotEmpty)
+        .toList(growable: false);
+  }
+
+  bool _hasDuplicateSlugs(List<String> names) {
+    final seen = <String>{};
+    for (final name in names) {
+      if (!seen.add(_slug(name))) return true;
+    }
+    return false;
   }
 
   @override
@@ -1876,15 +2191,54 @@ class _AddCategoryDialogState extends State<_AddCategoryDialog> {
                 ),
               ),
               const SizedBox(height: 12),
-              TextField(
-                controller: _nameCtrl,
-                style: const TextStyle(
-                  fontWeight: FontWeight.w700,
-                  color: _text,
+              for (var i = 0; i < _nameCtrls.length; i++) ...[
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _nameCtrls[i],
+                        enabled: !_saving,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w700,
+                          color: _text,
+                        ),
+                        decoration: _modalDecor(
+                          label: 'Category Name ${i + 1}',
+                          icon: Icons.category_outlined,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      tooltip: 'Remove row',
+                      onPressed: _saving || _nameCtrls.length == 1
+                          ? null
+                          : () => _removeRow(i),
+                      icon: const Icon(Icons.close_rounded),
+                      color: _hint,
+                    ),
+                  ],
                 ),
-                decoration: _modalDecor(
-                  label: 'Category Name',
-                  icon: Icons.category_outlined,
+                const SizedBox(height: 10),
+              ],
+              OutlinedButton.icon(
+                onPressed: _saving ? null : _addRow,
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: _primary,
+                  side: BorderSide(color: _primary.withValues(alpha: 0.35)),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 12,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                ),
+                icon: const Icon(Icons.add_rounded),
+                label: const Text(
+                  'Add Row',
+                  style: TextStyle(fontWeight: FontWeight.w900),
                 ),
               ),
               if (_saving) ...[
@@ -1908,15 +2262,25 @@ class _AddCategoryDialogState extends State<_AddCategoryDialog> {
           onPressed: _saving
               ? null
               : () async {
-                  final name = _nameCtrl.text.trim();
-                  if (name.isEmpty) return;
+                  final names = _validNames();
+                  if (names.isEmpty) return;
+                  if (_hasDuplicateSlugs(names)) {
+                    AppScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Remove duplicate category names first.'),
+                      ),
+                    );
+                    return;
+                  }
                   setState(() => _saving = true);
                   try {
-                    await _svc.createCategory(
-                      categoryId: _slug(name),
-                      concern: _concern,
-                      name: name,
-                    );
+                    for (final name in names) {
+                      await _svc.createCategory(
+                        categoryId: _slug(name),
+                        concern: _concern,
+                        name: name,
+                      );
+                    }
                     if (!context.mounted) return;
                     Navigator.pop(context, true);
                   } catch (e) {
@@ -1928,7 +2292,7 @@ class _AddCategoryDialogState extends State<_AddCategoryDialog> {
                   }
                 },
           child: const Text(
-            'Save',
+            'Save All',
             style: TextStyle(fontWeight: FontWeight.w900),
           ),
         ),
@@ -1940,8 +2304,13 @@ class _AddCategoryDialogState extends State<_AddCategoryDialog> {
 class _AddViolationTypeDialog extends StatefulWidget {
   final String? initialConcern;
   final String? initialCategoryId;
+  final String? initialCategoryName;
 
-  const _AddViolationTypeDialog({this.initialConcern, this.initialCategoryId});
+  const _AddViolationTypeDialog({
+    this.initialConcern,
+    this.initialCategoryId,
+    this.initialCategoryName,
+  });
 
   @override
   State<_AddViolationTypeDialog> createState() =>
@@ -1950,7 +2319,7 @@ class _AddViolationTypeDialog extends StatefulWidget {
 
 class _AddViolationTypeDialogState extends State<_AddViolationTypeDialog> {
   final _svc = ViolationTypesService();
-  final _labelCtrl = TextEditingController();
+  final List<TextEditingController> _labelCtrls = [TextEditingController()];
   bool _saving = false;
   String _concern = 'basic';
   String? _categoryId;
@@ -1979,8 +2348,135 @@ class _AddViolationTypeDialogState extends State<_AddViolationTypeDialog> {
 
   @override
   void dispose() {
-    _labelCtrl.dispose();
+    for (final ctrl in _labelCtrls) {
+      ctrl.dispose();
+    }
     super.dispose();
+  }
+
+  void _addRow() {
+    setState(() => _labelCtrls.add(TextEditingController()));
+  }
+
+  void _removeRow(int index) {
+    if (_labelCtrls.length == 1) return;
+    final ctrl = _labelCtrls.removeAt(index);
+    ctrl.dispose();
+    setState(() {});
+  }
+
+  List<String> _validLabels() {
+    return _labelCtrls
+        .map((ctrl) => ctrl.text.trim())
+        .where((label) => label.isNotEmpty)
+        .toList(growable: false);
+  }
+
+  bool _hasDuplicateTypeIds(List<String> labels) {
+    final categoryId = _categoryId;
+    if (categoryId == null) return false;
+    final seen = <String>{};
+    for (final label in labels) {
+      if (!seen.add('${categoryId}_${_slug(label)}')) return true;
+    }
+    return false;
+  }
+
+  Widget _buildViolationRows() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (var i = 0; i < _labelCtrls.length; i++) ...[
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _labelCtrls[i],
+                  enabled: !_saving,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w700,
+                    color: _text,
+                  ),
+                  decoration: _modalDecor(
+                    label: 'Specific Violation ${i + 1}',
+                    icon: Icons.rule_folder_outlined,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              IconButton(
+                tooltip: 'Remove row',
+                onPressed: _saving || _labelCtrls.length == 1
+                    ? null
+                    : () => _removeRow(i),
+                icon: const Icon(Icons.close_rounded),
+                color: _hint,
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+        ],
+        OutlinedButton.icon(
+          onPressed: _saving ? null : _addRow,
+          style: OutlinedButton.styleFrom(
+            foregroundColor: _primary,
+            side: BorderSide(color: _primary.withValues(alpha: 0.35)),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+            ),
+          ),
+          icon: const Icon(Icons.add_rounded),
+          label: const Text(
+            'Add Row',
+            style: TextStyle(fontWeight: FontWeight.w900),
+          ),
+        ),
+        if (_saving) ...[
+          const SizedBox(height: 12),
+          const LinearProgressIndicator(color: _primary),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildScopedContent() {
+    final categoryName = (widget.initialCategoryName ?? '').trim().isEmpty
+        ? (_categoryId ?? 'Selected category')
+        : widget.initialCategoryName!.trim();
+    return SingleChildScrollView(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'VIOLATION DETAILS',
+            style: TextStyle(
+              fontWeight: FontWeight.w900,
+              color: _hint,
+              fontSize: 12,
+              letterSpacing: 1,
+            ),
+          ),
+          const SizedBox(height: 16),
+          InputDecorator(
+            decoration: _modalDecor(
+              label: 'Category',
+              icon: Icons.category_outlined,
+              enabled: false,
+              helperText: 'Specific violations will be added here.',
+            ),
+            child: Text(
+              categoryName,
+              style: const TextStyle(color: _text, fontWeight: FontWeight.w700),
+            ),
+          ),
+          const SizedBox(height: 12),
+          _buildViolationRows(),
+        ],
+      ),
+    );
   }
 
   @override
@@ -1996,105 +2492,102 @@ class _AddViolationTypeDialogState extends State<_AddViolationTypeDialog> {
       ),
       content: SizedBox(
         width: 500,
-        child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-          stream: _svc.streamCategories(concern: _concern),
-          builder: (context, snap) {
-            final categories = snap.data?.docs ?? const [];
-            if (_categoryId == null && categories.isNotEmpty) {
-              _categoryId = categories.first.id;
-            } else if (_categoryId != null &&
-                categories.every((doc) => doc.id != _categoryId)) {
-              _categoryId = categories.isNotEmpty ? categories.first.id : null;
-            }
+        child: isScopedAdd
+            ? _buildScopedContent()
+            : StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                stream: _svc.streamCategories(concern: _concern),
+                builder: (context, snap) {
+                  final categories = snap.data?.docs ?? const [];
+                  if (_categoryId == null && categories.isNotEmpty) {
+                    _categoryId = categories.first.id;
+                  } else if (_categoryId != null &&
+                      categories.every((doc) => doc.id != _categoryId)) {
+                    _categoryId = categories.isNotEmpty
+                        ? categories.first.id
+                        : null;
+                  }
 
-            return Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'VIOLATION DETAILS',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w900,
-                    color: _hint,
-                    fontSize: 12,
-                    letterSpacing: 1,
-                  ),
-                ),
-                const SizedBox(height: 16),
-                if (!isScopedAdd) ...[
-                  DropdownButtonFormField<String>(
-                    initialValue: _concern,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w700,
-                      color: _text,
-                    ),
-                    items: const [
-                      DropdownMenuItem(value: 'basic', child: Text('Basic')),
-                      DropdownMenuItem(
-                        value: 'serious',
-                        child: Text('Serious'),
-                      ),
-                    ],
-                    onChanged: _saving
-                        ? null
-                        : (value) {
-                            setState(() {
-                              _concern = value ?? 'basic';
-                              _categoryId = null;
-                            });
-                          },
-                    decoration: _modalDecor(
-                      label: 'Concern',
-                      icon: Icons.flag_outlined,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                ],
-                DropdownButtonFormField<String>(
-                  initialValue: _categoryId,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w700,
-                    color: _text,
-                  ),
-                  items: categories
-                      .map(
-                        (doc) => DropdownMenuItem(
-                          value: doc.id,
-                          child: Text((doc.data()['name'] ?? '').toString()),
+                  return SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'VIOLATION DETAILS',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w900,
+                            color: _hint,
+                            fontSize: 12,
+                            letterSpacing: 1,
+                          ),
                         ),
-                      )
-                      .toList(),
-                  onChanged: _saving
-                      ? null
-                      : (value) => setState(() => _categoryId = value),
-                  decoration: _modalDecor(
-                    label: 'Category',
-                    icon: Icons.category_outlined,
-                    helperText: isScopedAdd
-                        ? 'Auto-selected from current category. You can change it.'
-                        : null,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _labelCtrl,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w700,
-                    color: _text,
-                  ),
-                  decoration: _modalDecor(
-                    label: 'Specific Violation',
-                    icon: Icons.rule_folder_outlined,
-                  ),
-                ),
-                if (_saving) ...[
-                  const SizedBox(height: 12),
-                  const LinearProgressIndicator(color: _primary),
-                ],
-              ],
-            );
-          },
-        ),
+                        const SizedBox(height: 16),
+                        if (!isScopedAdd) ...[
+                          DropdownButtonFormField<String>(
+                            initialValue: _concern,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w700,
+                              color: _text,
+                            ),
+                            items: const [
+                              DropdownMenuItem(
+                                value: 'basic',
+                                child: Text('Basic'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'serious',
+                                child: Text('Serious'),
+                              ),
+                            ],
+                            onChanged: _saving
+                                ? null
+                                : (value) {
+                                    setState(() {
+                                      _concern = value ?? 'basic';
+                                      _categoryId = null;
+                                    });
+                                  },
+                            decoration: _modalDecor(
+                              label: 'Concern',
+                              icon: Icons.flag_outlined,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                        ],
+                        DropdownButtonFormField<String>(
+                          initialValue: _categoryId,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w700,
+                            color: _text,
+                          ),
+                          items: categories
+                              .map(
+                                (doc) => DropdownMenuItem(
+                                  value: doc.id,
+                                  child: Text(
+                                    (doc.data()['name'] ?? '').toString(),
+                                  ),
+                                ),
+                              )
+                              .toList(),
+                          onChanged: _saving
+                              ? null
+                              : (value) => setState(() => _categoryId = value),
+                          decoration: _modalDecor(
+                            label: 'Category',
+                            icon: Icons.category_outlined,
+                            helperText: isScopedAdd
+                                ? 'Auto-selected from current category. You can change it.'
+                                : null,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        _buildViolationRows(),
+                      ],
+                    ),
+                  );
+                },
+              ),
       ),
       actions: [
         TextButton(
@@ -2109,16 +2602,28 @@ class _AddViolationTypeDialogState extends State<_AddViolationTypeDialog> {
           onPressed: _saving
               ? null
               : () async {
-                  final label = _labelCtrl.text.trim();
-                  if (label.isEmpty || _categoryId == null) return;
+                  final labels = _validLabels();
+                  if (labels.isEmpty || _categoryId == null) return;
+                  if (_hasDuplicateTypeIds(labels)) {
+                    AppScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text(
+                          'Remove duplicate violation names first.',
+                        ),
+                      ),
+                    );
+                    return;
+                  }
                   setState(() => _saving = true);
                   try {
-                    await _svc.createType(
-                      typeId: '${_categoryId!}_${_slug(label)}',
-                      categoryId: _categoryId!,
-                      concern: _concern,
-                      label: label,
-                    );
+                    for (final label in labels) {
+                      await _svc.createType(
+                        typeId: '${_categoryId!}_${_slug(label)}',
+                        categoryId: _categoryId!,
+                        concern: _concern,
+                        label: label,
+                      );
+                    }
                     if (!context.mounted) return;
                     Navigator.pop(context, true);
                   } catch (e) {
@@ -2130,7 +2635,7 @@ class _AddViolationTypeDialogState extends State<_AddViolationTypeDialog> {
                   }
                 },
           child: const Text(
-            'Save',
+            'Save All',
             style: TextStyle(fontWeight: FontWeight.w900),
           ),
         ),
@@ -2465,8 +2970,10 @@ class _AddSanctionTypeDialog extends StatefulWidget {
 
 class _AddSanctionTypeDialogState extends State<_AddSanctionTypeDialog> {
   final _svc = ViolationTypesService();
-  final _labelCtrl = TextEditingController();
-  final _descriptionCtrl = TextEditingController();
+  final List<TextEditingController> _labelCtrls = [TextEditingController()];
+  final List<TextEditingController> _descriptionCtrls = [
+    TextEditingController(),
+  ];
   bool _saving = false;
 
   String _slug(String value) {
@@ -2480,9 +2987,52 @@ class _AddSanctionTypeDialogState extends State<_AddSanctionTypeDialog> {
 
   @override
   void dispose() {
-    _labelCtrl.dispose();
-    _descriptionCtrl.dispose();
+    for (final ctrl in _labelCtrls) {
+      ctrl.dispose();
+    }
+    for (final ctrl in _descriptionCtrls) {
+      ctrl.dispose();
+    }
     super.dispose();
+  }
+
+  void _addRow() {
+    setState(() {
+      _labelCtrls.add(TextEditingController());
+      _descriptionCtrls.add(TextEditingController());
+    });
+  }
+
+  void _removeRow(int index) {
+    if (_labelCtrls.length == 1) return;
+    final labelCtrl = _labelCtrls.removeAt(index);
+    final descriptionCtrl = _descriptionCtrls.removeAt(index);
+    labelCtrl.dispose();
+    descriptionCtrl.dispose();
+    setState(() {});
+  }
+
+  List<_SanctionRowValue> _validRows() {
+    final rows = <_SanctionRowValue>[];
+    for (var i = 0; i < _labelCtrls.length; i++) {
+      final label = _labelCtrls[i].text.trim();
+      if (label.isEmpty) continue;
+      rows.add(
+        _SanctionRowValue(
+          label: label,
+          description: _descriptionCtrls[i].text.trim(),
+        ),
+      );
+    }
+    return rows;
+  }
+
+  bool _hasDuplicateSlugs(List<_SanctionRowValue> rows) {
+    final seen = <String>{};
+    for (final row in rows) {
+      if (!seen.add(_slug(row.label))) return true;
+    }
+    return false;
   }
 
   @override
@@ -2511,27 +3061,71 @@ class _AddSanctionTypeDialogState extends State<_AddSanctionTypeDialog> {
                 ),
               ),
               const SizedBox(height: 16),
-              TextField(
-                controller: _labelCtrl,
-                style: const TextStyle(
-                  fontWeight: FontWeight.w700,
-                  color: _text,
+              for (var i = 0; i < _labelCtrls.length; i++) ...[
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Column(
+                        children: [
+                          TextField(
+                            controller: _labelCtrls[i],
+                            enabled: !_saving,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w700,
+                              color: _text,
+                            ),
+                            decoration: _modalDecor(
+                              label: 'Label ${i + 1}',
+                              icon: Icons.gavel_rounded,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: _descriptionCtrls[i],
+                            enabled: !_saving,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w700,
+                              color: _text,
+                            ),
+                            decoration: _modalDecor(
+                              label: 'Description ${i + 1}',
+                              icon: Icons.notes_outlined,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      tooltip: 'Remove row',
+                      onPressed: _saving || _labelCtrls.length == 1
+                          ? null
+                          : () => _removeRow(i),
+                      icon: const Icon(Icons.close_rounded),
+                      color: _hint,
+                    ),
+                  ],
                 ),
-                decoration: _modalDecor(
-                  label: 'Label',
-                  icon: Icons.gavel_rounded,
+                const SizedBox(height: 10),
+              ],
+              OutlinedButton.icon(
+                onPressed: _saving ? null : _addRow,
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: _primary,
+                  side: BorderSide(color: _primary.withValues(alpha: 0.35)),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 12,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
                 ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _descriptionCtrl,
-                style: const TextStyle(
-                  fontWeight: FontWeight.w700,
-                  color: _text,
-                ),
-                decoration: _modalDecor(
-                  label: 'Description',
-                  icon: Icons.notes_outlined,
+                icon: const Icon(Icons.add_rounded),
+                label: const Text(
+                  'Add Row',
+                  style: TextStyle(fontWeight: FontWeight.w900),
                 ),
               ),
               if (_saving) ...[
@@ -2555,15 +3149,25 @@ class _AddSanctionTypeDialogState extends State<_AddSanctionTypeDialog> {
           onPressed: _saving
               ? null
               : () async {
-                  final label = _labelCtrl.text.trim();
-                  if (label.isEmpty) return;
+                  final rows = _validRows();
+                  if (rows.isEmpty) return;
+                  if (_hasDuplicateSlugs(rows)) {
+                    AppScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Remove duplicate sanction names first.'),
+                      ),
+                    );
+                    return;
+                  }
                   setState(() => _saving = true);
                   try {
-                    await _svc.createSanctionType(
-                      sanctionTypeId: _slug(label),
-                      label: label,
-                      description: _descriptionCtrl.text.trim(),
-                    );
+                    for (final row in rows) {
+                      await _svc.createSanctionType(
+                        sanctionTypeId: _slug(row.label),
+                        label: row.label,
+                        description: row.description,
+                      );
+                    }
                     if (!context.mounted) return;
                     Navigator.pop(context, true);
                   } catch (e) {
@@ -2575,13 +3179,20 @@ class _AddSanctionTypeDialogState extends State<_AddSanctionTypeDialog> {
                   }
                 },
           child: const Text(
-            'Save',
+            'Save All',
             style: TextStyle(fontWeight: FontWeight.w900),
           ),
         ),
       ],
     );
   }
+}
+
+class _SanctionRowValue {
+  final String label;
+  final String description;
+
+  const _SanctionRowValue({required this.label, required this.description});
 }
 
 class _AddSetActionDialog extends StatefulWidget {

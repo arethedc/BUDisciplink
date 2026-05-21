@@ -3,14 +3,22 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import '../../services/role_router.dart';
-import '../shared/widgets/logout_confirm_dialog.dart';
+import 'package:go_router/go_router.dart';
 import 'package:apps/pages/shared/widgets/app_inline_notice.dart';
 
-enum _VerifyLinkState { none, expired, alreadyVerified }
+enum _VerifyLinkState { none, expired }
 
 class VerifyEmailPage extends StatefulWidget {
-  const VerifyEmailPage({super.key});
+  const VerifyEmailPage({
+    super.key,
+    this.prefillEmail,
+    this.source,
+    this.emailAlreadySent = false,
+  });
+
+  final String? prefillEmail;
+  final String? source;
+  final bool emailAlreadySent;
 
   @override
   State<VerifyEmailPage> createState() => _VerifyEmailPageState();
@@ -18,7 +26,6 @@ class VerifyEmailPage extends StatefulWidget {
 
 class _VerifyEmailPageState extends State<VerifyEmailPage>
     with WidgetsBindingObserver {
-  // Theme (match your app)
   static const bg = Colors.white;
   static const primary = Color(0xFF1B5E20);
   static const hint = Color(0xFF6D7F62);
@@ -27,11 +34,10 @@ class _VerifyEmailPageState extends State<VerifyEmailPage>
   bool _checking = false;
   bool _verified = false;
   bool _processingActionLink = false;
-  bool _verifiedFromActionLink = false;
   bool _didReadRouteArgs = false;
   bool _didBootstrap = false;
+  bool _didShowInitialSentSnack = false;
   bool _isSignupFlow = false;
-  bool _isLoggedUnverifiedFlow = false;
   _VerifyLinkState _verifyLinkState = _VerifyLinkState.none;
 
   String? _email;
@@ -40,14 +46,26 @@ class _VerifyEmailPageState extends State<VerifyEmailPage>
   // resend cooldown
   int _cooldown = 0;
   Timer? _cooldownTimer;
-
-  // prevent spamming sendEmailVerification on init
-  bool _sentOnce = false;
+  StreamSubscription<User?>? _userChangeSub;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _readInitialUrlParams();
+  }
+
+  void _readInitialUrlParams() {
+    final source = (widget.source ?? '').trim().toLowerCase();
+    final prefill = (widget.prefillEmail ?? '').trim();
+    if (source == 'signup') _isSignupFlow = true;
+    if (prefill.isNotEmpty) {
+      _prefillEmailFromLink = prefill;
+      _email = prefill;
+    }
+    if (source == 'signup' || widget.emailAlreadySent) {
+      _cooldown = 60;
+    }
   }
 
   @override
@@ -65,15 +83,15 @@ class _VerifyEmailPageState extends State<VerifyEmailPage>
 
       if (source == 'signup') {
         _isSignupFlow = true;
-        _isLoggedUnverifiedFlow = false;
-      } else if (source == 'logged_unverified') {
-        _isSignupFlow = false;
-        _isLoggedUnverifiedFlow = true;
       }
 
       if (prefill.isNotEmpty) {
         _prefillEmailFromLink = prefill;
         _email ??= prefill;
+      }
+
+      if (args['verificationEmailAlreadySent'] == true) {
+        _startCooldown(60);
       }
     }
 
@@ -86,37 +104,33 @@ class _VerifyEmailPageState extends State<VerifyEmailPage>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _cooldownTimer?.cancel();
+    _userChangeSub?.cancel();
     super.dispose();
   }
 
   Future<void> _init() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
-      if (!mounted) return;
-      Navigator.pushNamedAndRemoveUntil(
-        context,
-        '/login',
-        (_) => false,
-        arguments: {'prefillEmail': _resolvedPrefillEmail()},
-      );
-      return;
+    final resolvedEmail = _resolvedPrefillEmail();
+    if (resolvedEmail.isEmpty) {
+      final current = FirebaseAuth.instance.currentUser;
+      final currentEmail = current?.email?.trim() ?? '';
+      if (currentEmail.isEmpty) {
+        if (!mounted) return;
+        context.go('/login');
+        return;
+      }
+      if (mounted) setState(() => _email = currentEmail);
+    } else if (mounted) {
+      setState(() => _email = resolvedEmail);
     }
 
-    setState(() => _email = user.email);
+    _userChangeSub?.cancel();
+    _userChangeSub = FirebaseAuth.instance.userChanges().listen((user) {
+      if (user != null && user.emailVerified && !_verified) {
+        _onVerified();
+      }
+    });
 
-    // If already verified, finish
-    await user.reload();
-    final fresh = FirebaseAuth.instance.currentUser;
-    if (fresh != null && fresh.emailVerified) {
-      await _finishVerified();
-      return;
-    }
-
-    // Send verification email once (signup flow only)
-    if (!_sentOnce && _isSignupFlow) {
-      _sentOnce = true;
-      await _safeSendVerificationEmail();
-    }
+    await _checkNow(silent: true);
   }
 
   Map<String, String> _extractParams() {
@@ -132,20 +146,41 @@ class _VerifyEmailPageState extends State<VerifyEmailPage>
   Future<void> _bootstrap() async {
     final params = _extractParams();
     final source = (params['source'] ?? '').toString().trim().toLowerCase();
-    if (source == 'signup') {
-      _isSignupFlow = true;
-      _isLoggedUnverifiedFlow = false;
-    } else if (source == 'logged_unverified') {
-      _isSignupFlow = false;
-      _isLoggedUnverifiedFlow = true;
-    }
+    final sentFromQuery =
+        (params['verificationEmailAlreadySent'] ?? '').trim().toLowerCase() ==
+        'true';
+    final isSignupSource = source == 'signup';
+    final shouldShowSentState = isSignupSource || sentFromQuery;
 
     final prefillEmail = (params['prefillEmail'] ?? params['email'] ?? '')
         .toString()
         .trim();
-    if (prefillEmail.isNotEmpty) {
-      _prefillEmailFromLink = prefillEmail;
-      _email ??= prefillEmail;
+    if (mounted) {
+      setState(() {
+        if (isSignupSource) _isSignupFlow = true;
+        if (prefillEmail.isNotEmpty) {
+          _prefillEmailFromLink = prefillEmail;
+          _email ??= prefillEmail;
+        }
+      });
+    }
+
+    if (shouldShowSentState) {
+      if (_cooldownTimer == null) {
+        _startCooldown(60);
+      }
+      if (!_didShowInitialSentSnack && mounted) {
+        _didShowInitialSentSnack = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          AppScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Email verification sent successfully.'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        });
+      }
     }
 
     final handled = await _tryHandleActionLink(params);
@@ -164,27 +199,17 @@ class _VerifyEmailPageState extends State<VerifyEmailPage>
 
     try {
       await FirebaseAuth.instance.applyActionCode(oobCode);
-      await FirebaseAuth.instance.currentUser?.reload();
+      try { await FirebaseAuth.instance.currentUser?.reload(); } catch (_) {}
       if (!mounted) return true;
-      setState(() {
-        _processingActionLink = false;
-        _verifiedFromActionLink = true;
-      });
-      await _finishVerified(autoRedirectToLogin: _isLoggedUnverifiedFlow);
+      setState(() => _processingActionLink = false);
+      await _onVerified();
       return true;
     } on FirebaseAuthException catch (e) {
       if (!mounted) return true;
-      if (e.code == 'expired-action-code') {
+      if (e.code == 'expired-action-code' || e.code == 'invalid-action-code') {
         setState(() {
           _processingActionLink = false;
           _verifyLinkState = _VerifyLinkState.expired;
-        });
-        return true;
-      }
-      if (e.code == 'invalid-action-code') {
-        setState(() {
-          _processingActionLink = false;
-          _verifyLinkState = _VerifyLinkState.alreadyVerified;
         });
         return true;
       }
@@ -208,7 +233,6 @@ class _VerifyEmailPageState extends State<VerifyEmailPage>
     return false;
   }
 
-  // Called when user returns to app (after clicking email link)
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed && !_verified) {
@@ -218,51 +242,90 @@ class _VerifyEmailPageState extends State<VerifyEmailPage>
 
   Future<void> _safeSendVerificationEmail() async {
     try {
-      final user = FirebaseAuth.instance.currentUser;
-      if (user == null) return;
-      final safeEmail = Uri.encodeQueryComponent(user.email ?? '');
-      final source = _isLoggedUnverifiedFlow ? 'logged_unverified' : 'signup';
-      final continueUrl = kIsWeb
-          ? '${Uri.base.origin}/#/verify-email?prefillEmail=$safeEmail&source=$source'
-          : '';
-      if (continueUrl.isNotEmpty) {
-        try {
-          final callable = FirebaseFunctions.instanceFor(
-            region: 'asia-east1',
-          ).httpsCallable('sendCurrentUserVerifyEmailLink');
-          await callable.call(<String, dynamic>{
-            'email': user.email ?? '',
-            'continueUrl': continueUrl,
-          });
-        } catch (_) {
-          await user.sendEmailVerification(
-            ActionCodeSettings(url: continueUrl, handleCodeInApp: true),
-          );
-        }
-      } else {
-        await user.sendEmailVerification();
+      final email = _resolvedPrefillEmail();
+      if (email.isEmpty) {
+        if (!mounted) return;
+        AppScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Please sign up or log in first before requesting another verification email.',
+            ),
+            backgroundColor: Colors.orange,
+          ),
+        );
+        return;
       }
-      _startCooldown(30);
 
+      final currentUser = FirebaseAuth.instance.currentUser;
+      if (currentUser == null) {
+        if (!mounted) return;
+        AppScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Please sign up or log in first before requesting another verification email.',
+            ),
+            backgroundColor: Colors.orange,
+          ),
+        );
+        return;
+      }
+
+      final safeEmail = Uri.encodeQueryComponent(email);
+      final continueUrl = kIsWeb
+          ? '${Uri.base.origin}/verify-email?prefillEmail=$safeEmail&source=signup'
+          : '';
+      if (continueUrl.isEmpty) {
+        throw StateError(
+          'Missing verify-email continue URL for resend verification flow.',
+        );
+      }
+
+      final callable = FirebaseFunctions.instanceFor(
+        region: 'asia-east1',
+      ).httpsCallable('sendCurrentUserVerifyEmailLink');
+      final res = await callable.call<Map<dynamic, dynamic>>(<String, dynamic>{
+        'email': email,
+        'continueUrl': continueUrl,
+      });
+      final data = res.data.cast<dynamic, dynamic>();
+      if (data['mailQueued'] != true) {
+        throw StateError('Verification email was not queued.');
+      }
+
+      _startCooldown(30);
       if (!mounted) return;
       AppScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text("Verification email sent to ${user.email ?? ''}."),
+          content: Text('Verification email sent to $email.'),
           backgroundColor: Colors.green,
         ),
       );
     } on FirebaseAuthException catch (e) {
       if (!mounted) return;
-      String msg = "Could not send email: ${e.code}";
+      String msg = 'Could not send email: ${e.code}';
       if (e.code == 'too-many-requests') {
-        msg = "Too many requests. Please wait a few minutes then try again.";
+        msg = 'Too many requests. Please wait a few minutes then try again.';
         _startCooldown(60);
       }
       AppScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(msg), backgroundColor: Colors.orange),
       );
-    } catch (_) {
-      // ignore
+    } on FirebaseFunctionsException catch (e) {
+      if (!mounted) return;
+      final msg = e.message?.trim().isNotEmpty == true
+          ? e.message!.trim()
+          : 'Could not send verification email (${e.code}).';
+      AppScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(msg), backgroundColor: Colors.orange),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      AppScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not send verification email: $e'),
+          backgroundColor: Colors.orange,
+        ),
+      );
     }
   }
 
@@ -286,31 +349,34 @@ class _VerifyEmailPageState extends State<VerifyEmailPage>
 
   Future<void> _checkNow({bool silent = false}) async {
     if (_checking || _verified) return;
-
     setState(() => _checking = true);
     try {
       final user = FirebaseAuth.instance.currentUser;
       if (user == null) {
         if (!mounted) return;
-        Navigator.pushNamedAndRemoveUntil(
-          context,
-          '/login',
-          (_) => false,
-          arguments: {'prefillEmail': _resolvedPrefillEmail()},
-        );
+        context.go('/login');
         return;
       }
-
       await user.reload();
       final fresh = FirebaseAuth.instance.currentUser;
-
       if (fresh != null && fresh.emailVerified) {
-        await _finishVerified();
+        await _onVerified();
       } else if (!silent && mounted) {
         AppScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
-              "Not verified yet. Please click the link in your email then try again.",
+              'Not verified yet. Please click the link in your email then try again.',
+            ),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+    } catch (_) {
+      if (!silent && mounted) {
+        AppScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Could not check verification status right now. Please try again.',
             ),
             backgroundColor: Colors.orange,
           ),
@@ -321,48 +387,26 @@ class _VerifyEmailPageState extends State<VerifyEmailPage>
     }
   }
 
-  Future<void> _finishVerified({bool autoRedirectToLogin = true}) async {
-    setState(() => _verified = true);
-
-    if (!autoRedirectToLogin) return;
-
-    if (_isLoggedUnverifiedFlow) {
-      await Future<void>.delayed(const Duration(milliseconds: 900));
-      if (!mounted) return;
-      await RoleRouter.route(context);
-      return;
-    }
-
-    final verifiedEmail = _resolvedPrefillEmail();
-    await Future<void>.delayed(const Duration(milliseconds: 850));
-    await FirebaseAuth.instance.signOut();
+  Future<void> _onVerified() async {
+    if (_verified) return;
+    _userChangeSub?.cancel();
+    _userChangeSub = null;
     if (!mounted) return;
-    Navigator.pushNamedAndRemoveUntil(
-      context,
-      '/login',
-      (_) => false,
-      arguments: {'prefillEmail': verifiedEmail},
-    );
+    setState(() => _verified = true);
   }
 
   Future<void> _goToLogin() async {
+    _userChangeSub?.cancel();
+    _userChangeSub = null;
     final verifiedEmail = _resolvedPrefillEmail();
     await FirebaseAuth.instance.signOut();
     if (!mounted) return;
-    Navigator.pushNamedAndRemoveUntil(
-      context,
-      '/login',
-      (_) => false,
-      arguments: {'prefillEmail': verifiedEmail},
+    context.go(
+      Uri(
+        path: '/login',
+        queryParameters: {'prefillEmail': verifiedEmail},
+      ).toString(),
     );
-  }
-
-  Future<void> _logoutFromVerify() async {
-    final confirmed = await showLogoutConfirmDialog(context);
-    if (!mounted || !confirmed) return;
-    await FirebaseAuth.instance.signOut();
-    if (!mounted) return;
-    Navigator.pushNamedAndRemoveUntil(context, '/welcome', (_) => false);
   }
 
   String _resolvedPrefillEmail() {
@@ -375,7 +419,6 @@ class _VerifyEmailPageState extends State<VerifyEmailPage>
 
   @override
   Widget build(BuildContext context) {
-    // card sizing like your other pages
     return LayoutBuilder(
       builder: (context, constraints) {
         const double fixedCardWidth = 420;
@@ -408,13 +451,13 @@ class _VerifyEmailPageState extends State<VerifyEmailPage>
                     duration: const Duration(milliseconds: 250),
                     child: _verified
                         ? _VerifiedState(
-                            showLoginButton: _verifiedFromActionLink,
                             isSignupFlow: _isSignupFlow,
                             onGoToLogin: _goToLogin,
                           )
                         : _verifyLinkState != _VerifyLinkState.none
                         ? _VerifyLinkStateView(
                             state: _verifyLinkState,
+                            onResendVerification: _safeSendVerificationEmail,
                             onGoToLogin: _goToLogin,
                           )
                         : Column(
@@ -429,7 +472,7 @@ class _VerifyEmailPageState extends State<VerifyEmailPage>
                               ),
                               const SizedBox(height: 10),
                               const Text(
-                                "Verify your email",
+                                'Verify your email',
                                 textAlign: TextAlign.center,
                                 style: TextStyle(
                                   color: textDark,
@@ -440,8 +483,8 @@ class _VerifyEmailPageState extends State<VerifyEmailPage>
                               const SizedBox(height: 8),
                               Text(
                                 _email == null
-                                    ? "We sent a verification link to your email."
-                                    : "We sent a verification link to:\n$_email",
+                                    ? 'We sent a verification link to your email.'
+                                    : 'We sent a verification link to:\n$_email',
                                 textAlign: TextAlign.center,
                                 style: const TextStyle(
                                   color: hint,
@@ -449,42 +492,6 @@ class _VerifyEmailPageState extends State<VerifyEmailPage>
                                 ),
                               ),
                               const SizedBox(height: 14),
-                              if (_isLoggedUnverifiedFlow) ...[
-                                Container(
-                                  padding: const EdgeInsets.all(12),
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFFFFF8E1),
-                                    borderRadius: BorderRadius.circular(12),
-                                    border: Border.all(
-                                      color: const Color(0xFFFFE082),
-                                    ),
-                                  ),
-                                  child: const Row(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Icon(
-                                        Icons.warning_amber_rounded,
-                                        color: Color(0xFF8D6E00),
-                                        size: 18,
-                                      ),
-                                      SizedBox(width: 10),
-                                      Expanded(
-                                        child: Text(
-                                          "Email is not yet verified. Check your email and click the verification link, or use resend below.",
-                                          style: TextStyle(
-                                            color: textDark,
-                                            fontWeight: FontWeight.w700,
-                                            fontSize: 12.5,
-                                            height: 1.25,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                const SizedBox(height: 10),
-                              ],
 
                               Container(
                                 padding: const EdgeInsets.all(12),
@@ -507,12 +514,10 @@ class _VerifyEmailPageState extends State<VerifyEmailPage>
                                     Expanded(
                                       child: Text(
                                         _isSignupFlow
-                                            ? "Open your email, click the verification link, then come back here.\n\nAfter verification, log in and complete your student profile.\n\nTip: Check Spam/Promotions."
-                                            : "Open your email, click the verification link, then come back here.\n\nTip: Check Spam/Promotions.",
+                                            ? 'Open your email, click the verification link, then come back here.\n\nAfter verification, log in and complete your student profile.\n\nTip: Check Spam/Promotions.'
+                                            : 'Open your email, click the verification link, then come back here.\n\nTip: Check Spam/Promotions.',
                                         style: TextStyle(
-                                          color: textDark.withValues(
-                                            alpha: 0.85,
-                                          ),
+                                          color: textDark.withValues(alpha: 0.85),
                                           fontWeight: FontWeight.w700,
                                           fontSize: 12.5,
                                           height: 1.25,
@@ -559,7 +564,6 @@ class _VerifyEmailPageState extends State<VerifyEmailPage>
                               ),
 
                               const SizedBox(height: 10),
-
                               TextButton(
                                 onPressed:
                                     (_cooldown > 0 || _processingActionLink)
@@ -573,48 +577,23 @@ class _VerifyEmailPageState extends State<VerifyEmailPage>
                                 ),
                                 child: Text(
                                   _cooldown > 0
-                                      ? "Resend available in $_cooldown s"
-                                      : "Resend verification email",
+                                      ? 'Resend available in $_cooldown s'
+                                      : 'Resend verification email',
                                 ),
                               ),
-                              if (_isSignupFlow) ...[
-                                const SizedBox(height: 4),
-                                TextButton(
-                                  onPressed: _processingActionLink
-                                      ? null
-                                      : _goToLogin,
-                                  style: TextButton.styleFrom(
-                                    foregroundColor: primary.withValues(
-                                      alpha: 0.9,
-                                    ),
-                                    textStyle: const TextStyle(
-                                      fontWeight: FontWeight.w900,
-                                    ),
+                              const SizedBox(height: 2),
+                              TextButton(
+                                onPressed: _processingActionLink
+                                    ? null
+                                    : _goToLogin,
+                                style: TextButton.styleFrom(
+                                  foregroundColor: primary.withValues(alpha: 0.9),
+                                  textStyle: const TextStyle(
+                                    fontWeight: FontWeight.w900,
                                   ),
-                                  child: const Text('Back to Login'),
                                 ),
-                              ],
-                              if (_isLoggedUnverifiedFlow) ...[
-                                const SizedBox(height: 4),
-                                TextButton.icon(
-                                  onPressed: _processingActionLink
-                                      ? null
-                                      : _logoutFromVerify,
-                                  icon: const Icon(
-                                    Icons.logout_rounded,
-                                    size: 18,
-                                  ),
-                                  style: TextButton.styleFrom(
-                                    foregroundColor: primary.withValues(
-                                      alpha: 0.9,
-                                    ),
-                                    textStyle: const TextStyle(
-                                      fontWeight: FontWeight.w900,
-                                    ),
-                                  ),
-                                  label: const Text('Logout'),
-                                ),
-                              ],
+                                child: const Text('Go to Login'),
+                              ),
                             ],
                           ),
                   ),
@@ -629,13 +608,8 @@ class _VerifyEmailPageState extends State<VerifyEmailPage>
 }
 
 class _VerifiedState extends StatelessWidget {
-  const _VerifiedState({
-    required this.showLoginButton,
-    required this.isSignupFlow,
-    required this.onGoToLogin,
-  });
+  const _VerifiedState({required this.isSignupFlow, required this.onGoToLogin});
 
-  final bool showLoginButton;
   final bool isSignupFlow;
   final VoidCallback onGoToLogin;
 
@@ -662,69 +636,15 @@ class _VerifiedState extends StatelessWidget {
         ),
         const SizedBox(height: 14),
         const Text(
-          "Email verified successfully",
+          'Email verified successfully',
           style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900),
           textAlign: TextAlign.center,
         ),
         const SizedBox(height: 8),
         Text(
           isSignupFlow
-              ? "Your email has been verified.\nLog in and complete your student profile to continue."
-              : "Your email has been verified. You can now log in to your account.",
-          textAlign: TextAlign.center,
-          style: const TextStyle(
-            color: Color(0xFF6D7F62),
-            fontWeight: FontWeight.w700,
-            height: 1.3,
-          ),
-        ),
-        if (showLoginButton) ...[
-          const SizedBox(height: 18),
-          FilledButton(
-            onPressed: onGoToLogin,
-            child: const Text('Go to Login'),
-          ),
-        ],
-      ],
-    );
-  }
-}
-
-class _VerifyLinkStateView extends StatelessWidget {
-  const _VerifyLinkStateView({required this.state, required this.onGoToLogin});
-
-  final _VerifyLinkState state;
-  final VoidCallback onGoToLogin;
-
-  @override
-  Widget build(BuildContext context) {
-    final isExpired = state == _VerifyLinkState.expired;
-    final title = isExpired
-        ? 'Verification link expired'
-        : 'Email already verified';
-    final description = isExpired
-        ? 'This link is no longer valid.\nPlease log in to request a new verification email.'
-        : 'Your email is already verified.\nYou can now log in to your account.';
-
-    return Column(
-      key: ValueKey('verify-link-state-${state.name}'),
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Icon(
-          isExpired ? Icons.link_off_rounded : Icons.verified_rounded,
-          size: 82,
-          color: isExpired ? const Color(0xFFEF6C00) : Colors.green,
-        ),
-        const SizedBox(height: 14),
-        Text(
-          title,
-          style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900),
-          textAlign: TextAlign.center,
-        ),
-        const SizedBox(height: 8),
-        Text(
-          description,
+              ? 'Your email has been verified.\nLog in and complete your student profile to continue.'
+              : 'Your email has been verified. You can now log in to your account.',
           textAlign: TextAlign.center,
           style: const TextStyle(
             color: Color(0xFF6D7F62),
@@ -739,3 +659,63 @@ class _VerifyLinkStateView extends StatelessWidget {
   }
 }
 
+class _VerifyLinkStateView extends StatelessWidget {
+  const _VerifyLinkStateView({
+    required this.state,
+    required this.onGoToLogin,
+    required this.onResendVerification,
+  });
+
+  final _VerifyLinkState state;
+  final VoidCallback onGoToLogin;
+  final Future<void> Function() onResendVerification;
+
+  @override
+  Widget build(BuildContext context) {
+    final isExpired = state == _VerifyLinkState.expired;
+    const title = 'Verification link expired';
+    const description =
+        'This verification link is no longer valid or has expired.\nRequest a new link below, or go to Login if your email is already verified.';
+
+    return Column(
+      key: ValueKey('verify-link-state-${state.name}'),
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Icon(
+          Icons.link_off_rounded,
+          size: 82,
+          color: Color(0xFFEF6C00),
+        ),
+        const SizedBox(height: 14),
+        const Text(
+          title,
+          style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900),
+          textAlign: TextAlign.center,
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          description,
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            color: Color(0xFF6D7F62),
+            fontWeight: FontWeight.w700,
+            height: 1.3,
+          ),
+        ),
+        const SizedBox(height: 18),
+        if (isExpired) ...[
+          FilledButton(
+            onPressed: () => onResendVerification(),
+            child: const Text('Resend verification email'),
+          ),
+          const SizedBox(height: 10),
+        ],
+        TextButton(
+          onPressed: onGoToLogin,
+          child: const Text('Go to Login'),
+        ),
+      ],
+    );
+  }
+}

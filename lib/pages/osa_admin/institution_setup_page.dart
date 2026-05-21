@@ -6,6 +6,7 @@ import 'widgets/osa_common_widgets.dart';
 import '../../services/college_program_seed_service.dart';
 import '../../services/academic_settings_service.dart';
 import 'widgets/institution_colleges_programs_pane.dart';
+import 'package:apps/services/app_firestore.dart';
 
 const _bg = Colors.white;
 const _primary = Color(0xFF1B5E20);
@@ -14,7 +15,10 @@ const _hint = Color(0xFF6D7F62);
 enum _InstitutionSection { academicSettings, collegesPrograms }
 
 class InstitutionSetupPage extends StatefulWidget {
-  const InstitutionSetupPage({super.key});
+  final String? initialTab;
+  final ValueChanged<String>? onTabChanged;
+
+  const InstitutionSetupPage({super.key, this.initialTab, this.onTabChanged});
 
   @override
   State<InstitutionSetupPage> createState() => _InstitutionSetupPageState();
@@ -27,10 +31,40 @@ class _InstitutionSetupPageState extends State<InstitutionSetupPage>
   _InstitutionSection _section = _InstitutionSection.academicSettings;
   bool _seedingAcademic = false;
 
+  _InstitutionSection _sectionFromKey(String? raw) {
+    final value = (raw ?? '').trim().toLowerCase();
+    switch (value) {
+      case 'colleges-programs':
+      case 'colleges_programs':
+      case 'colleges':
+      case 'programs':
+        return _InstitutionSection.collegesPrograms;
+      case 'school-year':
+      case 'school_year':
+      case 'schoolyear':
+      default:
+        return _InstitutionSection.academicSettings;
+    }
+  }
+
+  String _sectionKey(_InstitutionSection section) {
+    switch (section) {
+      case _InstitutionSection.collegesPrograms:
+        return 'colleges-programs';
+      case _InstitutionSection.academicSettings:
+      default:
+        return 'school-year';
+    }
+  }
+
   @override
   void initState() {
     super.initState();
     _sectionController = TabController(length: 2, vsync: this);
+    final initialSection = _sectionFromKey(widget.initialTab);
+    _section = initialSection;
+    _sectionController.index =
+        initialSection == _InstitutionSection.collegesPrograms ? 1 : 0;
     _sectionController.addListener(() {
       if (_sectionController.indexIsChanging) return;
       final next = _sectionController.index == 1
@@ -38,8 +72,23 @@ class _InstitutionSetupPageState extends State<InstitutionSetupPage>
           : _InstitutionSection.academicSettings;
       if (next != _section) {
         setState(() => _section = next);
+        widget.onTabChanged?.call(_sectionKey(next));
       }
     });
+  }
+
+  @override
+  void didUpdateWidget(covariant InstitutionSetupPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.initialTab == widget.initialTab) return;
+    final next = _sectionFromKey(widget.initialTab);
+    final nextIndex = next == _InstitutionSection.collegesPrograms ? 1 : 0;
+    if (_sectionController.index != nextIndex) {
+      _sectionController.index = nextIndex;
+    }
+    if (_section != next) {
+      setState(() => _section = next);
+    }
   }
 
   @override
@@ -124,84 +173,51 @@ class _InstitutionSetupPageState extends State<InstitutionSetupPage>
       body: Column(
         children: [
           Container(
-            padding: const EdgeInsets.fromLTRB(24, 20, 24, 12),
+            padding: const EdgeInsets.fromLTRB(24, 10, 24, 0),
             color: Colors.white,
-            child: Row(
-              children: [
-                Expanded(
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: TabBar(
-                      controller: _sectionController,
-                      isScrollable: true,
-                      tabAlignment: TabAlignment.start,
-                      labelColor: _primary,
-                      unselectedLabelColor: _hint.withValues(alpha: 0.75),
-                      indicatorColor: _primary,
-                      indicatorWeight: 4,
-                      dividerColor: Colors.transparent,
-                      labelStyle: const TextStyle(
-                        fontWeight: FontWeight.w900,
-                        fontSize: 16,
-                      ),
-                      unselectedLabelStyle: const TextStyle(
-                        fontWeight: FontWeight.w700,
-                        fontSize: 16,
-                      ),
-                      tabs: const [
-                        Tab(text: 'School Year & Semesters'),
-                        Tab(text: 'Colleges & Programs'),
-                      ],
-                      onTap: (index) {
-                        setState(() {
-                          _section = index == 1
-                              ? _InstitutionSection.collegesPrograms
-                              : _InstitutionSection.academicSettings;
-                        });
-                      },
-                    ),
-                  ),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: TabBar(
+                controller: _sectionController,
+                isScrollable: true,
+                tabAlignment: TabAlignment.start,
+                labelColor: _primary,
+                unselectedLabelColor: _hint.withValues(alpha: 0.6),
+                indicatorColor: _primary,
+                indicatorWeight: 4,
+                dividerColor: Colors.transparent,
+                labelStyle: const TextStyle(
+                  fontWeight: FontWeight.w900,
+                  fontSize: 16,
                 ),
-                if (_section == _InstitutionSection.collegesPrograms) ...[
-                  const SizedBox(width: 12),
-                  OutlinedButton.icon(
-                    onPressed: _seedingAcademic ? null : _seedAcademicStructure,
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: _primary,
-                      side: BorderSide(color: _primary.withValues(alpha: 0.35)),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 10,
-                      ),
-                    ),
-                    icon: _seedingAcademic
-                        ? const SizedBox(
-                            width: 14,
-                            height: 14,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: _primary,
-                            ),
-                          )
-                        : const Icon(Icons.download_rounded, size: 18),
-                    label: Text(
-                      _seedingAcademic
-                          ? 'Seeding...'
-                          : 'Seed Colleges & Programs',
-                    ),
-                  ),
+                unselectedLabelStyle: const TextStyle(
+                  fontWeight: FontWeight.w700,
+                  fontSize: 16,
+                ),
+                tabs: const [
+                  Tab(text: 'School Year & Semesters'),
+                  Tab(text: 'Colleges & Programs'),
                 ],
-              ],
+                onTap: (index) {
+                  final next = index == 1
+                      ? _InstitutionSection.collegesPrograms
+                      : _InstitutionSection.academicSettings;
+                  if (next != _section) {
+                    setState(() => _section = next);
+                  }
+                  widget.onTabChanged?.call(_sectionKey(next));
+                },
+              ),
             ),
           ),
           const Divider(height: 1),
           Expanded(
             child: _section == _InstitutionSection.academicSettings
                 ? const _AcademicSettingsPane()
-                : const CollegesProgramsPane(),
+                : CollegesProgramsPane(
+                    onSeedRequested: _seedAcademicStructure,
+                    isSeedingAcademic: _seedingAcademic,
+                  ),
           ),
         ],
       ),
@@ -293,9 +309,7 @@ class _AcademicSettingsPaneState extends State<_AcademicSettingsPane> {
             _queueAutoSyncForActiveYears(docs);
 
             if (docs.isEmpty) {
-              return _buildEmptyTableCard(
-                'No School Years yet. Click "Create School Year".',
-              );
+              return _buildEmptyTableCard();
             }
 
             if (_selectedSyId != null &&
@@ -307,8 +321,19 @@ class _AcademicSettingsPaneState extends State<_AcademicSettingsPane> {
             }
 
             if (_selectedSyId != null) {
+              QueryDocumentSnapshot<Map<String, dynamic>>? selectedDoc;
+              for (final doc in docs) {
+                if (doc.id == _selectedSyId) {
+                  selectedDoc = doc;
+                  break;
+                }
+              }
+              final selectedLabel = selectedDoc == null
+                  ? _selectedSyId!
+                  : (selectedDoc.data()['label'] ?? selectedDoc.id).toString();
               return _buildYearDetailsPane(
                 syId: _selectedSyId!,
+                syLabel: selectedLabel,
                 isDesktop: isDesktop,
               );
             }
@@ -368,7 +393,7 @@ class _AcademicSettingsPaneState extends State<_AcademicSettingsPane> {
                     Text(
                       subtitle,
                       style: const TextStyle(
-                        color: muted,
+                        color: _hint,
                         fontWeight: FontWeight.w700,
                         fontSize: 12.5,
                       ),
@@ -398,7 +423,7 @@ class _AcademicSettingsPaneState extends State<_AcademicSettingsPane> {
                     Text(
                       subtitle,
                       style: const TextStyle(
-                        color: muted,
+                        color: _hint,
                         fontWeight: FontWeight.w700,
                         fontSize: 12.5,
                       ),
@@ -447,7 +472,7 @@ class _AcademicSettingsPaneState extends State<_AcademicSettingsPane> {
                   Text(
                     subtitle,
                     style: const TextStyle(
-                      color: muted,
+                      color: _hint,
                       fontWeight: FontWeight.w700,
                       fontSize: 12,
                     ),
@@ -461,7 +486,7 @@ class _AcademicSettingsPaneState extends State<_AcademicSettingsPane> {
     );
   }
 
-  Widget _buildEmptyTableCard(String message) {
+  Widget _buildEmptyTableCard() {
     return Padding(
       padding: const EdgeInsets.all(16),
       child: Align(
@@ -478,20 +503,90 @@ class _AcademicSettingsPaneState extends State<_AcademicSettingsPane> {
                     _buildTopHeader(
                       title: 'School Year & Semesters',
                       subtitle: _academicHeaderSubtitle,
-                      action: _buildPanelHeaderActionButton(
-                        onPressed: _openCreateSY,
-                        icon: Icons.add_rounded,
-                        label: 'Create School Year',
-                      ),
                     ),
-                    Padding(
-                      padding: const EdgeInsets.all(20),
-                      child: Text(
-                        message,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                          color: muted,
-                          fontWeight: FontWeight.w900,
+                    Expanded(
+                      child: Center(
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 24,
+                            vertical: 24,
+                          ),
+                          child: ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: 720),
+                            child: Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.fromLTRB(
+                                28,
+                                28,
+                                28,
+                                26,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(24),
+                                border: Border.all(
+                                  color: Colors.black.withValues(alpha: 0.08),
+                                ),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.black.withValues(alpha: 0.04),
+                                    blurRadius: 24,
+                                    offset: const Offset(0, 12),
+                                  ),
+                                ],
+                              ),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Text(
+                                    'Create your first school year',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      color: dark,
+                                      fontWeight: FontWeight.w900,
+                                      fontSize: 22,
+                                      letterSpacing: -0.2,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  const Text(
+                                    'Start by creating an academic year, then configure the active semester inside its details panel.',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      color: muted,
+                                      fontWeight: FontWeight.w700,
+                                      fontSize: 13.5,
+                                      height: 1.45,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 22),
+                                  FilledButton.icon(
+                                    onPressed: _openCreateSY,
+                                    style: FilledButton.styleFrom(
+                                      backgroundColor: _primary,
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 22,
+                                        vertical: 15,
+                                      ),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(14),
+                                      ),
+                                    ),
+                                    icon: const Icon(
+                                      Icons.add_rounded,
+                                      size: 18,
+                                    ),
+                                    label: const Text(
+                                      'Create School Year',
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.w900,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
                         ),
                       ),
                     ),
@@ -597,6 +692,7 @@ class _AcademicSettingsPaneState extends State<_AcademicSettingsPane> {
 
   Widget _buildYearDetailsPane({
     required String syId,
+    required String syLabel,
     required bool isDesktop,
   }) {
     return Padding(
@@ -616,7 +712,7 @@ class _AcademicSettingsPaneState extends State<_AcademicSettingsPane> {
                   children: [
                     _buildPathHeader(
                       title: 'Semesters',
-                      subtitle: syId,
+                      subtitle: syLabel,
                       onBack: () => setState(() => _selectedSyId = null),
                     ),
                     Expanded(
@@ -831,7 +927,7 @@ class _YearDetailsPanelState extends State<_YearDetailsPanel> {
     return Container(
       color: Colors.white,
       child: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-        stream: FirebaseFirestore.instance
+        stream: AppFirestore.instance
             .collection('academic_years')
             .doc(widget.syId)
             .snapshots(),
@@ -870,13 +966,48 @@ class _YearDetailsPanelState extends State<_YearDetailsPanel> {
               final syBounds = _schoolYearDateBounds(label);
               final syFirst = syBounds.$1;
               final syLast = syBounds.$2;
-              final canEditTerm2 = _editing && _t1Start != null && _t1End != null;
-              final canEditTerm3 = _editing && _t2Start != null && _t2End != null;
+              final activeYearLocked = status == 'active';
+              final canEditFutureTerm1 =
+                  !activeYearLocked || _isEditableFutureSemester(_t1Start);
+              final canEditFutureTerm2 =
+                  !activeYearLocked || _isEditableFutureSemester(_t2Start);
+              final canEditFutureTerm3 =
+                  !activeYearLocked || _isEditableFutureSemester(_t3Start);
+              final hasEditableSemesters =
+                  !activeYearLocked ||
+                  canEditFutureTerm1 ||
+                  canEditFutureTerm2 ||
+                  canEditFutureTerm3;
+              final canEditTerm1 = _editing && canEditFutureTerm1;
+              final canEditTerm2 =
+                  _editing &&
+                  _t1Start != null &&
+                  _t1End != null &&
+                  canEditFutureTerm2;
+              final canEditTerm3 =
+                  _editing &&
+                  _t2Start != null &&
+                  _t2End != null &&
+                  canEditFutureTerm3;
+              String? lockedSemesterSubtitle(bool canEditFutureTerm) {
+                if (!activeYearLocked || canEditFutureTerm) return null;
+                return 'Locked. This semester has already started or already passed and can no longer be edited.';
+              }
+
+              final activeSemesterHelp = activeYearLocked
+                  ? 'Active semester is set automatically from today and your semester date ranges. Once the school year is active, only future semesters can be edited.'
+                  : 'Active semester is set automatically from today and your semester date ranges.';
 
               DateTime pickFirst(List<DateTime?> values, DateTime fallback) =>
-                  _maxDate(values.whereType<DateTime>().toList(), fallback: fallback);
+                  _maxDate(
+                    values.whereType<DateTime>().toList(),
+                    fallback: fallback,
+                  );
               DateTime pickLast(List<DateTime?> values, DateTime fallback) =>
-                  _minDate(values.whereType<DateTime>().toList(), fallback: fallback);
+                  _minDate(
+                    values.whereType<DateTime>().toList(),
+                    fallback: fallback,
+                  );
 
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -901,11 +1032,13 @@ class _YearDetailsPanelState extends State<_YearDetailsPanel> {
                                     color: const Color(0xFFEAF6EE),
                                     borderRadius: BorderRadius.circular(10),
                                     border: Border.all(
-                                      color: headerGreen.withValues(alpha: 0.18),
+                                      color: headerGreen.withValues(
+                                        alpha: 0.18,
+                                      ),
                                     ),
                                   ),
-                                  child: const Text(
-                                    'Active semester is set automatically from today and your semester date ranges.',
+                                  child: Text(
+                                    activeSemesterHelp,
                                     style: TextStyle(
                                       color: muted,
                                       fontSize: 12,
@@ -916,9 +1049,12 @@ class _YearDetailsPanelState extends State<_YearDetailsPanel> {
                                 const SizedBox(height: 12),
                                 _TermDateRow(
                                   title: '1st Semester',
+                                  subtitle: lockedSemesterSubtitle(
+                                    canEditFutureTerm1,
+                                  ),
                                   start: _t1Start,
                                   end: _t1End,
-                                  enabled: _editing,
+                                  enabled: canEditTerm1,
                                   isActive: autoActiveTermId == 'term1',
                                   onPickStart: () => _pickDate(
                                     initialDate: _t1Start,
@@ -949,6 +1085,9 @@ class _YearDetailsPanelState extends State<_YearDetailsPanel> {
                                 const SizedBox(height: 10),
                                 _TermDateRow(
                                   title: '2nd Semester',
+                                  subtitle: lockedSemesterSubtitle(
+                                    canEditFutureTerm2,
+                                  ),
                                   start: _t2Start,
                                   end: _t2End,
                                   enabled: canEditTerm2,
@@ -984,6 +1123,9 @@ class _YearDetailsPanelState extends State<_YearDetailsPanel> {
                                 const SizedBox(height: 10),
                                 _TermDateRow(
                                   title: '3rd Semester',
+                                  subtitle: lockedSemesterSubtitle(
+                                    canEditFutureTerm3,
+                                  ),
                                   start: _t3Start,
                                   end: _t3End,
                                   enabled: canEditTerm3,
@@ -1014,11 +1156,15 @@ class _YearDetailsPanelState extends State<_YearDetailsPanel> {
                                 ),
                                 if (!_editing) ...[
                                   const SizedBox(height: 8),
-                                  const Align(
+                                  Align(
                                     alignment: Alignment.centerLeft,
                                     child: Text(
-                                      'Edit to update semester dates.',
-                                      style: TextStyle(
+                                      activeYearLocked
+                                          ? hasEditableSemesters
+                                                ? 'Only future semesters can be edited while this school year is active.'
+                                                : 'Past and current semesters are locked for this active school year.'
+                                          : 'Edit to update semester dates.',
+                                      style: const TextStyle(
                                         fontSize: 11.5,
                                         color: muted,
                                         fontWeight: FontWeight.w700,
@@ -1047,7 +1193,7 @@ class _YearDetailsPanelState extends State<_YearDetailsPanel> {
                         if (!_editing) ...[
                           Expanded(
                             child: OutlinedButton(
-                              onPressed: _saving
+                              onPressed: _saving || !hasEditableSemesters
                                   ? null
                                   : () => setState(() => _editing = true),
                               child: const Text(
@@ -1250,6 +1396,14 @@ class _YearDetailsPanelState extends State<_YearDetailsPanel> {
     });
   }
 
+  DateTime _dayOnlyValue(DateTime value) =>
+      DateTime(value.year, value.month, value.day);
+
+  bool _isEditableFutureSemester(DateTime? start) {
+    if (start == null) return true;
+    return _dayOnlyValue(start).isAfter(_dayOnlyValue(DateTime.now()));
+  }
+
   bool _hasCompleteSemesters() {
     if (_t1Start == null ||
         _t1End == null ||
@@ -1323,7 +1477,9 @@ class _YearDetailsPanelState extends State<_YearDetailsPanel> {
     final first = firstDate ?? DateTime(now.year - 2);
     final last = lastDate ?? DateTime(now.year + 5);
     if (last.isBefore(first)) {
-      _toast('No selectable dates in this range. Adjust adjacent semester dates.');
+      _toast(
+        'No selectable dates in this range. Adjust adjacent semester dates.',
+      );
       return;
     }
     final safeInitial = init.isBefore(first)
@@ -1367,23 +1523,11 @@ class _YearDetailsPanelState extends State<_YearDetailsPanel> {
     if (!_t2End!.isBefore(_t3Start!)) {
       return '3rd Sem must start after 2nd Sem ends.';
     }
-    if (!_sameDay(_dayAfter(_t1End!)!, _t2Start!)) {
-      return '2nd Sem must start the day after 1st Sem ends (no gap).';
-    }
-    if (!_sameDay(_dayAfter(_t2End!)!, _t3Start!)) {
-      return '3rd Sem must start the day after 2nd Sem ends (no gap).';
-    }
     return null;
   }
 
-  bool _sameDay(DateTime a, DateTime b) =>
-      a.year == b.year && a.month == b.month && a.day == b.day;
-
   (DateTime, DateTime) _schoolYearDateBounds(String label) {
-    final normalized = label
-        .trim()
-        .replaceAll('–', '-')
-        .replaceAll('—', '-');
+    final normalized = label.trim().replaceAll('–', '-').replaceAll('—', '-');
     final m = RegExp(r'(\d{4})\s*-\s*(\d{4})').firstMatch(normalized);
     if (m != null) {
       final startYear = int.tryParse(m.group(1) ?? '');
@@ -1476,6 +1620,7 @@ class _YearDetailsPanelState extends State<_YearDetailsPanel> {
 
 class _TermDateRow extends StatelessWidget {
   final String title;
+  final String? subtitle;
   final DateTime? start;
   final DateTime? end;
   final bool enabled;
@@ -1485,6 +1630,7 @@ class _TermDateRow extends StatelessWidget {
 
   const _TermDateRow({
     required this.title,
+    this.subtitle,
     required this.start,
     required this.end,
     required this.enabled,
@@ -1495,81 +1641,127 @@ class _TermDateRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final titleBlock = Expanded(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: const TextStyle(
+              color: dark,
+              fontWeight: FontWeight.w900,
+              fontSize: 15,
+            ),
+          ),
+          if (subtitle != null && subtitle!.trim().isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(
+              subtitle!,
+              style: TextStyle(
+                color: muted.withValues(alpha: 0.92),
+                fontWeight: FontWeight.w700,
+                fontSize: 12.5,
+                height: 1.35,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+
+    final dateFields = LayoutBuilder(
+      builder: (context, constraints) {
+        final stacked = constraints.maxWidth < 680;
+        if (stacked) {
+          return Column(
+            children: [
+              _DatePickField(
+                label: 'Start Date',
+                value: start == null ? null : _fmtDate(start!),
+                icon: Icons.event_outlined,
+                enabled: enabled,
+                onTap: onPickStart,
+              ),
+              const SizedBox(height: 8),
+              _DatePickField(
+                label: 'End Date',
+                value: end == null ? null : _fmtDate(end!),
+                icon: Icons.event_available_outlined,
+                enabled: enabled,
+                onTap: onPickEnd,
+              ),
+            ],
+          );
+        }
+
+        return Row(
+          children: [
+            Expanded(
+              child: _DatePickField(
+                label: 'Start Date',
+                value: start == null ? null : _fmtDate(start!),
+                icon: Icons.event_outlined,
+                enabled: enabled,
+                onTap: onPickStart,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: _DatePickField(
+                label: 'End Date',
+                value: end == null ? null : _fmtDate(end!),
+                icon: Icons.event_available_outlined,
+                enabled: enabled,
+                onTap: onPickEnd,
+              ),
+            ),
+          ],
+        );
+      },
+    );
+
     return Container(
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: const Color(0xFFF8FBF8),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: enabled && isActive
+              ? headerGreen.withValues(alpha: 0.18)
+              : Colors.black.withValues(alpha: 0.08),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.035),
+            blurRadius: 18,
+            offset: const Offset(0, 10),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              Expanded(
-                child: Text(
-                  title,
-                  style: const TextStyle(
-                    color: dark,
-                    fontWeight: FontWeight.w900,
-                    fontSize: 14,
-                  ),
-                ),
-              ),
+              titleBlock,
               _CompactStatusIndicator(active: isActive),
             ],
           ),
-          const SizedBox(height: 10),
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final stacked = constraints.maxWidth < 680;
-              if (stacked) {
-                return Column(
-                  children: [
-                    _DatePickField(
-                      label: 'Start Date',
-                      value: start == null ? null : _fmtDate(start!),
-                      icon: Icons.event_outlined,
-                      enabled: enabled,
-                      onTap: onPickStart,
-                    ),
-                    const SizedBox(height: 8),
-                    _DatePickField(
-                      label: 'End Date',
-                      value: end == null ? null : _fmtDate(end!),
-                      icon: Icons.event_available_outlined,
-                      enabled: enabled,
-                      onTap: onPickEnd,
-                    ),
-                  ],
-                );
-              }
-              return Row(
-                children: [
-                  Expanded(
-                    child: _DatePickField(
-                      label: 'Start Date',
-                      value: start == null ? null : _fmtDate(start!),
-                      icon: Icons.event_outlined,
-                      enabled: enabled,
-                      onTap: onPickStart,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: _DatePickField(
-                      label: 'End Date',
-                      value: end == null ? null : _fmtDate(end!),
-                      icon: Icons.event_available_outlined,
-                      enabled: enabled,
-                      onTap: onPickEnd,
-                    ),
-                  ),
-                ],
-              );
-            },
-          ),
+          if (enabled) ...[
+            const SizedBox(height: 6),
+            Text(
+              'Choose the start and end dates for this semester.',
+              style: TextStyle(
+                color: muted.withValues(alpha: 0.92),
+                fontWeight: FontWeight.w700,
+                fontSize: 12.5,
+              ),
+            ),
+            const SizedBox(height: 14),
+          ] else ...[
+            const SizedBox(height: 12),
+          ],
+          dateFields,
         ],
       ),
     );
@@ -1615,15 +1807,29 @@ class _DatePickField extends StatelessWidget {
       onTap: enabled ? onTap : null,
       borderRadius: BorderRadius.circular(10),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
         decoration: BoxDecoration(
-          color: enabled ? Colors.white : const Color(0xFFF0F3F0),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: Colors.black.withValues(alpha: 0.10)),
+          color: enabled ? const Color(0xFFFCFDFC) : const Color(0xFFF4F6F4),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: enabled
+                ? headerGreen.withValues(alpha: 0.12)
+                : Colors.black.withValues(alpha: 0.08),
+          ),
         ),
         child: Row(
           children: [
-            Icon(icon, size: 16, color: enabled ? headerGreen : muted),
+            Container(
+              width: 34,
+              height: 34,
+              decoration: BoxDecoration(
+                color: enabled
+                    ? headerGreen.withValues(alpha: 0.10)
+                    : muted.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(icon, size: 17, color: enabled ? headerGreen : muted),
+            ),
             const SizedBox(width: 8),
             Expanded(
               child: Column(
@@ -1643,7 +1849,7 @@ class _DatePickField extends StatelessWidget {
                     style: TextStyle(
                       color: value == null ? muted : dark,
                       fontWeight: FontWeight.w800,
-                      fontSize: 13,
+                      fontSize: 13.5,
                     ),
                   ),
                 ],
@@ -1816,26 +2022,38 @@ class _CreateSYDialogState extends State<_CreateSYDialog> {
   late final List<int> _availableStartYears;
   int? _selectedStartYear;
   String? _error;
+  static const int _yearRangeOffset = 3;
 
   @override
   void initState() {
     super.initState();
     final now = DateTime.now().year;
     final current = _parseSy(widget.currentAcademicYearLabel);
-    const yearsAhead = 10;
-    final minBase = now;
-    final maxBase = now + yearsAhead;
+    final minBase = now - _yearRangeOffset;
+    final maxBase = now + _yearRangeOffset;
 
     _availableStartYears = [
       for (int y = minBase; y <= maxBase; y++)
         if (!widget.existingLabels.contains('$y-${y + 1}')) y,
     ]..sort((a, b) => b.compareTo(a));
 
+    if (_availableStartYears.contains(now)) {
+      _selectedStartYear = now;
+      return;
+    }
+
     final expectedStart = current?.end;
     if (expectedStart != null && _availableStartYears.contains(expectedStart)) {
       _selectedStartYear = expectedStart;
     } else if (_availableStartYears.isNotEmpty) {
-      _selectedStartYear = _availableStartYears.first;
+      _selectedStartYear = _availableStartYears.reduce((best, year) {
+        final bestDistance = (best - now).abs();
+        final yearDistance = (year - now).abs();
+        if (yearDistance != bestDistance) {
+          return yearDistance < bestDistance ? year : best;
+        }
+        return year < best ? year : best;
+      });
     }
   }
 
@@ -1858,25 +2076,114 @@ class _CreateSYDialogState extends State<_CreateSYDialog> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text(
-          'Create Non-Consecutive Year?',
-          style: TextStyle(fontWeight: FontWeight.w900),
+        backgroundColor: Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        titlePadding: const EdgeInsets.fromLTRB(22, 20, 22, 10),
+        contentPadding: const EdgeInsets.fromLTRB(22, 0, 22, 12),
+        actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+        title: Row(
+          children: [
+            Container(
+              width: 42,
+              height: 42,
+              decoration: BoxDecoration(
+                color: Colors.orange.withValues(alpha: 0.10),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: Colors.orange.withValues(alpha: 0.18),
+                ),
+              ),
+              child: const Icon(
+                Icons.warning_amber_rounded,
+                color: Colors.orange,
+              ),
+            ),
+            const SizedBox(width: 12),
+            const Expanded(
+              child: Text(
+                'Create Non-Consecutive Year?',
+                style: TextStyle(
+                  fontWeight: FontWeight.w900,
+                  color: dark,
+                  fontSize: 19,
+                ),
+              ),
+            ),
+          ],
         ),
-        content: Text(
-          'This year is not the following year of the current academic year.\n\n'
-          'Current: $currentLabel\n'
-          'Expected next: $expectedLabel\n'
-          'Selected: $selectedLabel\n\n'
-          'Are you sure you want to create it?',
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'This selection does not continue directly from the current academic year.',
+              style: TextStyle(
+                color: _hint,
+                fontWeight: FontWeight.w700,
+                fontSize: 13,
+                height: 1.35,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Current: $currentLabel',
+                    style: const TextStyle(
+                      color: dark,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Expected next: $expectedLabel',
+                    style: const TextStyle(
+                      color: dark,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Selected: $selectedLabel',
+                    style: const TextStyle(
+                      color: dark,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
+            child: const Text(
+              'Cancel',
+              style: TextStyle(fontWeight: FontWeight.w900, color: _hint),
+            ),
           ),
           FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: _primary,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Create Anyway'),
+            child: const Text(
+              'Create Anyway',
+              style: TextStyle(fontWeight: FontWeight.w900),
+            ),
           ),
         ],
       ),
@@ -1887,6 +2194,8 @@ class _CreateSYDialogState extends State<_CreateSYDialog> {
   @override
   Widget build(BuildContext context) {
     final now = DateTime.now().year;
+    final minAllowed = now - _yearRangeOffset;
+    final maxAllowed = now + _yearRangeOffset;
     final hasOptions = _availableStartYears.isNotEmpty;
     final selectedStart = _selectedStartYear;
     final selectedEnd = selectedStart == null ? null : selectedStart + 1;
@@ -1895,18 +2204,35 @@ class _CreateSYDialogState extends State<_CreateSYDialog> {
         : '$selectedStart-$selectedEnd';
 
     return AlertDialog(
-      backgroundColor: bg,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      titlePadding: const EdgeInsets.fromLTRB(20, 18, 20, 0),
-      contentPadding: const EdgeInsets.fromLTRB(20, 14, 20, 8),
-      actionsPadding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
-      title: const Text(
-        'Create School Year',
-        style: TextStyle(
-          fontWeight: FontWeight.w900,
-          color: dark,
-          fontSize: 19,
-        ),
+      backgroundColor: Colors.white,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      titlePadding: const EdgeInsets.fromLTRB(22, 20, 22, 10),
+      contentPadding: const EdgeInsets.fromLTRB(22, 0, 22, 12),
+      actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+      title: Row(
+        children: [
+          Container(
+            width: 42,
+            height: 42,
+            decoration: BoxDecoration(
+              color: _primary.withValues(alpha: 0.10),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: _primary.withValues(alpha: 0.18)),
+            ),
+            child: const Icon(Icons.calendar_month_rounded, color: _primary),
+          ),
+          const SizedBox(width: 12),
+          const Expanded(
+            child: Text(
+              'Create School Year',
+              style: TextStyle(
+                fontWeight: FontWeight.w900,
+                color: _primary,
+                fontSize: 20,
+              ),
+            ),
+          ),
+        ],
       ),
       content: SizedBox(
         width: 560,
@@ -1917,16 +2243,17 @@ class _CreateSYDialogState extends State<_CreateSYDialog> {
             const Text(
               'Set the school year range for a new academic cycle.',
               style: TextStyle(
-                color: muted,
+                color: _hint,
                 fontWeight: FontWeight.w700,
                 fontSize: 13,
+                height: 1.35,
               ),
             ),
             const SizedBox(height: 14),
             Text(
-              'AVAILABLE YEARS (BASED ON CURRENT YEAR: $now)',
+              'AVAILABLE YEARS ($minAllowed TO $maxAllowed)',
               style: const TextStyle(
-                color: muted,
+                color: _hint,
                 fontWeight: FontWeight.w900,
                 fontSize: 11.5,
                 letterSpacing: 0.8,
@@ -1935,10 +2262,10 @@ class _CreateSYDialogState extends State<_CreateSYDialog> {
             const SizedBox(height: 8),
             Container(
               width: double.infinity,
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
                 color: Colors.white,
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(16),
                 border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
               ),
               child: Column(
@@ -1960,7 +2287,11 @@ class _CreateSYDialogState extends State<_CreateSYDialog> {
                           initialValue: selectedStart,
                           decoration: const InputDecoration(
                             labelText: 'Start Year',
-                            border: OutlineInputBorder(),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.all(
+                                Radius.circular(12),
+                              ),
+                            ),
                           ),
                           items: _availableStartYears
                               .map(
@@ -1984,7 +2315,11 @@ class _CreateSYDialogState extends State<_CreateSYDialog> {
                           initialValue: selectedEnd,
                           decoration: const InputDecoration(
                             labelText: 'End Year',
-                            border: OutlineInputBorder(),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.all(
+                                Radius.circular(12),
+                              ),
+                            ),
                           ),
                           items: selectedEnd == null
                               ? const []
@@ -2006,7 +2341,7 @@ class _CreateSYDialogState extends State<_CreateSYDialog> {
             Text(
               hasOptions
                   ? 'School Year ID: $selectedLabel'
-                  : 'No available school year from $now to ${now + 10}.',
+                  : 'No available school year from $minAllowed to $maxAllowed.',
               style: TextStyle(
                 color: hasOptions ? headerGreen : Colors.red.shade700,
                 fontWeight: FontWeight.w700,
@@ -2030,7 +2365,10 @@ class _CreateSYDialogState extends State<_CreateSYDialog> {
       actions: [
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
+          child: const Text(
+            'Cancel',
+            style: TextStyle(fontWeight: FontWeight.w900, color: _hint),
+          ),
         ),
         FilledButton(
           onPressed: !hasOptions
@@ -2062,6 +2400,12 @@ class _CreateSYDialogState extends State<_CreateSYDialog> {
                     context,
                   ).pop(_CreateSYResult(syId: syLabel, label: syLabel));
                 },
+          style: FilledButton.styleFrom(
+            backgroundColor: _primary,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+          ),
           child: const Text(
             'Create',
             style: TextStyle(fontWeight: FontWeight.w900),

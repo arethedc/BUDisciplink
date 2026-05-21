@@ -124,7 +124,10 @@ class _HandbookAiAssistantSheetState extends State<_HandbookAiAssistantSheet> {
 
     _historySessions.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
     if (_historySessions.length > _maxHistorySessions) {
-      _historySessions.removeRange(_maxHistorySessions, _historySessions.length);
+      _historySessions.removeRange(
+        _maxHistorySessions,
+        _historySessions.length,
+      );
     }
     _saveHistoryToStorage();
   }
@@ -297,11 +300,13 @@ class _HandbookAiAssistantSheetState extends State<_HandbookAiAssistantSheet> {
       ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
     final q = _historyQuery.trim().toLowerCase();
     if (q.isEmpty) return sessions;
-    return sessions.where((record) {
-      final topic = record.topic.toLowerCase();
-      final updated = _formatHistoryDate(record.updatedAt).toLowerCase();
-      return topic.contains(q) || updated.contains(q);
-    }).toList(growable: false);
+    return sessions
+        .where((record) {
+          final topic = record.topic.toLowerCase();
+          final updated = _formatHistoryDate(record.updatedAt).toLowerCase();
+          return topic.contains(q) || updated.contains(q);
+        })
+        .toList(growable: false);
   }
 
   Widget _buildHistoryPanel() {
@@ -534,7 +539,12 @@ class _HandbookAiAssistantSheetState extends State<_HandbookAiAssistantSheet> {
                             thumbVisibility: desktop,
                             child: ListView.builder(
                               controller: _scrollController,
-                              padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+                              padding: const EdgeInsets.fromLTRB(
+                                12,
+                                12,
+                                12,
+                                12,
+                              ),
                               itemCount: _messages.length + (_loading ? 1 : 0),
                               itemBuilder: (context, index) {
                                 if (_loading && index == _messages.length) {
@@ -600,10 +610,11 @@ class _HandbookAiAssistantSheetState extends State<_HandbookAiAssistantSheet> {
                                           'Ask about policy, process, requirement, or sanction...',
                                       filled: true,
                                       fillColor: Colors.white,
-                                      contentPadding: const EdgeInsets.symmetric(
-                                        horizontal: 12,
-                                        vertical: 12,
-                                      ),
+                                      contentPadding:
+                                          const EdgeInsets.symmetric(
+                                            horizontal: 12,
+                                            vertical: 12,
+                                          ),
                                       border: OutlineInputBorder(
                                         borderRadius: BorderRadius.circular(12),
                                         borderSide: BorderSide.none,

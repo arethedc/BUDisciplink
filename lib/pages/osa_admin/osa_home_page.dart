@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../../services/violation_case_service.dart';
+import 'package:apps/services/app_firestore.dart';
 
 class OsaHomePage extends StatefulWidget {
   final VoidCallback? onOpenAcademicSettings;
@@ -177,7 +178,7 @@ class _OsaHomePageState extends State<OsaHomePage> {
     }
 
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance
+      stream: AppFirestore.instance
           .collection('users')
           .where('role', isEqualTo: 'student')
           .snapshots(),

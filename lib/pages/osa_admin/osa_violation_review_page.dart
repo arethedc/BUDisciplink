@@ -4,18 +4,21 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart';
+import 'package:apps/services/link_opener.dart';
 
 import 'package:intl/intl.dart';
 
 import '../shared/widgets/modern_table_layout.dart';
 import '../shared/widgets/app_layout_tokens.dart';
 import '../shared/widgets/app_inline_notice.dart';
+import '../shared/widgets/app_empty_state.dart';
 import 'meeting_schedule_page.dart';
 import '../../services/osa_meeting_schedule_service.dart';
+import '../../services/institution_label_service.dart';
 import '../../services/violation_case_service.dart';
 import '../../services/violation_types_service.dart';
 import '../../services/academic_settings_service.dart';
+import 'package:apps/services/app_firestore.dart';
 
 // Ã¢Å“â€¦ YOUR COLORS (applied everywhere)
 const bg = Colors.white;
@@ -87,17 +90,21 @@ enum _MonitorMoreAction {
 }
 
 class OsaViolationReviewPage extends StatefulWidget {
-  final String? initialSelectedCaseId;
+  final String? initialSelectedCaseCode;
+  final String? initialTab;
   final bool forceReviewInboxOnOpen;
   final VoidCallback? onOpenReportViolation;
   final VoidCallback? onOpenCounselingReferral;
+  final ValueChanged<String>? onTabChanged;
 
   const OsaViolationReviewPage({
     super.key,
-    this.initialSelectedCaseId,
+    this.initialSelectedCaseCode,
+    this.initialTab,
     this.forceReviewInboxOnOpen = false,
     this.onOpenReportViolation,
     this.onOpenCounselingReferral,
+    this.onTabChanged,
   });
 
   @override
@@ -128,6 +135,7 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
 
   final _svc = ViolationCaseService();
   final _meetingScheduleSvc = OsaMeetingScheduleService();
+  final _typesSvc = ViolationTypesService();
 
   // UI state
   _CaseTab _tab = _CaseTab.review;
@@ -161,16 +169,55 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _tabCountsSub;
   List<QueryDocumentSnapshot<Map<String, dynamic>>> _latestRawCaseDocs =
       const <QueryDocumentSnapshot<Map<String, dynamic>>>[];
-  String? _pendingExternalCaseId;
+  String? _pendingExternalCaseCode;
+
+  _CaseTab _tabFromKey(String? raw) {
+    final value = (raw ?? '').trim().toLowerCase();
+    switch (value) {
+      case 'needs-booking':
+      case 'needs_booking':
+        return _CaseTab.needsBooking;
+      case 'scheduled':
+        return _CaseTab.scheduled;
+      case 'unresolved':
+        return _CaseTab.unresolved;
+      case 'resolved':
+        return _CaseTab.resolved;
+      case 'cancelled':
+        return _CaseTab.cancelled;
+      case 'review':
+      default:
+        return _CaseTab.review;
+    }
+  }
+
+  String _tabKey(_CaseTab tab) {
+    switch (tab) {
+      case _CaseTab.needsBooking:
+        return 'needs-booking';
+      case _CaseTab.scheduled:
+        return 'scheduled';
+      case _CaseTab.unresolved:
+        return 'unresolved';
+      case _CaseTab.resolved:
+        return 'resolved';
+      case _CaseTab.cancelled:
+        return 'cancelled';
+      case _CaseTab.review:
+      default:
+        return 'review';
+    }
+  }
 
   @override
   void initState() {
     super.initState();
+    _tab = _tabFromKey(widget.initialTab);
     if (widget.forceReviewInboxOnOpen) {
       _resetToReviewInbox(clearSelectedCase: true);
     }
     _queueExternalCaseSelection(
-      widget.initialSelectedCaseId,
+      widget.initialSelectedCaseCode,
       clearFilters: true,
     );
     _runBookingExpirySweep();
@@ -181,6 +228,15 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
   @override
   void didUpdateWidget(covariant OsaViolationReviewPage oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.initialTab != widget.initialTab) {
+      final nextTab = _tabFromKey(widget.initialTab);
+      if (nextTab != _tab) {
+        setState(() {
+          _tab = nextTab;
+          _selectedCaseId = null;
+        });
+      }
+    }
     final forceReviewInboxChanged =
         oldWidget.forceReviewInboxOnOpen != widget.forceReviewInboxOnOpen;
     if (forceReviewInboxChanged && widget.forceReviewInboxOnOpen) {
@@ -188,12 +244,12 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
         _resetToReviewInbox(clearSelectedCase: true);
       });
     }
-    final nextCaseId = (widget.initialSelectedCaseId ?? '').trim();
-    if (oldWidget.initialSelectedCaseId != widget.initialSelectedCaseId &&
-        nextCaseId.isNotEmpty) {
+    final nextCaseCode = (widget.initialSelectedCaseCode ?? '').trim();
+    if (oldWidget.initialSelectedCaseCode != widget.initialSelectedCaseCode &&
+        nextCaseCode.isNotEmpty) {
       setState(() {
         _queueExternalCaseSelection(
-          widget.initialSelectedCaseId,
+          widget.initialSelectedCaseCode,
           clearFilters: true,
         );
       });
@@ -201,12 +257,12 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
   }
 
   void _queueExternalCaseSelection(
-    String? rawCaseId, {
+    String? rawCaseCode, {
     bool clearFilters = false,
   }) {
-    final caseId = (rawCaseId ?? '').trim();
-    if (caseId.isEmpty) return;
-    _pendingExternalCaseId = caseId;
+    final caseCode = (rawCaseCode ?? '').trim();
+    if (caseCode.isEmpty) return;
+    _pendingExternalCaseCode = caseCode;
     _tab = _CaseTab.review;
     if (clearFilters) {
       _resetToReviewInbox(clearSelectedCase: false);
@@ -230,22 +286,33 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
     BuildContext context, {
     required bool mobile,
   }) {
-    final pending = _pendingExternalCaseId;
+    final pending = _pendingExternalCaseCode;
     if (pending == null || pending.isEmpty) return;
 
     QueryDocumentSnapshot<Map<String, dynamic>>? found;
     for (final doc in docs) {
       final data = doc.data();
-      if (doc.id == pending ||
-          _safeStr(data['caseId']) == pending ||
-          _safeStr(data['caseCode']) == pending) {
+      if (_safeStr(data['caseCode']).toLowerCase() == pending.toLowerCase()) {
         found = doc;
         break;
       }
     }
-    if (found == null) return;
+    if (found == null) {
+      _pendingExternalCaseCode = null;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Invalid or unsupported key. Use a valid violation caseCode.',
+            ),
+          ),
+        );
+      });
+      return;
+    }
 
-    _pendingExternalCaseId = null;
+    _pendingExternalCaseCode = null;
     final nextDoc = found;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -262,7 +329,7 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
     final authUser = FirebaseAuth.instance.currentUser;
     if (authUser == null) return;
     try {
-      final doc = await FirebaseFirestore.instance
+      final doc = await AppFirestore.instance
           .collection('users')
           .doc(authUser.uid)
           .get();
@@ -292,7 +359,7 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
       _recomputeTabCounts();
 
       await _deptStudentsSub?.cancel();
-      _deptStudentsSub = FirebaseFirestore.instance
+      _deptStudentsSub = AppFirestore.instance
           .collection('users')
           .where('role', isEqualTo: 'student')
           .snapshots()
@@ -432,6 +499,7 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
       _safeStr(d['concern']),
       _safeStr(
         d['violationTypeLabel'] ??
+            d['typeNameSnapshot'] ??
             d['violationNameSnapshot'] ??
             d['violationName'],
       ),
@@ -982,9 +1050,7 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
     );
   }
 
-  Widget? _buildFullHeaderActions({
-    required bool useCompactHeaderActions,
-  }) {
+  Widget? _buildFullHeaderActions({required bool useCompactHeaderActions}) {
     if (useCompactHeaderActions) return null;
     if (widget.onOpenReportViolation == null &&
         widget.onOpenCounselingReferral == null) {
@@ -1161,6 +1227,7 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
                                 _actionFilter = 'All';
                                 _meetingFilter = 'All';
                               });
+                              widget.onTabChanged?.call(_tabKey(newTab));
                             }
                           },
                           tabs: _tabConfigs
@@ -1229,25 +1296,11 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
                       );
 
                       if (docs.isEmpty) {
-                        return Center(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(
-                                Icons.inbox_outlined,
-                                size: 64,
-                                color: Colors.grey[300],
-                              ),
-                              const SizedBox(height: 16),
-                              const Text(
-                                'No cases found',
-                                style: TextStyle(
-                                  color: hintColor,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                            ],
-                          ),
+                        return const AppEmptyState(
+                          icon: Icons.inbox_outlined,
+                          title: 'No cases found',
+                          subtitle:
+                              'There are no violation cases for the selected filters.',
                         );
                       }
 
@@ -1555,6 +1608,7 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
                         : _safeStr(d['studentNo']);
                     final violation = _safeStr(
                       d['violationTypeLabel'] ??
+                          d['typeNameSnapshot'] ??
                           d['violationNameSnapshot'] ??
                           d['violationName'],
                     );
@@ -1842,6 +1896,7 @@ class _OsaViolationReviewPageState extends State<OsaViolationReviewPage> {
     final studentName = (data['studentName'] ?? 'Unknown').toString();
     final violation =
         (data['typeNameSnapshot'] ??
+                data['violationTypeLabel'] ??
                 data['violationNameSnapshot'] ??
                 'Violation')
             .toString();
@@ -2009,6 +2064,7 @@ class _TableRow extends StatelessWidget {
         : _safeStr(d['caseCode']);
     final violation = _safeStr(
       d['violationTypeLabel'] ??
+          d['typeNameSnapshot'] ??
           d['violationNameSnapshot'] ??
           d['violationName'],
     );
@@ -2193,6 +2249,7 @@ class _DetailsPanel extends StatelessWidget {
     );
     final violation = _safeStr(
       d['violationTypeLabel'] ??
+          d['typeNameSnapshot'] ??
           d['violationNameSnapshot'] ??
           d['violationName'],
     );
@@ -2282,7 +2339,7 @@ class _DetailsPanel extends StatelessWidget {
                       ),
                       SizedBox(width: 8),
                       Text(
-                        'Case Details',
+                        'Violation Details',
                         style: TextStyle(
                           color: primaryColor,
                           fontWeight: FontWeight.w900,
@@ -2313,6 +2370,9 @@ class _DetailsPanel extends StatelessWidget {
                     child: Row(
                       children: [
                         FutureBuilder<String>(
+                          key: ValueKey(
+                            'violation-review-photo-${doc.id}-$studentUid',
+                          ),
                           future: studentPhotoFuture,
                           initialData: '',
                           builder: (context, snapshot) {
@@ -2361,7 +2421,11 @@ class _DetailsPanel extends StatelessWidget {
                                                   ),
                                               child: Image.network(
                                                 photoUrl,
+                                                key: ValueKey(photoUrl),
                                                 fit: BoxFit.cover,
+                                                webHtmlElementStrategy:
+                                                    WebHtmlElementStrategy
+                                                        .prefer,
                                                 errorBuilder:
                                                     (
                                                       context,
@@ -2429,12 +2493,9 @@ class _DetailsPanel extends StatelessWidget {
                               const SizedBox(height: 2),
                               FutureBuilder<String>(
                                 future: studentProgramFuture,
-                                initialData: _studentProgramLabelFromCase(d),
+                                initialData: '--',
                                 builder: (context, snapshot) {
-                                  final program =
-                                      _safeStr(snapshot.data).isEmpty
-                                      ? '--'
-                                      : _safeStr(snapshot.data);
+                                  final program = _safeStr(snapshot.data);
                                   return Text(
                                     'Program: $program',
                                     style: const TextStyle(
@@ -2452,7 +2513,7 @@ class _DetailsPanel extends StatelessWidget {
                   ),
                   const SizedBox(height: 12),
                   _DetailCard(
-                    title: 'Incident Summary',
+                    title: 'Violation Summary',
                     titleTrailing: isCancelled
                         ? null
                         : FutureBuilder<_OffenseIndicator>(
@@ -2504,6 +2565,10 @@ class _DetailsPanel extends StatelessWidget {
                           ),
                     child: Column(
                       children: [
+                        _kv('Case Code', caseCode),
+                        const SizedBox(height: 8),
+                        _kv('Status', _statusLabel(_safeStr(d['status']))),
+                        const SizedBox(height: 8),
                         _kv(
                           'Concern',
                           concern.isEmpty ? '--' : _titleCase(concern),
@@ -2516,13 +2581,13 @@ class _DetailsPanel extends StatelessWidget {
                           violation.isEmpty ? '--' : violation,
                         ),
                         const SizedBox(height: 8),
-                        _kv('Date Reported', dateReportedText),
-                        const SizedBox(height: 8),
                         _kv('Date of Incident', dateOfIncidentText),
+                        const SizedBox(height: 8),
+                        _kv('Date Reported', dateReportedText),
                         const SizedBox(height: 8),
                         _kv('Reported By', reportedBy),
                         const SizedBox(height: 8),
-                        _kv('Case Code', caseCode),
+                        _kv('Description', narrative),
                         if (wasCorrectedByOsa) ...[
                           const SizedBox(height: 8),
                           _kv(
@@ -2531,30 +2596,6 @@ class _DetailsPanel extends StatelessWidget {
                           ),
                         ],
                       ],
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  _DetailCard(
-                    title: 'Incident Description',
-                    child: Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: 0.03),
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(
-                          color: Colors.black.withValues(alpha: 0.08),
-                        ),
-                      ),
-                      child: Text(
-                        narrative,
-                        style: const TextStyle(
-                          color: textDark,
-                          fontWeight: FontWeight.w600,
-                          height: 1.4,
-                          fontSize: 14.5,
-                        ),
-                      ),
                     ),
                   ),
                   const SizedBox(height: 12),
@@ -2598,8 +2639,8 @@ class _DetailsPanel extends StatelessWidget {
                   const SizedBox(height: 12),
                   _DetailCard(
                     title: isCancelled
-                        ? 'Active Case History'
-                        : 'Student Case History',
+                        ? 'Active Violation History'
+                        : 'Student Violation History',
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
@@ -3512,7 +3553,7 @@ class _CaseLogsSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final logsRef = FirebaseFirestore.instance
+    final logsRef = AppFirestore.instance
         .collection('violation_cases')
         .doc(caseId)
         .collection('activity')
@@ -4658,7 +4699,7 @@ class _CorrectViolationDialogState extends State<_CorrectViolationDialog> {
       List<QueryDocumentSnapshot<Map<String, dynamic>>> categories = const [];
       final normalizedConcern = _concern.trim().toLowerCase();
       if (normalizedConcern.isNotEmpty) {
-        final strictConcernSnap = await FirebaseFirestore.instance
+        final strictConcernSnap = await AppFirestore.instance
             .collection('violation_categories')
             .where('isActive', isEqualTo: true)
             .where('concern', isEqualTo: normalizedConcern)
@@ -4667,7 +4708,7 @@ class _CorrectViolationDialogState extends State<_CorrectViolationDialog> {
         categories = strictConcernSnap.docs;
       }
       if (categories.isEmpty) {
-        final allActiveSnap = await FirebaseFirestore.instance
+        final allActiveSnap = await AppFirestore.instance
             .collection('violation_categories')
             .where('isActive', isEqualTo: true)
             .orderBy('order')
@@ -4709,7 +4750,7 @@ class _CorrectViolationDialogState extends State<_CorrectViolationDialog> {
             .where((doc) => doc.id == selectedCategoryId)
             .map((doc) => _safeStr(doc.data()['name']))
             .firstWhere((name) => name.isNotEmpty, orElse: () => '');
-        final strictTypesSnap = await FirebaseFirestore.instance
+        final strictTypesSnap = await AppFirestore.instance
             .collection('violation_types')
             .where('isActive', isEqualTo: true)
             .where('categoryId', isEqualTo: selectedCategoryId)
@@ -4717,7 +4758,7 @@ class _CorrectViolationDialogState extends State<_CorrectViolationDialog> {
             .get();
         types = strictTypesSnap.docs;
         if (types.isEmpty) {
-          final allTypesSnap = await FirebaseFirestore.instance
+          final allTypesSnap = await AppFirestore.instance
               .collection('violation_types')
               .where('isActive', isEqualTo: true)
               .orderBy('label')
@@ -4776,7 +4817,7 @@ class _CorrectViolationDialogState extends State<_CorrectViolationDialog> {
           .where((doc) => doc.id == categoryId)
           .map((doc) => _safeStr(doc.data()['name']))
           .firstWhere((name) => name.isNotEmpty, orElse: () => '');
-      final strictTypesSnap = await FirebaseFirestore.instance
+      final strictTypesSnap = await AppFirestore.instance
           .collection('violation_types')
           .where('isActive', isEqualTo: true)
           .where('categoryId', isEqualTo: categoryId)
@@ -4784,7 +4825,7 @@ class _CorrectViolationDialogState extends State<_CorrectViolationDialog> {
           .get();
       var types = strictTypesSnap.docs;
       if (types.isEmpty) {
-        final allTypesSnap = await FirebaseFirestore.instance
+        final allTypesSnap = await AppFirestore.instance
             .collection('violation_types')
             .where('isActive', isEqualTo: true)
             .orderBy('label')
@@ -5847,6 +5888,7 @@ class _StudentHistorySectionState extends State<_StudentHistorySection> {
                         final data = caseDoc.data();
                         final type = _safeStr(
                           data['violationTypeLabel'] ??
+                              data['typeNameSnapshot'] ??
                               data['violationNameSnapshot'] ??
                               data['violationName'],
                         );
@@ -5956,7 +5998,7 @@ class _StudentHistorySectionState extends State<_StudentHistorySection> {
     if (widget.studentUid.isEmpty) return const SizedBox.shrink();
 
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance
+      stream: AppFirestore.instance
           .collection('violation_cases')
           .where('studentUid', isEqualTo: widget.studentUid)
           .snapshots(),
@@ -6141,6 +6183,7 @@ class _HistoryCaseDetailsDialog extends StatelessWidget {
         : _safeStr(d['caseCode']);
     final violation = _safeStr(
       d['violationTypeLabel'] ??
+          d['typeNameSnapshot'] ??
           d['violationNameSnapshot'] ??
           d['violationName'],
     );
@@ -7697,7 +7740,7 @@ Future<String> _resolveStudentProgramLabel(
 ) {
   final fromCase = _studentProgramLabelFromCase(data);
   if (fromCase != '--') {
-    return Future<String>.value(fromCase);
+    return InstitutionLabelService.resolveProgramLabel(fromCase);
   }
 
   final uid = _safeStr(studentUid);
@@ -7706,7 +7749,7 @@ Future<String> _resolveStudentProgramLabel(
   }
 
   return _studentProgramFutureCache.putIfAbsent(uid, () async {
-    final userDoc = await FirebaseFirestore.instance
+    final userDoc = await AppFirestore.instance
         .collection('users')
         .doc(uid)
         .get();
@@ -7720,7 +7763,8 @@ Future<String> _resolveStudentProgramLabel(
           userData['programId'] ??
           userData['program'],
     );
-    return fromUser.isEmpty ? '--' : fromUser;
+    if (fromUser.isEmpty) return '--';
+    return InstitutionLabelService.resolveProgramLabel(fromUser);
   });
 }
 
@@ -7731,7 +7775,7 @@ Future<String> _resolveStudentPhotoUrl(String studentUid) {
   }
 
   return _studentPhotoFutureCache.putIfAbsent(uid, () async {
-    final userDoc = await FirebaseFirestore.instance
+    final userDoc = await AppFirestore.instance
         .collection('users')
         .doc(uid)
         .get();
@@ -7804,7 +7848,7 @@ Future<_OffenseIndicator> _resolveOffenseIndicator({
   final categoryKey = _normalizeCategoryKeyGlobal(currentCategory);
   final cacheKey = '$uid::$currentCaseId::$categoryKey';
   final computation = () async {
-    final snap = await FirebaseFirestore.instance
+    final snap = await AppFirestore.instance
         .collection('violation_cases')
         .where('studentUid', isEqualTo: uid)
         .get();
@@ -7864,7 +7908,19 @@ bool _isHttpImageUrl(String value) {
 Future<String> _resolveImageSourceUrl(String source) async {
   final value = _safeStr(source);
   if (value.isEmpty) return '';
-  if (_isHttpImageUrl(value)) return value;
+  if (_isHttpImageUrl(value)) {
+    if (value.contains('firebasestorage.googleapis.com') ||
+        value.contains('firebasestorage.app')) {
+      try {
+        return await FirebaseStorage.instance
+            .refFromURL(value)
+            .getDownloadURL();
+      } catch (_) {
+        return value;
+      }
+    }
+    return value;
+  }
   try {
     if (value.startsWith('gs://')) {
       return await FirebaseStorage.instance.refFromURL(value).getDownloadURL();
@@ -8280,7 +8336,7 @@ Future<void> _openEvidenceFile(BuildContext context, String rawUrl) async {
     return;
   }
 
-  final ok = await launchUrl(uri, mode: LaunchMode.platformDefault);
+  final ok = await LinkOpener.openExternal(uri);
   if (!ok && context.mounted) {
     _showInlineNotice(
       context,

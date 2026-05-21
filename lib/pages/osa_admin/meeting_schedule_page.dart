@@ -5,8 +5,9 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../shared/widgets/app_layout_tokens.dart';
-import 'widgets/osa_common_widgets.dart';
 import 'package:apps/pages/shared/widgets/app_inline_notice.dart';
+import 'widgets/osa_common_widgets.dart';
+import 'package:apps/services/app_firestore.dart';
 
 class MeetingSchedulePage extends StatefulWidget {
   final OsaMeetingScheduleService? service;
@@ -122,7 +123,7 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
 
   void _listenActiveAcademicContext() {
     _activeAcademicYearSub?.cancel();
-    _activeAcademicYearSub = FirebaseFirestore.instance
+    _activeAcademicYearSub = AppFirestore.instance
         .collection('academic_years')
         .where('status', isEqualTo: 'active')
         .limit(1)
@@ -1487,9 +1488,7 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
           _slotPresenceVersion++;
         });
       }
-      AppScaffoldMessenger.of(
-        context,
-      ).showSnackBar(
+      AppScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
             syncError != null
@@ -1589,7 +1588,7 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
   }
 
   Future<void> _discardTemplateChanges() async {
-    final activeSnap = await FirebaseFirestore.instance
+    final activeSnap = await AppFirestore.instance
         .collection('academic_years')
         .where('status', isEqualTo: 'active')
         .limit(1)
@@ -1600,9 +1599,9 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
     setState(() {
       _isEditingTemplate = false;
     });
-    AppScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('Template changes discarded.')));
+    AppScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Template changes discarded.')),
+    );
   }
 
   Future<int> _countVisibleUpcomingOpenSlots({
@@ -1656,14 +1655,6 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (!canQuerySlots)
-              const Padding(
-                padding: EdgeInsets.fromLTRB(16, 12, 16, 8),
-                child: OsaWarningBanner(
-                  text:
-                      'No active School Year/Semester found. Set one in School Year & Semesters first.',
-                ),
-              ),
             Expanded(
               child: Padding(
                 padding: const EdgeInsets.all(AppSpacing.md),
@@ -1672,10 +1663,16 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                   child: ConstrainedBox(
                     constraints: const BoxConstraints(maxWidth: 1080),
                     child: !canQuerySlots
-                        ? _buildEditorCard(showBackToOpenSlots: false)
+                        ? _buildEditorCard(
+                            showBackToOpenSlots: false,
+                            showUnavailableGate: true,
+                          )
                         : FutureBuilder<bool>(
                             key: ValueKey('$sy|$term|$_slotPresenceVersion'),
-                            future: _hasUpcomingGeneratedSlots(sy: sy, term: term),
+                            future: _hasUpcomingGeneratedSlots(
+                              sy: sy,
+                              term: term,
+                            ),
                             builder: (context, snapshot) {
                               if (!snapshot.hasData) {
                                 return const Center(
@@ -1698,10 +1695,11 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                                   _showTemplateEditor = true;
                                   _isEditingTemplate = false;
                                 }),
-                                onReopenClosed: () => _showReopenClosedSlotsDialog(
-                                  sy: sy,
-                                  term: term,
-                                ),
+                                onReopenClosed: () =>
+                                    _showReopenClosedSlotsDialog(
+                                      sy: sy,
+                                      term: term,
+                                    ),
                               );
                             },
                           ),
@@ -1715,7 +1713,10 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
     );
   }
 
-  Widget _buildEditorCard({required bool showBackToOpenSlots}) {
+  Widget _buildEditorCard({
+    required bool showBackToOpenSlots,
+    bool showUnavailableGate = false,
+  }) {
     final hasActiveAcademic =
         (_activeSchoolYearId ?? '').trim().isNotEmpty &&
         (_activeTermId ?? '').trim().isNotEmpty;
@@ -1727,112 +1728,111 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            'Schedule Template',
-            style: TextStyle(
-              color: _text,
-              fontWeight: FontWeight.w900,
-              fontSize: 16,
-            ),
+          _buildSectionHeaderText(
+            title: 'Schedule Template',
+            subtitle:
+                'Configure weekly hours, blocked dates, and recurring blocks for the active term.',
           ),
           const SizedBox(height: 12),
-          Expanded(
-            child: ListView(
-              children: [
-                _buildWeeklyAvailabilitySection(canEdit: canEdit),
-                const SizedBox(height: 12),
-                _buildBlockedDatesSection(
-                  hasActiveAcademic: hasActiveAcademic,
-                  canEdit: canEdit,
-                ),
-                const SizedBox(height: 12),
-                _buildRecurringBlockedHoursSection(
-                  hasActiveAcademic: hasActiveAcademic,
-                  canEdit: canEdit,
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 12),
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final stacked = constraints.maxWidth < 420;
-              if (!_isEditingTemplate) {
-                final actions = <Widget>[
-                  if (showBackToOpenSlots)
-                    OutlinedButton.icon(
-                      onPressed: () => setState(() {
-                        _showTemplateEditor = false;
-                      }),
-                      icon: const Icon(Icons.arrow_back_rounded, size: 16),
-                      label: const Text('Back to Open Slots'),
-                    ),
-                  FilledButton.icon(
-                    onPressed: hasActiveAcademic
-                        ? () => setState(() => _isEditingTemplate = true)
-                        : null,
-                    icon: const Icon(Icons.edit_rounded, size: 16),
-                    style: FilledButton.styleFrom(backgroundColor: _primary),
-                    label: const Text('Edit Template'),
+          if (showUnavailableGate)
+            Expanded(child: _buildMeetingScheduleUnavailableGate())
+          else
+            Expanded(
+              child: ListView(
+                children: [
+                  _buildWeeklyAvailabilitySection(canEdit: canEdit),
+                  const SizedBox(height: 12),
+                  _buildBlockedDatesSection(
+                    hasActiveAcademic: hasActiveAcademic,
+                    canEdit: canEdit,
                   ),
-                ];
+                  const SizedBox(height: 12),
+                  _buildRecurringBlockedHoursSection(
+                    hasActiveAcademic: hasActiveAcademic,
+                    canEdit: canEdit,
+                  ),
+                ],
+              ),
+            ),
+          const SizedBox(height: 12),
+          if (!showUnavailableGate)
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final stacked = constraints.maxWidth < 420;
+                if (!_isEditingTemplate) {
+                  final actions = <Widget>[
+                    if (showBackToOpenSlots)
+                      OutlinedButton.icon(
+                        onPressed: () => setState(() {
+                          _showTemplateEditor = false;
+                        }),
+                        icon: const Icon(Icons.arrow_back_rounded, size: 16),
+                        label: const Text('Back to Open Slots'),
+                      ),
+                    FilledButton.icon(
+                      onPressed: hasActiveAcademic
+                          ? () => setState(() => _isEditingTemplate = true)
+                          : null,
+                      icon: const Icon(Icons.edit_rounded, size: 16),
+                      style: FilledButton.styleFrom(backgroundColor: _primary),
+                      label: const Text('Edit Template'),
+                    ),
+                  ];
+
+                  if (stacked) {
+                    return Column(
+                      children: actions
+                          .map(
+                            (w) => Padding(
+                              padding: const EdgeInsets.only(bottom: 8),
+                              child: SizedBox(width: double.infinity, child: w),
+                            ),
+                          )
+                          .toList(),
+                    );
+                  }
+                  return Row(
+                    children: [
+                      if (showBackToOpenSlots) ...[
+                        Expanded(child: actions.first),
+                        const SizedBox(width: 10),
+                        Expanded(child: actions.last),
+                      ] else
+                        Expanded(child: actions.last),
+                    ],
+                  );
+                }
 
                 if (stacked) {
                   return Column(
-                    children: actions
-                        .map(
-                          (w) => Padding(
-                            padding: const EdgeInsets.only(bottom: 8),
-                            child: SizedBox(width: double.infinity, child: w),
+                    children: [
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
+                          onPressed: _saving || !hasActiveAcademic
+                              ? null
+                              : _discardTemplateChanges,
+                          icon: const Icon(Icons.close_rounded),
+                          label: const Text('Discard Changes'),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      SizedBox(
+                        width: double.infinity,
+                        child: FilledButton.icon(
+                          onPressed: _saving || !hasActiveAcademic
+                              ? null
+                              : _saveTemplate,
+                          icon: const Icon(Icons.save_outlined),
+                          label: Text(_saving ? 'Saving...' : 'Save Changes'),
+                          style: FilledButton.styleFrom(
+                            backgroundColor: _primary,
                           ),
-                        )
-                        .toList(),
+                        ),
+                      ),
+                    ],
                   );
                 }
-                return Row(
-                  children: [
-                    if (showBackToOpenSlots) ...[
-                      Expanded(child: actions.first),
-                      const SizedBox(width: 10),
-                      Expanded(child: actions.last),
-                    ] else
-                      Expanded(child: actions.last),
-                  ],
-                );
-              }
-
-              if (stacked) {
-                return Column(
-                  children: [
-                    SizedBox(
-                      width: double.infinity,
-                      child: OutlinedButton.icon(
-                        onPressed: _saving || !hasActiveAcademic
-                            ? null
-                            : _discardTemplateChanges,
-                        icon: const Icon(Icons.close_rounded),
-                        label: const Text('Discard Changes'),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    SizedBox(
-                      width: double.infinity,
-                      child: FilledButton.icon(
-                        onPressed: _saving || !hasActiveAcademic
-                            ? null
-                            : _saveTemplate,
-                        icon: const Icon(Icons.save_outlined),
-                        label: Text(
-                          _saving ? 'Saving...' : 'Save Changes',
-                        ),
-                        style: FilledButton.styleFrom(
-                          backgroundColor: _primary,
-                        ),
-                      ),
-                    ),
-                  ],
-                );
-              }
 
                 return Row(
                   children: [
@@ -1853,14 +1853,63 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                             : _saveTemplate,
                         icon: const Icon(Icons.save_outlined),
                         label: Text(_saving ? 'Saving...' : 'Save Changes'),
-                      style: FilledButton.styleFrom(backgroundColor: _primary),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: _primary,
+                        ),
+                      ),
                     ),
-                  ),
-                ],
-              );
-            },
-          ),
+                  ],
+                );
+              },
+            ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildMeetingScheduleUnavailableGate() {
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 640),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(color: _primary.withValues(alpha: 0.10)),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              const Text(
+                'Meeting schedule is not yet available',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: _primary,
+                  fontWeight: FontWeight.w900,
+                  fontSize: 18,
+                  height: 1.12,
+                ),
+              ),
+              const SizedBox(height: 10),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 560),
+                child: const Text(
+                  'Please contact the admin before booking or managing meeting slots on this page.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: _hint,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 13,
+                    height: 1.25,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -2187,9 +2236,9 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
   }
 
   Widget _buildRecurringBlockedHoursTable(
-    List<({String start, String end, String label, List<String> days})> items,
-    {required bool canEdit}
-  ) {
+    List<({String start, String end, String label, List<String> days})> items, {
+    required bool canEdit,
+  }) {
     return LayoutBuilder(
       builder: (context, constraints) {
         final compact = constraints.maxWidth < 560;
@@ -2678,7 +2727,8 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                                 spacing: 8,
                                 runSpacing: 8,
                                 children: _buildSlotActionButtons(
-                                  selectedVisibleSlotIds: selectedVisibleSlotIds,
+                                  selectedVisibleSlotIds:
+                                      selectedVisibleSlotIds,
                                   onOpenTemplate: onOpenTemplate,
                                   onReopenClosed: onReopenClosed,
                                 ),
@@ -2885,16 +2935,24 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
       builder: (dialogContext) {
         return Dialog(
           backgroundColor: Colors.transparent,
-          insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
+          insetPadding: const EdgeInsets.symmetric(
+            horizontal: 16,
+            vertical: 20,
+          ),
           child: StatefulBuilder(
             builder: (context, setModalState) {
               return Container(
-                constraints: const BoxConstraints(maxWidth: 760, maxHeight: 640),
+                constraints: const BoxConstraints(
+                  maxWidth: 760,
+                  maxHeight: 640,
+                ),
                 padding: const EdgeInsets.fromLTRB(16, 16, 16, 14),
                 decoration: BoxDecoration(
                   color: Colors.white,
                   borderRadius: BorderRadius.circular(18),
-                  border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+                  border: Border.all(
+                    color: Colors.black.withValues(alpha: 0.08),
+                  ),
                   boxShadow: [
                     BoxShadow(
                       color: Colors.black.withValues(alpha: 0.12),
@@ -2942,132 +3000,137 @@ class _MeetingSchedulePageState extends State<MeetingSchedulePage> {
                           icon: const Icon(Icons.close_rounded),
                           color: _hint,
                           style: IconButton.styleFrom(
-                            backgroundColor: Colors.black.withValues(alpha: 0.04),
+                            backgroundColor: Colors.black.withValues(
+                              alpha: 0.04,
+                            ),
                           ),
                         ),
                       ],
                     ),
                     const SizedBox(height: 10),
                     Expanded(
-                      child: StreamBuilder<
-                        List<QueryDocumentSnapshot<Map<String, dynamic>>>
-                      >(
-                        stream: _svc.streamCancelledSlots(
-                          schoolYearId: sy,
-                          termId: term,
-                          fromDate: DateTime.now(),
-                          limit: 500,
-                        ),
-                        builder: (context, snapshot) {
-                          if (snapshot.hasError) {
-                            return Center(
-                              child: Text(
-                                'Error loading closed slots: ${snapshot.error}',
-                                style: const TextStyle(
-                                  color: Colors.red,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                            );
-                          }
-                          if (!snapshot.hasData) {
-                            return const Center(
-                              child: CircularProgressIndicator(),
-                            );
-                          }
-
-                          final docs = snapshot.data!;
-                          if (docs.isEmpty) {
-                            return const Center(
-                              child: Text(
-                                'No upcoming closed slots.',
-                                style: TextStyle(
-                                  color: _hint,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                            );
-                          }
-
-                          return ListView.separated(
-                            itemCount: docs.length,
-                            separatorBuilder: (context, index) =>
-                                const SizedBox(height: 8),
-                            itemBuilder: (context, index) {
-                              final doc = docs[index];
-                              final data = doc.data();
-                              final start =
-                                  (data['startAt'] as Timestamp?)?.toDate();
-                              final end =
-                                  (data['endAt'] as Timestamp?)?.toDate();
-                              final title = start == null || end == null
-                                  ? doc.id
-                                  : '${DateFormat('EEE, MMM d').format(start)} • ${DateFormat('h:mm a').format(start)} - ${DateFormat('h:mm a').format(end)}';
-                              final checked = selected.contains(doc.id);
-                              return InkWell(
-                                borderRadius: BorderRadius.circular(10),
-                                onTap: reopening
-                                    ? null
-                                    : () {
-                                        setModalState(() {
-                                          if (checked) {
-                                            selected.remove(doc.id);
-                                          } else {
-                                            selected.add(doc.id);
-                                          }
-                                          errorText = null;
-                                        });
-                                      },
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 10,
-                                    vertical: 8,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: checked
-                                        ? _primary.withValues(alpha: 0.08)
-                                        : Colors.white,
-                                    borderRadius: BorderRadius.circular(10),
-                                    border: Border.all(
-                                      color: checked
-                                          ? _primary.withValues(alpha: 0.30)
-                                          : Colors.black.withValues(alpha: 0.10),
+                      child:
+                          StreamBuilder<
+                            List<QueryDocumentSnapshot<Map<String, dynamic>>>
+                          >(
+                            stream: _svc.streamCancelledSlots(
+                              schoolYearId: sy,
+                              termId: term,
+                              fromDate: DateTime.now(),
+                              limit: 500,
+                            ),
+                            builder: (context, snapshot) {
+                              if (snapshot.hasError) {
+                                return Center(
+                                  child: Text(
+                                    'Error loading closed slots: ${snapshot.error}',
+                                    style: const TextStyle(
+                                      color: Colors.red,
+                                      fontWeight: FontWeight.w700,
                                     ),
                                   ),
-                                  child: Row(
-                                    children: [
-                                      Checkbox(
-                                        value: checked,
-                                        onChanged: reopening
-                                            ? null
-                                            : (value) {
-                                                setModalState(() {
-                                                  if (value == true) {
-                                                    selected.add(doc.id);
-                                                  } else {
-                                                    selected.remove(doc.id);
-                                                  }
-                                                  errorText = null;
-                                                });
-                                              },
+                                );
+                              }
+                              if (!snapshot.hasData) {
+                                return const Center(
+                                  child: CircularProgressIndicator(),
+                                );
+                              }
+
+                              final docs = snapshot.data!;
+                              if (docs.isEmpty) {
+                                return const Center(
+                                  child: Text(
+                                    'No upcoming closed slots.',
+                                    style: TextStyle(
+                                      color: _hint,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                );
+                              }
+
+                              return ListView.separated(
+                                itemCount: docs.length,
+                                separatorBuilder: (context, index) =>
+                                    const SizedBox(height: 8),
+                                itemBuilder: (context, index) {
+                                  final doc = docs[index];
+                                  final data = doc.data();
+                                  final start = (data['startAt'] as Timestamp?)
+                                      ?.toDate();
+                                  final end = (data['endAt'] as Timestamp?)
+                                      ?.toDate();
+                                  final title = start == null || end == null
+                                      ? doc.id
+                                      : '${DateFormat('EEE, MMM d').format(start)} • ${DateFormat('h:mm a').format(start)} - ${DateFormat('h:mm a').format(end)}';
+                                  final checked = selected.contains(doc.id);
+                                  return InkWell(
+                                    borderRadius: BorderRadius.circular(10),
+                                    onTap: reopening
+                                        ? null
+                                        : () {
+                                            setModalState(() {
+                                              if (checked) {
+                                                selected.remove(doc.id);
+                                              } else {
+                                                selected.add(doc.id);
+                                              }
+                                              errorText = null;
+                                            });
+                                          },
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 10,
+                                        vertical: 8,
                                       ),
-                                      Expanded(
-                                        child: Text(
-                                          title,
-                                          style: const TextStyle(
-                                            color: _text,
-                                            fontWeight: FontWeight.w800,
-                                          ),
+                                      decoration: BoxDecoration(
+                                        color: checked
+                                            ? _primary.withValues(alpha: 0.08)
+                                            : Colors.white,
+                                        borderRadius: BorderRadius.circular(10),
+                                        border: Border.all(
+                                          color: checked
+                                              ? _primary.withValues(alpha: 0.30)
+                                              : Colors.black.withValues(
+                                                  alpha: 0.10,
+                                                ),
                                         ),
                                       ),
-                                    ],
-                                  ),
-                                ),
+                                      child: Row(
+                                        children: [
+                                          Checkbox(
+                                            value: checked,
+                                            onChanged: reopening
+                                                ? null
+                                                : (value) {
+                                                    setModalState(() {
+                                                      if (value == true) {
+                                                        selected.add(doc.id);
+                                                      } else {
+                                                        selected.remove(doc.id);
+                                                      }
+                                                      errorText = null;
+                                                    });
+                                                  },
+                                          ),
+                                          Expanded(
+                                            child: Text(
+                                              title,
+                                              style: const TextStyle(
+                                                color: _text,
+                                                fontWeight: FontWeight.w800,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  );
+                                },
                               );
                             },
-                          );
-                        },
-                      ),
+                          ),
                     ),
                     if (errorText != null) ...[
                       const SizedBox(height: 8),

@@ -6,18 +6,26 @@ import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import '../../services/counseling_case_workflow_service.dart';
+import '../../services/institution_label_service.dart';
 import '../shared/widgets/modern_table_layout.dart';
+import '../shared/widgets/app_empty_state.dart';
+import 'package:apps/services/app_firestore.dart';
 
 class MySubmittedCasesPage extends StatefulWidget {
   final bool showCounselingTab;
   final VoidCallback? onOpenViolationReport;
   final VoidCallback? onOpenCounselingReferral;
+  final String? initialTab;
+  final ValueChanged<String>? onTabChanged;
 
   const MySubmittedCasesPage({
     super.key,
     this.showCounselingTab = true,
     this.onOpenViolationReport,
     this.onOpenCounselingReferral,
+    this.initialTab,
+    this.onTabChanged,
   });
 
   @override
@@ -62,6 +70,36 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
   Object? _violationReportsError;
   Object? _counselingReportsError;
 
+  int _tabIndexFromKey(String? raw) {
+    final value = (raw ?? '').trim().toLowerCase();
+    if (widget.showCounselingTab &&
+        (value == 'counseling' || value == 'counselling')) {
+      return 1;
+    }
+    return 0;
+  }
+
+  String _tabKeyFromIndex(int tabIndex) =>
+      tabIndex == 1 ? 'counseling' : 'violation';
+
+  @override
+  void initState() {
+    super.initState();
+    _tab = _tabIndexFromKey(widget.initialTab);
+  }
+
+  @override
+  void didUpdateWidget(covariant MySubmittedCasesPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final nextTab = _tabIndexFromKey(widget.initialTab);
+    if (_tab != nextTab) {
+      setState(() {
+        _tab = nextTab;
+        _selectedId = null;
+      });
+    }
+  }
+
   @override
   void dispose() {
     _violationCountSub?.cancel();
@@ -80,7 +118,7 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
     _violationReportsLoaded = false;
     _violationReportsError = null;
     _violationCount.value = 0;
-    _violationReportsStream = FirebaseFirestore.instance
+    _violationReportsStream = AppFirestore.instance
         .collection('violation_cases')
         .where('reportedByUid', isEqualTo: uid)
         .orderBy('createdAt', descending: true)
@@ -114,16 +152,18 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
     _counselingReportsLoaded = false;
     _counselingReportsError = null;
     _counselingCount.value = 0;
-    _counselingReportsStream = FirebaseFirestore.instance
+    _counselingReportsStream = AppFirestore.instance
         .collection('counseling_cases')
         .where('referralReporterUids', arrayContains: uid)
         .snapshots();
     _counselingCountSub?.cancel();
     _counselingCountSub = _counselingReportsStream!.listen(
       (snapshot) {
-        final scopedDocs = snapshot.docs.where((doc) {
-          return _isProfessorCounselingReportForUser(doc.data(), uid);
-        }).toList(growable: false);
+        final scopedDocs = snapshot.docs
+            .where((doc) {
+              return _isProfessorCounselingReportForUser(doc.data(), uid);
+            })
+            .toList(growable: false);
         if (!mounted) return;
         setState(() {
           _lastCounselingDocs = scopedDocs;
@@ -295,7 +335,7 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
   }) {
     final fallback = _str(fallbackProgram);
     if (fallback.isNotEmpty && fallback != '--') {
-      return Future<String>.value(fallback);
+      return InstitutionLabelService.resolveProgramLabel(fallback);
     }
 
     final uid = _str(studentUid);
@@ -304,7 +344,7 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
     }
 
     return _studentProgramFutureCache.putIfAbsent(uid, () async {
-      final userDoc = await FirebaseFirestore.instance
+      final userDoc = await AppFirestore.instance
           .collection('users')
           .doc(uid)
           .get();
@@ -318,7 +358,8 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
             userData['programId'] ??
             userData['program'],
       );
-      return fromProfile.isEmpty ? '--' : fromProfile;
+      if (fromProfile.isEmpty) return '--';
+      return InstitutionLabelService.resolveProgramLabel(fromProfile);
     });
   }
 
@@ -326,7 +367,19 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
     final value = _str(source);
     if (value.isEmpty) return '';
     final isHttp = value.startsWith('http://') || value.startsWith('https://');
-    if (isHttp) return value;
+    if (isHttp) {
+      if (value.contains('firebasestorage.googleapis.com') ||
+          value.contains('firebasestorage.app')) {
+        try {
+          return await FirebaseStorage.instance
+              .refFromURL(value)
+              .getDownloadURL();
+        } catch (_) {
+          return value;
+        }
+      }
+      return value;
+    }
     try {
       if (value.startsWith('gs://')) {
         return await FirebaseStorage.instance
@@ -343,7 +396,7 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
     final uid = _str(studentUid);
     if (uid.isEmpty) return Future<String>.value('');
     return _studentPhotoFutureCache.putIfAbsent(uid, () async {
-      final userDoc = await FirebaseFirestore.instance
+      final userDoc = await AppFirestore.instance
           .collection('users')
           .doc(uid)
           .get();
@@ -385,16 +438,21 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
     final s = _normalizeStatus(raw);
 
     if (s.contains('unresolved')) return _ReportStatus.unresolved;
-    if (s.contains('resolved') || s.contains('done'))
+    if (s.contains('resolved') || s.contains('done')) {
       return _ReportStatus.resolved;
-    if (s.contains('action') && s.contains('set'))
+    }
+    if (s.contains('action') && s.contains('set')) {
       return _ReportStatus.actionSet;
-    if (s.contains('under review') || s.contains('review'))
+    }
+    if (s.contains('under review') || s.contains('review')) {
       return _ReportStatus.underReview;
-    if (s.contains('pending') || s.contains('submitted'))
+    }
+    if (s.contains('pending') || s.contains('submitted')) {
       return _ReportStatus.pending;
-    if (s.contains('rejected') || s.contains('dismiss'))
+    }
+    if (s.contains('rejected') || s.contains('dismiss')) {
       return _ReportStatus.rejected;
+    }
 
     return _ReportStatus.pending;
   }
@@ -406,8 +464,9 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
     if (s.contains('action') && s.contains('set')) {
       return 'Action Set';
     }
-    if (s.contains('under review') || s.contains('review'))
+    if (s.contains('under review') || s.contains('review')) {
       return 'Under Review';
+    }
     if (s.contains('submitted') || s.contains('pending')) return 'Under Review';
     if (s.contains('rejected') || s.contains('dismiss')) return 'Rejected';
     return _titleCase(s);
@@ -427,21 +486,94 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
     return s.isEmpty ? 'Unknown' : _titleCase(s.replaceAll('_', ' '));
   }
 
+  String _counselingReferralTypeLabel(_SubmittedReport report) {
+    final type = report.category.trim();
+    return type.isEmpty ? 'General' : type;
+  }
+
   List<Map<String, dynamic>> _referralEntryList(dynamic value) {
     if (value is! Iterable) return const <Map<String, dynamic>>[];
     return value
         .whereType<Map>()
         .map(
-          (entry) => entry.map(
-            (key, value) => MapEntry(key.toString(), value),
-          ),
+          (entry) => entry.map((key, value) => MapEntry(key.toString(), value)),
         )
         .toList(growable: false);
+  }
+
+  List<Map<String, dynamic>> _referralEntriesForReporter(
+    Map<String, dynamic> data,
+    String uid,
+  ) {
+    final normalizedUid = uid.trim();
+    if (normalizedUid.isEmpty) return const <Map<String, dynamic>>[];
+
+    final entries = _referralEntryList(data['referralEntries'])
+        .where((entry) => _str(entry['referredByUid']) == normalizedUid)
+        .toList(growable: false);
+    if (entries.isNotEmpty) return entries;
+
+    final topLevelReporterUid = _str(data['referredByUid']);
+    if (topLevelReporterUid != normalizedUid) {
+      return const <Map<String, dynamic>>[];
+    }
+
+    return [
+      {
+        'source': data['referralSource'],
+        'counselingType': data['counselingType'],
+        'referredByUid': data['referredByUid'],
+        'referredByRole': data['referredByRole'],
+        'referredBy': data['referredBy'],
+        'submittedAt':
+            data['latestReferralAt'] ??
+            data['referralDate'] ??
+            data['createdAt'],
+        'reasons': data['reasons'],
+        'comments': data['comments'],
+      },
+    ];
+  }
+
+  Map<String, dynamic> _latestReferralEntry(
+    List<Map<String, dynamic>> entries,
+  ) {
+    if (entries.isEmpty) return const <String, dynamic>{};
+    final sorted = [...entries]
+      ..sort((a, b) {
+        final aDate =
+            _tsToDate(a['submittedAt']) ??
+            DateTime.fromMillisecondsSinceEpoch(0);
+        final bDate =
+            _tsToDate(b['submittedAt']) ??
+            DateTime.fromMillisecondsSinceEpoch(0);
+        return bDate.compareTo(aDate);
+      });
+    return sorted.first;
   }
 
   Map<String, dynamic> _stringKeyedMap(dynamic value) {
     if (value is! Map) return <String, dynamic>{};
     return value.map((key, value) => MapEntry(key.toString(), value));
+  }
+
+  String _concernGroupLabel(String key) {
+    switch (key.trim()) {
+      case 'academicPerformanceInformation':
+      case 'moodsBehaviors':
+        return 'Academic Performance Information';
+      case 'physicalAttributes':
+      case 'schoolConcerns':
+        return 'Physical Attributes';
+      case 'crisisIndicators':
+      case 'relationships':
+        return 'Crisis Indicators';
+      case 'atypicalBehavior':
+      case 'homeConcerns':
+        return 'Atypical Behavior';
+      default:
+        return _toTitleCaseText(key.replaceAll('_', ' '));
+    }
   }
 
   DateTime? _latestReferralEntryDate(List<Map<String, dynamic>> entries) {
@@ -458,21 +590,29 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
 
   String _buildCounselingReasonSummary(Map<String, dynamic> reasons) {
     final tags = <String>[];
-    if (_stringList(reasons['moodsBehaviors']).isNotEmpty ||
+    if (_stringList(reasons['academicPerformanceInformation']).isNotEmpty ||
+        _stringList(reasons['moodsBehaviors']).isNotEmpty ||
+        _str(reasons['otherAcademicPerformance']).isNotEmpty ||
         _str(reasons['otherMood']).isNotEmpty) {
-      tags.add('Emotional and Behavior');
+      tags.add('Academic Performance Information');
     }
-    if (_stringList(reasons['schoolConcerns']).isNotEmpty ||
+    if (_stringList(reasons['physicalAttributes']).isNotEmpty ||
+        _stringList(reasons['schoolConcerns']).isNotEmpty ||
+        _str(reasons['otherPhysicalAttributes']).isNotEmpty ||
         _str(reasons['otherSchool']).isNotEmpty) {
-      tags.add('Academic and School');
+      tags.add('Physical Attributes');
     }
-    if (_stringList(reasons['relationships']).isNotEmpty ||
+    if (_stringList(reasons['crisisIndicators']).isNotEmpty ||
+        _stringList(reasons['relationships']).isNotEmpty ||
+        _str(reasons['otherCrisisIndicators']).isNotEmpty ||
         _str(reasons['otherRelationship']).isNotEmpty) {
-      tags.add('Peer and Relationship');
+      tags.add('Crisis Indicators');
     }
-    if (_stringList(reasons['homeConcerns']).isNotEmpty ||
+    if (_stringList(reasons['atypicalBehavior']).isNotEmpty ||
+        _stringList(reasons['homeConcerns']).isNotEmpty ||
+        _str(reasons['otherAtypicalBehavior']).isNotEmpty ||
         _str(reasons['otherHome']).isNotEmpty) {
-      tags.add('Family and Home');
+      tags.add('Atypical Behavior');
     }
     return tags.isEmpty ? 'No checklist selected' : tags.join(', ');
   }
@@ -714,9 +854,7 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
     );
   }
 
-  Widget _buildHandbookStyleSearchBar({
-    bool shouldConstrainWidth = true,
-  }) {
+  Widget _buildHandbookStyleSearchBar({bool shouldConstrainWidth = true}) {
     final width = MediaQuery.sizeOf(context).width;
     final isDesktop = width >= 900;
     final constrainedWidth = width >= 1500
@@ -838,7 +976,9 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
     );
 
     Widget searchWithRefresh() {
-      final mobileActions = !isDesktop ? _buildMobileReportActionButtons() : null;
+      final mobileActions = !isDesktop
+          ? _buildMobileReportActionButtons()
+          : null;
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -864,9 +1004,7 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
     );
   }
 
-  Widget? _buildFullHeaderActions({
-    required bool useCompactHeaderActions,
-  }) {
+  Widget? _buildFullHeaderActions({required bool useCompactHeaderActions}) {
     if (useCompactHeaderActions) return null;
     if (widget.onOpenViolationReport == null &&
         widget.onOpenCounselingReferral == null) {
@@ -931,7 +1069,10 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
               onPressed: widget.onOpenViolationReport,
               style: FilledButton.styleFrom(
                 backgroundColor: primaryColor,
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 14,
+                ),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(10),
                 ),
@@ -951,7 +1092,10 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
               style: OutlinedButton.styleFrom(
                 foregroundColor: primaryColor,
                 side: BorderSide(color: primaryColor.withValues(alpha: 0.35)),
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 14,
+                ),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(10),
                 ),
@@ -1034,7 +1178,8 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
     final sourceDocs = showingCounseling
         ? _lastCounselingDocs
         : _lastViolationDocs;
-    final all = sourceDocs.map<_SubmittedReport?>((doc) {
+    final all = sourceDocs
+        .map<_SubmittedReport?>((doc) {
           final d = doc.data();
           if (!showingCounseling) {
             final rawStatus = (d['status'] ?? 'Submitted').toString();
@@ -1112,7 +1257,8 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
           }
 
           final rawStatus = (d['status'] ?? 'Submitted').toString();
-          final referralEntries = _referralEntryList(d['referralEntries']);
+          final referralEntries = _referralEntriesForReporter(d, uid);
+          final latestOwnReferral = _latestReferralEntry(referralEntries);
           final entrySubmittedAt = _latestReferralEntryDate(referralEntries);
           final referralDate = _tsToDate(d['referralDate']);
           final latestReferralAt = _tsToDate(d['latestReferralAt']);
@@ -1120,28 +1266,28 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
           final updatedAt = _tsToDate(d['updatedAt']);
           final localFallbackDate = DateTime.now();
           final submittedAt =
+              entrySubmittedAt ??
               createdAt ??
               latestReferralAt ??
               referralDate ??
-              entrySubmittedAt ??
               updatedAt ??
               localFallbackDate;
           final incidentAt =
+              entrySubmittedAt ??
               referralDate ??
               latestReferralAt ??
-              entrySubmittedAt ??
               createdAt ??
               updatedAt ??
               submittedAt;
           final counselingType = _prettyCounselingType(
-            _str(d['counselingType']),
+            _str(latestOwnReferral['counselingType'] ?? d['counselingType']),
           );
           final referralSource = _prettyCounselingSource(
-            _str(d['referralSource']),
+            _str(latestOwnReferral['source'] ?? d['referralSource']),
           );
-          final reasons = _stringKeyedMap(d['reasons']);
+          final reasons = _stringKeyedMap(latestOwnReferral['reasons']);
           final reasonSummary = _buildCounselingReasonSummary(reasons);
-          final comments = _str(d['comments']);
+          final comments = _str(latestOwnReferral['comments']);
           final program = _str(
             d['programId'] ??
                 d['studentProgramId'] ??
@@ -1162,8 +1308,8 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
             incidentAt: incidentAt,
             submittedAt: submittedAt,
             location: 'â€”',
-            status: _mapStatus(rawStatus),
-            statusText: _displayStatus(rawStatus),
+            status: _mapStatus(CounselingCaseState.statusLabel(d)),
+            statusText: CounselingCaseState.statusLabel(d),
             description: comments.isEmpty ? 'â€”' : comments,
             facultyNote: reasonSummary,
             sanctionType: '',
@@ -1173,116 +1319,120 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
             meetingStatus: _str(d['meetingStatus']),
             scheduledAt: _tsToDate(d['scheduledAt']),
             meetingLocation: _str(d['meetingLocation']),
-            reporterName: _str(d['referredBy']),
-            reporterRole: _toTitleCaseText(_str(d['referredByRole'])),
+            reporterName: _str(
+              latestOwnReferral['referredBy'] ?? d['referredBy'],
+            ),
+            reporterRole: _toTitleCaseText(
+              _str(latestOwnReferral['referredByRole'] ?? d['referredByRole']),
+            ),
             referralSource: referralSource,
             referralEntries: referralEntries,
             evidenceUrls: const <String>[],
             kind: _ReportKind.counseling,
           );
-        }).whereType<_SubmittedReport>().toList();
-        all.sort((a, b) => b.submittedAt.compareTo(a.submittedAt));
+        })
+        .whereType<_SubmittedReport>()
+        .toList();
+    all.sort((a, b) => b.submittedAt.compareTo(a.submittedAt));
 
-        final roleScoped = all;
-        final effectiveSearch = _searchCtrl.text.trim().toLowerCase();
-        final searched = effectiveSearch.isEmpty
-            ? roleScoped
-            : roleScoped.where(_matchesSearch).toList(growable: false);
-        final filtered = searched;
+    final roleScoped = all;
+    final effectiveSearch = _searchCtrl.text.trim().toLowerCase();
+    final searched = effectiveSearch.isEmpty
+        ? roleScoped
+        : roleScoped.where(_matchesSearch).toList(growable: false);
+    final filtered = searched;
 
-        final viewportWidth = MediaQuery.sizeOf(context).width;
-        final desktopWide = viewportWidth >= 900;
-        final detailsPaneWidth = (viewportWidth * 0.33)
-            .clamp(320.0, 420.0)
-            .toDouble();
+    final viewportWidth = MediaQuery.sizeOf(context).width;
+    final desktopWide = viewportWidth >= 900;
+    final detailsPaneWidth = (viewportWidth * 0.33)
+        .clamp(320.0, 420.0)
+        .toDouble();
 
-        if (_selectedId != null &&
-            !filtered.any((report) => report.id == _selectedId)) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) setState(() => _selectedId = null);
-          });
+    if (_selectedId != null &&
+        !filtered.any((report) => report.id == _selectedId)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) setState(() => _selectedId = null);
+      });
+    }
+    _SubmittedReport? selectedReport;
+    if (_selectedId != null) {
+      for (final report in filtered) {
+        if (report.id == _selectedId) {
+          selectedReport = report;
+          break;
         }
-        _SubmittedReport? selectedReport;
-        if (_selectedId != null) {
-          for (final report in filtered) {
-            if (report.id == _selectedId) {
-              selectedReport = report;
-              break;
-            }
-          }
-        }
-        final shouldShowDetails = desktopWide && selectedReport != null;
+      }
+    }
+    final shouldShowDetails = desktopWide && selectedReport != null;
 
-        return Scaffold(
-          backgroundColor: bg,
-          body: ModernTableLayout(
-            detailsWidth: detailsPaneWidth,
-            header: ModernTableHeader(
-              showTitleSection: false,
-              showTopControlsWhenTitleHidden: true,
-              showSearchBar: true,
-              searchBar: _buildHandbookStyleSearchBar(),
-              action: _buildFullHeaderActions(
-                useCompactHeaderActions: viewportWidth < 900,
-              ),
-              tabs: DefaultTabController(
-                length: widget.showCounselingTab ? 2 : 1,
-                initialIndex: _tab,
-                child: TabBar(
-                  isScrollable: true,
-                  tabAlignment: TabAlignment.start,
-                  labelColor: primaryColor,
-                  indicatorColor: primaryColor,
-                  dividerColor: Colors.transparent,
-                  onTap: (index) {
-                    if (_tab == index) return;
-                    setState(() {
-                      _tab = index;
-                      _selectedId = null;
-                      _searchCtrl.clear();
-                      _searchQuery = '';
-                    });
-                  },
-                  tabs: [
-                    Tab(
-                      child: _buildTabLabelWithCount(
-                        'Violation',
-                        _violationCount,
-                      ),
+    return Scaffold(
+      backgroundColor: bg,
+      body: ModernTableLayout(
+        detailsWidth: detailsPaneWidth,
+        header: ModernTableHeader(
+          showTitleSection: false,
+          showTopControlsWhenTitleHidden: true,
+          showSearchBar: true,
+          searchBar: _buildHandbookStyleSearchBar(),
+          action: _buildFullHeaderActions(
+            useCompactHeaderActions: viewportWidth < 900,
+          ),
+          tabs: DefaultTabController(
+            length: widget.showCounselingTab ? 2 : 1,
+            initialIndex: _tab,
+            child: TabBar(
+              isScrollable: true,
+              tabAlignment: TabAlignment.start,
+              labelColor: primaryColor,
+              indicatorColor: primaryColor,
+              dividerColor: Colors.transparent,
+              onTap: (index) {
+                if (_tab == index) return;
+                setState(() {
+                  _tab = index;
+                  _selectedId = null;
+                  _searchCtrl.clear();
+                  _searchQuery = '';
+                });
+                widget.onTabChanged?.call(_tabKeyFromIndex(index));
+              },
+              tabs: [
+                Tab(
+                  child: _buildTabLabelWithCount('Violation', _violationCount),
+                ),
+                if (widget.showCounselingTab)
+                  Tab(
+                    child: _buildTabLabelWithCount(
+                      'Counselling',
+                      _counselingCount,
                     ),
-                    if (widget.showCounselingTab)
-                      Tab(
-                        child: _buildTabLabelWithCount(
-                          'Counselling',
-                          _counselingCount,
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-              filters: const [],
-            ),
-            body: Column(
-              children: [
-                Expanded(
-                  child: activeError != null
-                      ? _buildReportsErrorContent(activeError)
-                      : isInitialLoading
-                      ? _buildReportsLoadingContent(showingCounseling)
-                      : _buildReportsContent(
-                          reports: filtered,
-                          desktopWide: desktopWide,
-                          showingCounseling: showingCounseling,
-                        ),
-                ),
+                  ),
               ],
             ),
-            showDetails: shouldShowDetails,
-            details: shouldShowDetails
-                ? _buildDesktopDetailsPanel(selectedReport)
-                : null,
           ),
-        );
+          filters: const [],
+        ),
+        body: Column(
+          children: [
+            Expanded(
+              child: activeError != null
+                  ? _buildReportsErrorContent(activeError)
+                  : isInitialLoading
+                  ? _buildReportsLoadingContent(showingCounseling)
+                  : _buildReportsContent(
+                      reports: filtered,
+                      desktopWide: desktopWide,
+                      showingCounseling: showingCounseling,
+                    ),
+            ),
+          ],
+        ),
+        showDetails: shouldShowDetails,
+        details: shouldShowDetails
+            ? _buildDesktopDetailsPanel(selectedReport)
+            : null,
+      ),
+    );
   }
 
   Widget _buildReportsErrorContent(Object error) {
@@ -1329,29 +1479,16 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
   }) {
     if (reports.isEmpty) {
       final isCounselingTab = widget.showCounselingTab && _tab == 1;
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              isCounselingTab
-                  ? Icons.support_agent_outlined
-                  : Icons.inbox_outlined,
-              size: 64,
-              color: Colors.grey[300],
-            ),
-            const SizedBox(height: 16),
-            Text(
-              isCounselingTab
-                  ? 'No counseling referrals found'
-                  : 'No cases found',
-              style: const TextStyle(
-                color: hintColor,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ],
-        ),
+      return AppEmptyState(
+        icon: isCounselingTab
+            ? Icons.support_agent_outlined
+            : Icons.inbox_outlined,
+        title: isCounselingTab
+            ? 'No counseling referrals found'
+            : 'No cases found',
+        subtitle: isCounselingTab
+            ? 'Submitted counseling referrals will appear here.'
+            : 'Submitted violation reports will appear here.',
       );
     }
 
@@ -1366,7 +1503,7 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
           final isSelected = _selectedId == report.id;
           final dateText = _fmtShort(report.submittedAt);
           final subtitle = report.kind == _ReportKind.counseling
-              ? '${report.referralSource.isEmpty ? 'Counselling' : report.referralSource} | ${report.category}'
+              ? _counselingReferralTypeLabel(report)
               : report.violation;
 
           return GestureDetector(
@@ -1583,7 +1720,7 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
                           final isSelected = _selectedId == report.id;
                           final detailsText =
                               report.kind == _ReportKind.counseling
-                              ? '${report.referralSource.isEmpty ? 'Counselling' : report.referralSource} | ${report.category}'
+                              ? _counselingReferralTypeLabel(report)
                               : report.violation;
                           return DataRow.byIndex(
                             index: i,
@@ -1790,7 +1927,7 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
                       label: SizedBox(
                         width: referralCellWidth,
                         child: const Text(
-                          'REFERRAL',
+                          'REFERRAL TYPE',
                           style: TextStyle(
                             fontWeight: FontWeight.w900,
                             color: hintColor,
@@ -1832,9 +1969,6 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
                   rows: List.generate(reports.length, (i) {
                     final report = reports[i];
                     final isSelected = _selectedId == report.id;
-                    final source = report.referralSource.isEmpty
-                        ? 'Counselling'
-                        : report.referralSource;
                     final type = report.category.isEmpty
                         ? 'General'
                         : report.category;
@@ -1907,22 +2041,12 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
                                 Text(
-                                  source,
+                                  type,
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: const TextStyle(
                                     color: textDark,
                                     fontWeight: FontWeight.w700,
-                                  ),
-                                ),
-                                Text(
-                                  type,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                    color: hintColor,
-                                    fontWeight: FontWeight.w600,
-                                    fontSize: 11.5,
                                   ),
                                 ),
                               ],
@@ -2151,7 +2275,7 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
                   ),
                   Text(
                     r.kind == _ReportKind.counseling
-                        ? '${r.referralSource.isEmpty ? 'Counselling' : r.referralSource} | ${r.category}'
+                        ? _counselingReferralTypeLabel(r)
                         : '${r.concern} | ${r.violation}',
                     style: const TextStyle(color: hintColor, fontSize: 13),
                   ),
@@ -2171,42 +2295,37 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
 
   Widget _buildDesktopDetailsPanel(_SubmittedReport report) {
     return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.03),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
+      color: Colors.white,
       child: Column(
         children: [
           Container(
             padding: const EdgeInsets.fromLTRB(14, 14, 10, 8),
             child: Row(
               children: [
-                const Icon(
-                  Icons.assignment_outlined,
-                  color: primaryColor,
-                  size: 20,
-                ),
-                const SizedBox(width: 8),
                 Expanded(
-                  child: Text(
-                    report.kind == _ReportKind.counseling
-                        ? 'Referral Details'
-                        : 'Case Details',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: primaryColor,
-                      fontWeight: FontWeight.w900,
-                      fontSize: 17,
-                    ),
+                  child: Row(
+                    children: [
+                      const Icon(
+                        Icons.assignment_outlined,
+                        color: primaryColor,
+                        size: 20,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          report.kind == _ReportKind.counseling
+                              ? 'Referral Details'
+                              : 'Violation Details',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: primaryColor,
+                            fontWeight: FontWeight.w900,
+                            fontSize: 17,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
                 IconButton(
@@ -2230,8 +2349,8 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
     );
   }
 
-  void _openDetails(_SubmittedReport r) {
-    showModalBottomSheet(
+  Future<void> _openDetails(_SubmittedReport r) async {
+    await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
@@ -2240,82 +2359,72 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       builder: (sheetContext) {
-        final media = MediaQuery.of(sheetContext);
-        final reservedTop = media.padding.top + kToolbarHeight + 8;
-        final modalHeight = (media.size.height - reservedTop)
-            .clamp(420.0, media.size.height * 0.92)
-            .toDouble();
-        return SafeArea(
-          top: false,
-          child: SizedBox(
-            height: modalHeight,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-              child: Container(
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(
-                    color: Colors.black.withValues(alpha: 0.08),
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.03),
-                      blurRadius: 10,
-                      offset: const Offset(0, 4),
-                    ),
-                  ],
-                ),
-                child: Column(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.fromLTRB(14, 14, 10, 8),
-                      child: Row(
-                        children: [
-                          const Icon(
-                            Icons.assignment_outlined,
-                            color: primaryColor,
-                            size: 20,
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              r.kind == _ReportKind.counseling
-                                  ? 'Referral Details'
-                                  : 'Case Details',
-                              style: const TextStyle(
+        return FractionallySizedBox(
+          heightFactor: 0.92,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+            child: Container(
+              color: Colors.white,
+              child: Column(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.fromLTRB(14, 14, 10, 8),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Row(
+                            children: [
+                              const Icon(
+                                Icons.assignment_outlined,
                                 color: primaryColor,
-                                fontSize: 17,
-                                fontWeight: FontWeight.w900,
+                                size: 20,
                               ),
-                            ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  r.kind == _ReportKind.counseling
+                                      ? 'Referral Details'
+                                      : 'Violation Details',
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: primaryColor,
+                                    fontSize: 17,
+                                    fontWeight: FontWeight.w900,
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
-                          IconButton(
-                            onPressed: () => Navigator.pop(sheetContext),
-                            icon: const Icon(
-                              Icons.close_rounded,
-                              color: hintColor,
-                            ),
+                        ),
+                        IconButton(
+                          onPressed: () => Navigator.pop(sheetContext),
+                          icon: const Icon(
+                            Icons.close_rounded,
+                            color: hintColor,
                           ),
-                        ],
-                      ),
+                        ),
+                      ],
                     ),
-                    const SizedBox(height: 8),
-                    const Divider(height: 1),
-                    Expanded(
-                      child: SingleChildScrollView(
-                        padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
-                        child: _buildReadOnlyCaseDetailsBody(r),
-                      ),
+                  ),
+                  const SizedBox(height: 8),
+                  const Divider(height: 1),
+                  Expanded(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
+                      child: _buildReadOnlyCaseDetailsBody(r),
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
             ),
           ),
         );
       },
     );
+    if (!mounted) return;
+    if (_selectedId == r.id) {
+      setState(() => _selectedId = null);
+    }
   }
 
   Widget _buildReadOnlyCaseDetailsBody(_SubmittedReport report) {
@@ -2336,9 +2445,13 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
         _buildReadOnlyStudentInfoCard(report),
         const SizedBox(height: 12),
         _ReadOnlyDetailCard(
-          title: 'Incident Summary',
+          title: 'Violation Summary',
           child: Column(
             children: [
+              _readOnlyKv('Case Code', _displayReportCode(report)),
+              const SizedBox(height: 8),
+              _readOnlyKv('Status', report.statusText),
+              const SizedBox(height: 8),
               _readOnlyKv(
                 'Concern',
                 report.concern.isEmpty
@@ -2350,36 +2463,14 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
               const SizedBox(height: 8),
               _readOnlyKv('Violation Type', report.violation),
               const SizedBox(height: 8),
-              _readOnlyKv('Date Reported', _fmtTsLong(report.submittedAt)),
-              const SizedBox(height: 8),
               _readOnlyKv('Date of Incident', _fmtTsLong(report.incidentAt)),
+              const SizedBox(height: 8),
+              _readOnlyKv('Date Reported', _fmtTsLong(report.submittedAt)),
               const SizedBox(height: 8),
               _readOnlyKv('Reported By', reportedBy),
               const SizedBox(height: 8),
-              _readOnlyKv('Case Code', _displayReportCode(report)),
+              _readOnlyKv('Description', report.description),
             ],
-          ),
-        ),
-        const SizedBox(height: 12),
-        _ReadOnlyDetailCard(
-          title: 'Incident Description',
-          child: Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: Colors.black.withValues(alpha: 0.03),
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
-            ),
-            child: Text(
-              report.description,
-              style: const TextStyle(
-                color: textDark,
-                fontWeight: FontWeight.w600,
-                height: 1.4,
-                fontSize: 14.5,
-              ),
-            ),
           ),
         ),
         const SizedBox(height: 12),
@@ -2474,24 +2565,16 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
           child: Column(
             children: [
               _readOnlyKv('Case Code', _displayReportCode(report)),
-              const SizedBox(height: 8),
-              _readOnlyKv(
-                'Referral Source',
-                report.referralSource.isEmpty ? 'Counselling' : report.referralSource,
-              ),
-              const SizedBox(height: 8),
-              _readOnlyKv('Referral Type', report.category),
-              const SizedBox(height: 8),
-              _readOnlyKv('Status', report.statusText),
-              if (report.reporterName.isNotEmpty) ...[
+              if (_counselingReferralTypeLabel(report).trim().toLowerCase() !=
+                  'academic') ...[
                 const SizedBox(height: 8),
                 _readOnlyKv(
-                  'Referred By',
-                  report.reporterRole.isEmpty
-                      ? report.reporterName
-                      : '${report.reporterName} (${report.reporterRole})',
+                  'Referral Type',
+                  _counselingReferralTypeLabel(report),
                 ),
               ],
+              const SizedBox(height: 8),
+              _readOnlyKv('Status', report.statusText),
             ],
           ),
         ),
@@ -2500,12 +2583,10 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
           _ReadOnlyDetailCard(
             title: 'Referral History',
             child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 for (int i = 0; i < report.referralEntries.length; i++) ...[
-                  _buildReferralHistoryEntry(
-                    report.referralEntries[i],
-                    isPrimary: i == 0,
-                  ),
+                  _buildReferralHistoryEntry(report.referralEntries[i]),
                   if (i < report.referralEntries.length - 1)
                     const SizedBox(height: 10),
                 ],
@@ -2514,54 +2595,25 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
           ),
           const SizedBox(height: 12),
         ],
-        _ReadOnlyDetailCard(
-          title: 'Notes',
-          child: Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.black.withOpacity(0.03),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.black.withOpacity(0.08)),
-            ),
-            child: Text(
-              report.description,
-              style: const TextStyle(
-                color: textDark,
-                fontWeight: FontWeight.w600,
-                height: 1.35,
-              ),
-            ),
-          ),
-        ),
-        const SizedBox(height: 12),
-        _ReadOnlyDetailCard(
-          title: 'Concern Checklist',
-          child: _readOnlyKv('Selected Areas', report.facultyNote),
-        ),
       ],
     );
   }
 
-  Widget _buildReferralHistoryEntry(
-    Map<String, dynamic> entry, {
-    required bool isPrimary,
-  }) {
+  Widget _buildReferralHistoryEntry(Map<String, dynamic> entry) {
     final source = _prettyCounselingSource(_str(entry['source']));
     final type = _prettyCounselingType(_str(entry['counselingType']));
     final submittedAt = _tsToDate(entry['submittedAt']);
-    final referredBy = _str(entry['referredBy']);
-    final referredByRole = _toTitleCaseText(_str(entry['referredByRole']));
     final reasons = _stringKeyedMap(entry['reasons']);
     final comments = _str(entry['comments']);
     final concernSummary = _buildCounselingReasonSummary(reasons);
 
     return Container(
       width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(12),
         border: Border.all(color: Colors.black.withOpacity(0.08)),
       ),
       child: Column(
@@ -2571,7 +2623,7 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
             children: [
               Expanded(
                 child: Text(
-                  isPrimary ? 'Primary referral' : 'Referral entry',
+                  'Referral Entry',
                   style: const TextStyle(
                     color: textDark,
                     fontWeight: FontWeight.w900,
@@ -2579,26 +2631,129 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
                   ),
                 ),
               ),
-              if (submittedAt != null)
-                Text(
-                  _fmtTsLong(submittedAt),
-                  style: const TextStyle(
-                    color: hintColor,
-                    fontWeight: FontWeight.w700,
-                    fontSize: 12,
+            ],
+          ),
+          if (source.isNotEmpty &&
+              source != 'Professor referral' &&
+              source != 'Counselling') ...[
+            const SizedBox(height: 4),
+            Text(
+              source,
+              style: const TextStyle(
+                color: hintColor,
+                fontWeight: FontWeight.w700,
+                fontSize: 12,
+              ),
+            ),
+          ],
+          const SizedBox(height: 8),
+          _readOnlyKv('Type', type),
+          const SizedBox(height: 8),
+          _readOnlyKv(
+            'Submitted At',
+            submittedAt == null ? '--' : _fmtTsLong(submittedAt),
+          ),
+          const SizedBox(height: 8),
+          if (comments.isNotEmpty) ...[
+            _readOnlyKv('Comments', comments),
+            const SizedBox(height: 8),
+          ],
+          _buildReadOnlyConcernSection(reasons, fallback: concernSummary),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildReadOnlyConcernSection(
+    Map<String, dynamic> reasons, {
+    required String fallback,
+  }) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(
+          width: 116,
+          child: Text(
+            'Concern:',
+            style: TextStyle(
+              color: hintColor,
+              fontWeight: FontWeight.w900,
+              fontSize: 13,
+            ),
+          ),
+        ),
+        Expanded(child: _buildReadOnlyConcernList(reasons, fallback: fallback)),
+      ],
+    );
+  }
+
+  Widget _buildReadOnlyConcernList(
+    Map<String, dynamic> reasons, {
+    required String fallback,
+  }) {
+    final items = <Widget>[];
+    for (final entry in reasons.entries) {
+      final values = <String>[];
+      final raw = entry.value;
+      if (raw is Iterable) {
+        values.addAll(
+          raw.map((value) => _str(value)).where((value) => value.isNotEmpty),
+        );
+      } else {
+        final single = _str(raw);
+        if (single.isNotEmpty) values.add(single);
+      }
+      if (values.isEmpty) continue;
+
+      items.add(
+        Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                _concernGroupLabel(entry.key),
+                style: const TextStyle(
+                  color: textDark,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 12.5,
+                ),
+              ),
+              const SizedBox(height: 6),
+              for (final value in values)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 2),
+                  child: Text(
+                    '- $value',
+                    style: const TextStyle(
+                      color: textDark,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 12.5,
+                      height: 1.35,
+                    ),
                   ),
                 ),
             ],
           ),
-          const SizedBox(height: 8),
-          _detailRow('Source', source),
-          _detailRow('Type', type),
-          if (referredBy.isNotEmpty) _detailRow('Referred By', referredBy),
-          if (referredByRole.isNotEmpty) _detailRow('Role', referredByRole),
-          _detailRow('Concern', concernSummary),
-          if (comments.isNotEmpty) _detailRow('Comments', comments),
-        ],
-      ),
+        ),
+      );
+    }
+
+    if (items.isEmpty) {
+      return Text(
+        fallback.isEmpty ? '--' : fallback,
+        style: const TextStyle(
+          color: textDark,
+          fontWeight: FontWeight.w700,
+          fontSize: 13,
+          height: 1.3,
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: items,
     );
   }
 
@@ -2609,7 +2764,7 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
         SizedBox(
           width: 116,
           child: Text(
-            label + ':',
+            '$label:',
             style: const TextStyle(
               color: hintColor,
               fontWeight: FontWeight.w900,
@@ -2636,9 +2791,10 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
     return _ReadOnlyDetailCard(
       title: 'Student Information',
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           FutureBuilder<String>(
+            key: ValueKey('my-reports-photo-${report.id}-${report.studentUid}'),
             future: _resolveStudentPhotoUrl(report.studentUid),
             initialData: '',
             builder: (context, snapshot) {
@@ -2681,7 +2837,10 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
                                 borderRadius: BorderRadius.circular(11),
                                 child: Image.network(
                                   photoUrl,
+                                  key: ValueKey(photoUrl),
                                   fit: BoxFit.cover,
+                                  webHtmlElementStrategy:
+                                      WebHtmlElementStrategy.prefer,
                                   errorBuilder: (context, error, stackTrace) =>
                                       const Icon(
                                         Icons.person_rounded,
@@ -2723,6 +2882,7 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Text(
                   report.studentName.isEmpty ? '--' : report.studentName,
@@ -2736,7 +2896,7 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
                 Text(
                   report.studentId.isEmpty
                       ? 'Student No: --'
-                      : 'Student No: ' + report.studentId,
+                      : 'Student No: ${report.studentId}',
                   style: const TextStyle(
                     color: hintColor,
                     fontWeight: FontWeight.w700,
@@ -2748,11 +2908,11 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
                     studentUid: report.studentUid,
                     fallbackProgram: report.program,
                   ),
-                  initialData: report.program,
+                  initialData: '--',
                   builder: (context, snapshot) {
                     final program = _str(snapshot.data);
                     return Text(
-                      'Program: ' + (program.isEmpty ? '--' : program),
+                      'Program: ${program.isEmpty ? '--' : program}',
                       style: const TextStyle(
                         color: hintColor,
                         fontWeight: FontWeight.w700,
@@ -3032,6 +3192,12 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
 
   Widget _buildStatusBadge(String status) {
     final s = status.toLowerCase().trim();
+    final isCancelled = s.contains('cancel');
+    final isCompleted = s.contains('completed') || s.contains('resolved');
+    final isAwaitingCallSlip = s.contains('awaiting call slip');
+    final isBookingRequired = s.contains('booking required');
+    final isScheduled = s.contains('scheduled');
+    final isMissed = s.contains('missed');
     final isResolved = s.contains('resolved') && !s.contains('unresolved');
     final isActionSet =
         s.contains('action set') ||
@@ -3043,7 +3209,12 @@ class _MySubmittedCasesPageState extends State<MySubmittedCasesPage> {
         s.contains('pending');
 
     Color tone = const Color(0xFF455A64);
-    if (isResolved) tone = const Color(0xFF2E7D32);
+    if (isCancelled) tone = Colors.grey.shade700;
+    if (isCompleted || isResolved) tone = const Color(0xFF2E7D32);
+    if (isAwaitingCallSlip) tone = Colors.orange.shade700;
+    if (isBookingRequired) tone = primaryColor;
+    if (isScheduled) tone = Colors.blue.shade700;
+    if (isMissed) tone = Colors.red.shade700;
     if (isActionSet) tone = const Color(0xFF0D47A1);
     if (isUnderReview) tone = const Color(0xFFD97706);
 
@@ -3206,6 +3377,7 @@ class _ProfilePhotoViewerDialog extends StatelessWidget {
                     child: Image.network(
                       photoUrl,
                       fit: BoxFit.contain,
+                      webHtmlElementStrategy: WebHtmlElementStrategy.prefer,
                       loadingBuilder: (context, child, progress) {
                         if (progress == null) return child;
                         return const Center(

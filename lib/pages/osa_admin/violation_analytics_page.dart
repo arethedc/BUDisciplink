@@ -9,6 +9,7 @@ import '../shared/widgets/modern_table_layout.dart';
 import 'violation_records_page.dart';
 
 enum _AnalyticsTab { overview, violations, students, departments }
+
 enum _DistributionChartKind { vertical, horizontal, table, donut }
 
 class ViolationAnalyticsPage extends StatefulWidget {
@@ -25,6 +26,7 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
   static const _textDark = Color(0xFF1F2A1F);
   static const _hint = Color(0xFF6D7F62);
   bool _useDummyOverviewData = true;
+  bool _useEmptyOverviewData = false;
 
   String _schoolYear = 'All';
   String _term = 'All';
@@ -38,19 +40,18 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
   bool _showAdvancedFilters = false;
   _AnalyticsTab _tab = _AnalyticsTab.overview;
   _DistributionChartKind _categoryChartKind = _DistributionChartKind.vertical;
-  _DistributionChartKind _violationChartKind =
-      _DistributionChartKind.vertical;
+  _DistributionChartKind _violationChartKind = _DistributionChartKind.vertical;
 
   @override
   Widget build(BuildContext context) {
-    if (_useDummyOverviewData) {
-      final all = _buildDummyCases();
-      final sy = _opts(all.map((e) => e.schoolYear));
-      final term = _opts(all.map((e) => e.term));
-      final dept = _opts(all.map((e) => e.department));
-      final cat = _opts(all.map((e) => e.category));
-      final vio = _opts(all.map((e) => e.violation));
-      final rep = _opts(all.map((e) => e.reporter));
+    if (_useDummyOverviewData || _useEmptyOverviewData) {
+      final all = _useEmptyOverviewData ? const <_Case>[] : _buildDummyCases();
+      final sy = _safeOpts(all.map((e) => e.schoolYear));
+      final term = _safeOpts(all.map((e) => e.term));
+      final dept = _safeOpts(all.map((e) => e.department));
+      final cat = _safeOpts(all.map((e) => e.category));
+      final vio = _safeOpts(all.map((e) => e.violation));
+      final rep = _safeOpts(all.map((e) => e.reporter));
       final filtered = all.where(_matches).toList(growable: false);
       final m = _Metrics.from(filtered);
       return Scaffold(
@@ -81,12 +82,12 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
           final all = snap.data!.docs
               .map((d) => _Case.fromDoc(d))
               .toList(growable: false);
-          final sy = _opts(all.map((e) => e.schoolYear));
-          final term = _opts(all.map((e) => e.term));
-          final dept = _opts(all.map((e) => e.department));
-          final cat = _opts(all.map((e) => e.category));
-          final vio = _opts(all.map((e) => e.violation));
-          final rep = _opts(all.map((e) => e.reporter));
+          final sy = _safeOpts(all.map((e) => e.schoolYear));
+          final term = _safeOpts(all.map((e) => e.term));
+          final dept = _safeOpts(all.map((e) => e.department));
+          final cat = _safeOpts(all.map((e) => e.category));
+          final vio = _safeOpts(all.map((e) => e.violation));
+          final rep = _safeOpts(all.map((e) => e.reporter));
           final filtered = all.where(_matches).toList(growable: false);
           final m = _Metrics.from(filtered);
 
@@ -103,6 +104,24 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
         },
       ),
     );
+  }
+
+  List<String> _safeOpts(Iterable<String> values) {
+    final opts = _opts(values);
+    return opts.isEmpty ? const ['All'] : opts;
+  }
+
+  bool get _previewMutedCharts =>
+      _useDummyOverviewData || _useEmptyOverviewData;
+
+  Color _previewGreen(Color color) {
+    if (!_previewMutedCharts) return color;
+    return const Color(0xFFB7BDB7);
+  }
+
+  Color _previewGreenDark(Color color) {
+    if (!_previewMutedCharts) return color;
+    return const Color(0xFF8F998F);
   }
 
   Widget _buildAnalyticsLayout({
@@ -138,12 +157,10 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
         children: [
           const SizedBox(height: 10),
           Expanded(
-            child: filtered.isEmpty
-                ? _empty()
-                : SingleChildScrollView(
-                    padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
-                    child: _tabContent(metrics),
-                  ),
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
+              child: _tabContent(metrics),
+            ),
           ),
         ],
       ),
@@ -152,10 +169,7 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
 
   List<_Case> _buildDummyCases() {
     final cases = <_Case>[];
-    final months = List<DateTime>.generate(
-      12,
-      (i) => DateTime(2025, 6 + i, 1),
-    );
+    final months = List<DateTime>.generate(12, (i) => DateTime(2025, 6 + i, 1));
     const departments = <String>[
       'CCS',
       'CBA',
@@ -194,10 +208,14 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
       final month = months[monthIndex];
       for (var vIndex = 0; vIndex < violationDefs.length; vIndex++) {
         final def = violationDefs[vIndex];
-        final count = math.max(2, def.$4 - (monthIndex * (vIndex.isEven ? 1 : 0)));
+        final count = math.max(
+          2,
+          def.$4 - (monthIndex * (vIndex.isEven ? 1 : 0)),
+        );
         for (var n = 0; n < count; n++) {
           final studentSeed = (monthIndex * 97) + (vIndex * 17) + n;
-          final studentNo = '19-${(1000 + (studentSeed % 8999)).toString().padLeft(4, '0')}';
+          final studentNo =
+              '19-${(1000 + (studentSeed % 8999)).toString().padLeft(4, '0')}';
           final firstName = [
             'Reynaldo',
             'Maria',
@@ -261,19 +279,33 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
         mainAxisSize: MainAxisSize.min,
         children: [
           Text(
-            _useDummyOverviewData ? 'Dummy: ON' : 'Dummy: OFF',
+            _useEmptyOverviewData
+                ? 'Empty: ON'
+                : (_useDummyOverviewData ? 'Dummy: ON' : 'Live: ON'),
             style: TextStyle(
-              color: _useDummyOverviewData ? _primary : _hint,
+              color: (_useEmptyOverviewData || _useDummyOverviewData)
+                  ? _primary
+                  : _hint,
               fontWeight: FontWeight.w800,
               fontSize: 12,
             ),
           ),
           const SizedBox(width: 8),
           Switch.adaptive(
-            value: _useDummyOverviewData,
+            value: _useEmptyOverviewData || _useDummyOverviewData,
             activeColor: _primary,
             onChanged: (value) {
-              setState(() => _useDummyOverviewData = value);
+              setState(() {
+                if (!value) {
+                  _useDummyOverviewData = false;
+                  _useEmptyOverviewData = false;
+                } else if (_useEmptyOverviewData) {
+                  _useEmptyOverviewData = false;
+                  _useDummyOverviewData = true;
+                } else {
+                  _useDummyOverviewData = !_useDummyOverviewData;
+                }
+              });
             },
           ),
         ],
@@ -302,24 +334,18 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
             sy,
             (v) => setState(() => _schoolYear = v),
           ),
-          _dd(
-            'Semester',
-            _term,
-            term,
-            (v) => setState(() => _term = v),
-          ),
+          _dd('Semester', _term, term, (v) => setState(() => _term = v)),
           _dd(
             'Department',
             _department,
             dept,
             (v) => setState(() => _department = v),
           ),
-          _dd(
-            'Concern',
-            _concern,
-            const ['All', 'Basic', 'Serious'],
-            (v) => setState(() => _concern = v),
-          ),
+          _dd('Concern', _concern, const [
+            'All',
+            'Basic',
+            'Serious',
+          ], (v) => setState(() => _concern = v)),
           if (hasActive) ...[
             const SizedBox(width: 2),
             _clearFiltersIconButton(),
@@ -374,7 +400,9 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
     List<String> rep,
   ) async {
     if (_showAdvancedFilters) return;
-    var dataSource = _useDummyOverviewData ? 'Dummy Data' : 'Live Firestore';
+    var dataSource = _useEmptyOverviewData
+        ? 'Empty Data'
+        : (_useDummyOverviewData ? 'Dummy Data' : 'Live Firestore');
     var concern = _concern;
     var dCat = _category;
     var dVio = _violationType;
@@ -490,7 +518,11 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
                                 _panelDropdown(
                                   label: 'Data Source',
                                   value: dataSource,
-                                  options: const ['Dummy Data', 'Live Firestore'],
+                                  options: const [
+                                    'Dummy Data',
+                                    'Empty Data',
+                                    'Live Firestore',
+                                  ],
                                   onChanged: (v) =>
                                       setModalState(() => dataSource = v),
                                 ),
@@ -542,7 +574,8 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
                                   label: 'Category',
                                   value: dCat,
                                   options: cat,
-                                  onChanged: (v) => setModalState(() => dCat = v),
+                                  onChanged: (v) =>
+                                      setModalState(() => dCat = v),
                                 ),
                                 const SizedBox(height: 14),
                                 _panelDropdown(
@@ -580,6 +613,8 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
                                   setState(() {
                                     _useDummyOverviewData =
                                         dataSource == 'Dummy Data';
+                                    _useEmptyOverviewData =
+                                        dataSource == 'Empty Data';
                                     _concern = concern;
                                     _category = dCat;
                                     _violationType = dVio;
@@ -894,7 +929,9 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
                 setState(() => _tab = next);
               }
             },
-            tabs: tabs.map((tab) => Tab(text: _analyticsTabLabel(tab))).toList(),
+            tabs: tabs
+                .map((tab) => Tab(text: _analyticsTabLabel(tab)))
+                .toList(),
           );
         },
       ),
@@ -935,7 +972,7 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
                         kind: _categoryChartKind,
                         onTap: (k) =>
                             _drill(ViolationRecordsFilterPreset(category: k)),
-                        barColor: const Color(0xFF43A047),
+                        barColor: _previewGreen(const Color(0xFF43A047)),
                       ),
                       trailing: _distributionKindSelector(
                         value: _categoryChartKind,
@@ -955,7 +992,7 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
                           ViolationRecordsFilterPreset(violationType: k),
                         ),
                         maxItems: 14,
-                        barColor: const Color(0xFF1B5E20),
+                        barColor: _previewGreen(const Color(0xFF1B5E20)),
                       ),
                       trailing: _distributionKindSelector(
                         value: _violationChartKind,
@@ -972,12 +1009,14 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
                 _buildDistributionContent(
                   data: m.categoryCounts,
                   kind: _categoryChartKind,
-                  onTap: (k) => _drill(ViolationRecordsFilterPreset(category: k)),
-                  barColor: const Color(0xFF43A047),
+                  onTap: (k) =>
+                      _drill(ViolationRecordsFilterPreset(category: k)),
+                  barColor: _previewGreen(const Color(0xFF43A047)),
                 ),
                 trailing: _distributionKindSelector(
                   value: _categoryChartKind,
-                  onChanged: (next) => setState(() => _categoryChartKind = next),
+                  onChanged: (next) =>
+                      setState(() => _categoryChartKind = next),
                 ),
               ),
               const SizedBox(height: 12),
@@ -989,7 +1028,7 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
                   onTap: (k) =>
                       _drill(ViolationRecordsFilterPreset(violationType: k)),
                   maxItems: 14,
-                  barColor: const Color(0xFF1B5E20),
+                  barColor: _previewGreen(const Color(0xFF1B5E20)),
                 ),
                 trailing: _distributionKindSelector(
                   value: _violationChartKind,
@@ -1041,10 +1080,7 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _card(
-              'Students by Violation Count',
-              _studentHistogram(m.students),
-            ),
+            _card('Students by Violation Count', _studentHistogram(m.students)),
             const SizedBox(height: 12),
             _card(
               'Top Repeat Offenders',
@@ -1090,7 +1126,7 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
                 m.departmentCounts,
                 (k) =>
                     _drill(ViolationRecordsFilterPreset(departmentProgram: k)),
-                barColor: const Color(0xFF33691E),
+                barColor: _previewGreen(const Color(0xFF33691E)),
               ),
             ),
             const SizedBox(height: 12),
@@ -1190,7 +1226,9 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
             'Monthly Violations Trend by Severity',
             _monthlySeverityTrendChart(
               m.monthSeverityTrend,
-              (k) => _drill(ViolationRecordsFilterPreset(dateRange: _monthRange(k))),
+              (k) => _drill(
+                ViolationRecordsFilterPreset(dateRange: _monthRange(k)),
+              ),
             ),
           ),
         ],
@@ -1225,8 +1263,9 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
                     'Top 5 Violation Types',
                     _bars(
                       topViolations,
-                      (k) =>
-                          _drill(ViolationRecordsFilterPreset(violationType: k)),
+                      (k) => _drill(
+                        ViolationRecordsFilterPreset(violationType: k),
+                      ),
                     ),
                   ),
                 ),
@@ -1239,10 +1278,11 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
                     'Top 5 Departments by Violations',
                     _verticalBarChart(
                       topDepartments,
-                      (k) =>
-                          _drill(ViolationRecordsFilterPreset(departmentProgram: k)),
+                      (k) => _drill(
+                        ViolationRecordsFilterPreset(departmentProgram: k),
+                      ),
                       maxItems: 5,
-                      barColor: const Color(0xFF33691E),
+                      barColor: _previewGreen(const Color(0xFF33691E)),
                     ),
                   ),
                 ),
@@ -1278,10 +1318,11 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
                 'Top 5 Departments by Violations',
                 _verticalBarChart(
                   topDepartments,
-                  (k) =>
-                      _drill(ViolationRecordsFilterPreset(departmentProgram: k)),
+                  (k) => _drill(
+                    ViolationRecordsFilterPreset(departmentProgram: k),
+                  ),
                   maxItems: 5,
-                  barColor: const Color(0xFF33691E),
+                  barColor: _previewGreen(const Color(0xFF33691E)),
                 ),
               ),
             ],
@@ -1290,9 +1331,7 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
     );
   }
 
-  InputDecoration _reportLikeDropdownDecoration({
-    required String label,
-  }) {
+  InputDecoration _reportLikeDropdownDecoration({required String label}) {
     final baseBorderColor = _primary.withValues(alpha: 0.20);
     return InputDecoration(
       labelText: label,
@@ -1359,7 +1398,12 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
       required VoidCallback onRemove,
     }) {
       if (current == 'All') return;
-      chips.add(_ActiveAnalyticsFilterChipData(label: '$label: $current', onRemove: onRemove));
+      chips.add(
+        _ActiveAnalyticsFilterChipData(
+          label: '$label: $current',
+          onRemove: onRemove,
+        ),
+      );
     }
 
     addChip(
@@ -1435,43 +1479,6 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
       itemBuilder: (context, index) => children[index],
     );
   }
-
-  Widget _empty() => Center(
-    child: Container(
-      constraints: const BoxConstraints(maxWidth: 420),
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const Text(
-            'No data available for the selected filters.',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              color: _textDark,
-              fontWeight: FontWeight.w900,
-              fontSize: 16,
-            ),
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            'Try adjusting or clearing the filters.',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: _hint, fontWeight: FontWeight.w700),
-          ),
-          const SizedBox(height: 12),
-          FilledButton.tonal(
-            onPressed: () => setState(_clearFilters),
-            child: const Text('Clear Filters'),
-          ),
-        ],
-      ),
-    ),
-  );
 
   Widget _stat(String label, String value, VoidCallback? onTap) {
     final accent = _kpiAccentColor(label);
@@ -1559,7 +1566,9 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
   Color _kpiAccentColor(String label) {
     final key = label.toLowerCase();
     if (key.contains('serious')) return const Color(0xFFEF6C00);
-    if (key.contains('basic')) return const Color(0xFF2E7D32);
+    if (key.contains('basic')) {
+      return _previewGreen(const Color(0xFF2E7D32));
+    }
     return _primary;
   }
 
@@ -1658,11 +1667,7 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
           onRowTap: (row) => onTap(row[0]),
         );
       case _DistributionChartKind.donut:
-        return _donutDistributionChart(
-          limited,
-          onTap,
-          accent: barColor,
-        );
+        return _donutDistributionChart(limited, onTap, accent: barColor);
     }
   }
 
@@ -1671,24 +1676,25 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
     ValueChanged<String> onTap, {
     required Color accent,
   }) {
-    if (data.isEmpty) {
-      return _chartEmptyState(
-        height: 240,
-        message: 'No distribution data for the current filters.',
-        child: const SizedBox.shrink(),
-      );
-    }
+    final isNoData = data.isEmpty || data.values.every((v) => v == 0);
+    final working = isNoData ? const {'No data': 1} : data;
 
-    final sorted = data.entries.toList()
+    final sorted = working.entries.toList()
       ..sort((a, b) => b.value.compareTo(a.value));
     final top = sorted.take(5).toList();
     final otherTotal = sorted.skip(5).fold<int>(0, (sum, e) => sum + e.value);
 
     final palette = <Color>[
-      accent,
-      const Color(0xFF43A047),
-      const Color(0xFF66BB6A),
-      const Color(0xFF8BC34A),
+      isNoData ? const Color(0xFFB7BDB7) : accent,
+      isNoData
+          ? const Color(0xFFB7BDB7)
+          : _previewGreen(const Color(0xFF43A047)),
+      isNoData
+          ? const Color(0xFFB7BDB7)
+          : _previewGreen(const Color(0xFF66BB6A)),
+      isNoData
+          ? const Color(0xFFB7BDB7)
+          : _previewGreen(const Color(0xFF8BC34A)),
       const Color(0xFF26A69A),
       const Color(0xFF90A4AE),
     ];
@@ -1699,7 +1705,7 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
       if (otherTotal > 0)
         _DonutSlice('Others', otherTotal, palette.last.withValues(alpha: 0.9)),
     ];
-    final total = slices.fold<int>(0, (sum, s) => sum + s.value);
+    final total = isNoData ? 0 : slices.fold<int>(0, (sum, s) => sum + s.value);
 
     return SizedBox(
       height: 230,
@@ -1718,13 +1724,26 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
                       painter: _DonutDistributionPainter(slices: slices),
                     ),
                   ),
-                  Text(
-                    '$total',
-                    style: const TextStyle(
-                      color: _textDark,
-                      fontWeight: FontWeight.w900,
-                      fontSize: 20,
-                    ),
+                  Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        isNoData ? '0' : '$total',
+                        style: const TextStyle(
+                          color: _textDark,
+                          fontWeight: FontWeight.w900,
+                          fontSize: 20,
+                        ),
+                      ),
+                      Text(
+                        isNoData ? 'No data' : 'Total',
+                        style: const TextStyle(
+                          color: _hint,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
@@ -1741,7 +1760,9 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
                 final pct = total == 0 ? 0 : ((s.value / total) * 100);
                 return InkWell(
                   borderRadius: BorderRadius.circular(10),
-                  onTap: s.label == 'Others' ? null : () => onTap(s.label),
+                  onTap: isNoData || s.label == 'Others'
+                      ? null
+                      : () => onTap(s.label),
                   child: Container(
                     padding: const EdgeInsets.symmetric(
                       horizontal: 10,
@@ -1760,14 +1781,14 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
                           width: 10,
                           height: 10,
                           decoration: BoxDecoration(
-                            color: s.color,
+                            color: isNoData ? const Color(0xFFB7BDB7) : s.color,
                             shape: BoxShape.circle,
                           ),
                         ),
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            s.label,
+                            isNoData ? 'No data' : s.label,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
                               color: _textDark,
@@ -1778,9 +1799,11 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
                         ),
                         const SizedBox(width: 8),
                         Text(
-                          '${s.value} (${pct.toStringAsFixed(0)}%)',
-                          style: const TextStyle(
-                            color: _hint,
+                          isNoData
+                              ? '0'
+                              : '${s.value} (${pct.toStringAsFixed(0)}%)',
+                          style: TextStyle(
+                            color: isNoData ? _hint : _hint,
                             fontWeight: FontWeight.w800,
                             fontSize: 11.8,
                           ),
@@ -1840,10 +1863,7 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
                 ),
               ),
             ),
-            if (trailing != null) ...[
-              const SizedBox(width: 10),
-              trailing,
-            ],
+            if (trailing != null) ...[const SizedBox(width: 10), trailing],
           ],
         ),
         const SizedBox(height: 10),
@@ -1854,9 +1874,7 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
         ),
         const SizedBox(height: 12),
         DefaultTextStyle.merge(
-          style: const TextStyle(
-            color: _textDark,
-          ),
+          style: const TextStyle(color: _textDark),
           child: child,
         ),
       ],
@@ -1864,23 +1882,9 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
   );
 
   Widget _bars(Map<String, int> data, ValueChanged<String> onTap) {
-    if (data.isEmpty) {
-      return _chartEmptyState(
-        height: 170,
-        message: 'No chart data for the current filters.',
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: const [
-            _SkeletonVBar(height: 52),
-            _SkeletonVBar(height: 88),
-            _SkeletonVBar(height: 66),
-            _SkeletonVBar(height: 112),
-            _SkeletonVBar(height: 74),
-          ],
-        ),
-      );
-    }
-    final maxVal = data.values.fold<int>(1, (a, b) => a > b ? a : b);
+    final isNoData = data.isEmpty || data.values.every((v) => v == 0);
+    final renderData = isNoData ? const {'No data': 0} : data;
+    final maxVal = renderData.values.fold<int>(1, (a, b) => a > b ? a : b);
     final axisMax = _niceAxisMax(maxVal);
     final axisTicks = _axisTicks(maxVal);
     final tickValues = axisTicks.reversed.toList(); // 0 -> max
@@ -1890,182 +1894,212 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
     const labelWidth = 88.0;
     const labelGap = 0.0;
     const valueWidth = 28.0;
-    final rows = data.entries.take(12).toList();
-    final placeholderCount = math.max(0, 5 - rows.length);
+    final rows = renderData.entries.take(12).toList();
+    final placeholderCount = isNoData ? 0 : math.max(0, 5 - rows.length);
     final displayRows = <MapEntry<String, int>>[
       ...rows,
       ...List.generate(placeholderCount, (_) => const MapEntry('', 0)),
     ];
     final barAreaHeight =
-        (displayRows.length * rowHeight) +
-        ((displayRows.length - 1) * rowGap);
+        (displayRows.length * rowHeight) + ((displayRows.length - 1) * rowGap);
     return Padding(
       padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
       child: Column(
-          children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                SizedBox(
-                  width: labelWidth,
-                  child: Column(
-                    children: [
-                      ...displayRows.asMap().entries.map((entry) {
-                        final idx = entry.key;
-                        final e = entry.value;
-                        final isPlaceholder = e.key.isEmpty;
-                        return Padding(
-                          padding: EdgeInsets.only(
-                            bottom: idx == displayRows.length - 1 ? 0 : rowGap,
-                          ),
-                          child: SizedBox(
-                            height: rowHeight,
-                            child: Align(
-                              alignment: Alignment.centerLeft,
-                              child: Text(
-                                isPlaceholder ? ' ' : e.key,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  color: _textDark,
-                                  fontWeight: FontWeight.w700,
-                                ),
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(
+                width: labelWidth,
+                child: Column(
+                  children: [
+                    ...displayRows.asMap().entries.map((entry) {
+                      final idx = entry.key;
+                      final e = entry.value;
+                      final isPlaceholder = e.key.isEmpty;
+                      return Padding(
+                        padding: EdgeInsets.only(
+                          bottom: idx == displayRows.length - 1 ? 0 : rowGap,
+                        ),
+                        child: SizedBox(
+                          height: rowHeight,
+                          child: Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              isPlaceholder
+                                  ? ' '
+                                  : (isNoData ? 'No data' : e.key),
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: _textDark,
+                                fontWeight: FontWeight.w700,
                               ),
                             ),
                           ),
-                        );
-                      }),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: labelGap),
-                Expanded(
-                  child: SizedBox(
-                    height: barAreaHeight,
-                    child: Stack(
-                      children: [
-                        Positioned.fill(
-                          child: LayoutBuilder(
-                            builder: (context, constraints) {
-                              final maxIndex = tickValues.length - 1;
-                              return Stack(
-                                children: List.generate(tickValues.length, (index) {
-                                  final fraction = maxIndex <= 0
-                                      ? 0.0
-                                      : index / maxIndex;
-                                  final x = (constraints.maxWidth - 1) * fraction;
-                                  return Positioned(
-                                    left: x,
-                                    top: 0,
-                                    bottom: 0,
-                                    child: Container(
-                                      width: 1,
-                                      color: Colors.black.withValues(alpha: 0.12),
-                                    ),
-                                  );
-                                }),
-                              );
-                            },
-                          ),
                         ),
-                        Column(
-                          children: [
-                            ...displayRows.asMap().entries.map((entry) {
-                              final idx = entry.key;
-                              final e = entry.value;
-                              final isPlaceholder = e.key.isEmpty;
-                              final ratio = axisMax == 0
-                                  ? 0.0
-                                  : e.value / axisMax;
-                              return Padding(
-                                padding: EdgeInsets.only(
-                                  bottom: idx == displayRows.length - 1 ? 0 : rowGap,
-                                ),
-                                child: SizedBox(
-                                  height: rowHeight,
-                                  child: InkWell(
-                                    onTap: isPlaceholder ? null : () => onTap(e.key),
-                                    borderRadius: BorderRadius.circular(6),
-                                    child: Align(
-                                      alignment: Alignment.centerLeft,
-                                      child: Stack(
-                                        clipBehavior: Clip.none,
-                                        children: [
-                                          Container(
-                                            height: barHeight,
-                                            color: Colors.black.withValues(alpha: 0.12),
+                      );
+                    }),
+                  ],
+                ),
+              ),
+              const SizedBox(width: labelGap),
+              Expanded(
+                child: SizedBox(
+                  height: barAreaHeight,
+                  child: Stack(
+                    children: [
+                      Positioned.fill(
+                        child: LayoutBuilder(
+                          builder: (context, constraints) {
+                            final maxIndex = tickValues.length - 1;
+                            return Stack(
+                              children: List.generate(tickValues.length, (
+                                index,
+                              ) {
+                                final fraction = maxIndex <= 0
+                                    ? 0.0
+                                    : index / maxIndex;
+                                final x = (constraints.maxWidth - 1) * fraction;
+                                return Positioned(
+                                  left: x,
+                                  top: 0,
+                                  bottom: 0,
+                                  child: Container(
+                                    width: 1,
+                                    color: Colors.black.withValues(alpha: 0.12),
+                                  ),
+                                );
+                              }),
+                            );
+                          },
+                        ),
+                      ),
+                      Column(
+                        children: [
+                          ...displayRows.asMap().entries.map((entry) {
+                            final idx = entry.key;
+                            final e = entry.value;
+                            final isPlaceholder = e.key.isEmpty;
+                            final ratio = axisMax == 0
+                                ? 0.0
+                                : e.value / axisMax;
+                            final displayRatio = isNoData ? 0.28 : ratio;
+                            return Padding(
+                              padding: EdgeInsets.only(
+                                bottom: idx == displayRows.length - 1
+                                    ? 0
+                                    : rowGap,
+                              ),
+                              child: SizedBox(
+                                height: rowHeight,
+                                child: InkWell(
+                                  onTap: isNoData || isPlaceholder
+                                      ? null
+                                      : () => onTap(e.key),
+                                  borderRadius: BorderRadius.circular(6),
+                                  child: Align(
+                                    alignment: Alignment.centerLeft,
+                                    child: Stack(
+                                      clipBehavior: Clip.none,
+                                      children: [
+                                        Container(
+                                          height: barHeight,
+                                          color: Colors.black.withValues(
+                                            alpha: 0.12,
                                           ),
-                                          if (!isPlaceholder)
-                                            TweenAnimationBuilder<double>(
-                                              tween: Tween<double>(
-                                                begin: 0,
-                                                end: ratio.clamp(0.0, 1.0),
-                                              ),
-                                              duration: const Duration(milliseconds: 550),
-                                              curve: Curves.easeOutCubic,
-                                              builder: (context, animatedRatio, _) {
-                                                return FractionallySizedBox(
-                                                  widthFactor: animatedRatio,
-                                                  child: Container(
-                                                    height: barHeight,
-                                                    width: double.infinity,
-                                                    decoration: const BoxDecoration(
-                                                      gradient: LinearGradient(
-                                                        colors: [
-                                                          Color(0xFF2E7D32),
-                                                          Color(0xFF1B5E20),
-                                                        ],
-                                                      ),
+                                        ),
+                                        if (!isPlaceholder)
+                                          TweenAnimationBuilder<double>(
+                                            tween: Tween<double>(
+                                              begin: 0,
+                                              end: displayRatio.clamp(0.0, 1.0),
+                                            ),
+                                            duration: const Duration(
+                                              milliseconds: 550,
+                                            ),
+                                            curve: Curves.easeOutCubic,
+                                            builder: (context, animatedRatio, _) {
+                                              return FractionallySizedBox(
+                                                widthFactor: animatedRatio,
+                                                child: Container(
+                                                  height: barHeight,
+                                                  width: double.infinity,
+                                                  decoration: BoxDecoration(
+                                                    gradient: LinearGradient(
+                                                      colors: [
+                                                        isNoData
+                                                            ? const Color(
+                                                                0xFFB7BDB7,
+                                                              )
+                                                            : _previewGreen(
+                                                                const Color(
+                                                                  0xFF2E7D32,
+                                                                ),
+                                                              ),
+                                                        isNoData
+                                                            ? const Color(
+                                                                0xFF9FA59F,
+                                                              )
+                                                            : _previewGreenDark(
+                                                                const Color(
+                                                                  0xFF1B5E20,
+                                                                ),
+                                                              ),
+                                                      ],
                                                     ),
                                                   ),
-                                                );
-                                              },
-                                            ),
-                                        ],
-                                      ),
+                                                ),
+                                              );
+                                            },
+                                          ),
+                                      ],
                                     ),
                                   ),
                                 ),
-                              );
-                            }),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                SizedBox(
-                  width: valueWidth,
-                  child: Column(
-                    children: [
-                      ...displayRows.asMap().entries.map((entry) {
-                        final idx = entry.key;
-                        final e = entry.value;
-                        final isPlaceholder = e.key.isEmpty;
-                        return Padding(
-                          padding: EdgeInsets.only(
-                            bottom: idx == displayRows.length - 1 ? 0 : rowGap,
-                          ),
-                          child: SizedBox(
-                            height: rowHeight,
-                            child: Align(
-                              alignment: Alignment.centerRight,
-                              child: Text(
-                                isPlaceholder ? '' : '${e.value}',
-                                style: const TextStyle(
-                                  color: _hint,
-                                  fontWeight: FontWeight.w900,
-                                  fontSize: 11,
-                                ),
                               ),
-                            ),
-                          ),
-                        );
-                      }),
+                            );
+                          }),
+                        ],
+                      ),
                     ],
                   ),
                 ),
-              ],
-            ),
+              ),
+              SizedBox(
+                width: valueWidth,
+                child: Column(
+                  children: [
+                    ...displayRows.asMap().entries.map((entry) {
+                      final idx = entry.key;
+                      final e = entry.value;
+                      final isPlaceholder = e.key.isEmpty;
+                      return Padding(
+                        padding: EdgeInsets.only(
+                          bottom: idx == displayRows.length - 1 ? 0 : rowGap,
+                        ),
+                        child: SizedBox(
+                          height: rowHeight,
+                          child: Align(
+                            alignment: Alignment.centerRight,
+                            child: Text(
+                              isPlaceholder
+                                  ? ''
+                                  : (isNoData ? '0' : '${e.value}'),
+                              style: const TextStyle(
+                                color: _hint,
+                                fontWeight: FontWeight.w900,
+                                fontSize: 11,
+                              ),
+                            ),
+                          ),
+                        ),
+                      );
+                    }),
+                  ],
+                ),
+              ),
+            ],
+          ),
           const SizedBox(height: 8),
           const Divider(height: 1, color: Color(0x1F000000)),
           const SizedBox(height: 8),
@@ -2082,7 +2116,9 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
                         fit: StackFit.expand,
                         clipBehavior: Clip.none,
                         children: List.generate(tickValues.length, (index) {
-                          final fraction = maxIndex <= 0 ? 0.0 : index / maxIndex;
+                          final fraction = maxIndex <= 0
+                              ? 0.0
+                              : index / maxIndex;
                           final x = constraints.maxWidth * fraction;
                           Widget label = Text(
                             '${tickValues[index]}',
@@ -2093,16 +2129,10 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
                             ),
                           );
                           if (index == 0) {
-                            return Positioned(
-                              left: 0,
-                              child: label,
-                            );
+                            return Positioned(left: 0, child: label);
                           }
                           if (index == maxIndex) {
-                            return Positioned(
-                              right: 0,
-                              child: label,
-                            );
+                            return Positioned(right: 0, child: label);
                           }
                           return Positioned(
                             left: x - 10,
@@ -2162,7 +2192,9 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
     required DateTime? value,
     required VoidCallback onTap,
   }) {
-    final text = value == null ? 'Any' : DateFormat('MMM d, yyyy').format(value);
+    final text = value == null
+        ? 'Any'
+        : DateFormat('MMM d, yyyy').format(value);
     return InkWell(
       borderRadius: BorderRadius.circular(12),
       onTap: onTap,
@@ -2213,24 +2245,10 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
     int maxItems = 12,
     Color barColor = _primary,
   }) {
-    if (data.isEmpty) {
-      return _chartEmptyState(
-        height: 240,
-        message: 'No bar chart data for the current filters.',
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: const [
-            _SkeletonVBar(height: 64),
-            _SkeletonVBar(height: 120),
-            _SkeletonVBar(height: 96),
-            _SkeletonVBar(height: 142),
-            _SkeletonVBar(height: 82),
-            _SkeletonVBar(height: 108),
-          ],
-        ),
-      );
-    }
-    final entries = data.entries.take(maxItems).toList();
+    final isNoData = data.isEmpty || data.values.every((v) => v == 0);
+    final entries = isNoData
+        ? const [MapEntry<String, int>('No data', 0)]
+        : data.entries.take(maxItems).toList();
     final maxVal = entries.fold<int>(1, (p, e) => math.max(p, e.value));
     final axisMax = _niceAxisMax(maxVal);
     final ticks = _axisTicks(maxVal);
@@ -2307,10 +2325,17 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
                     separatorBuilder: (_, __) => const SizedBox(width: 10),
                     itemBuilder: (context, i) {
                       final e = entries[i];
-                      final ratio = (e.value / axisMax).clamp(0.0, 1.0);
+                      final ratio = isNoData
+                          ? 0.28
+                          : (e.value / axisMax).clamp(0.0, 1.0);
+                      final displayValue = isNoData ? '0' : '${e.value}';
+                      final displayLabel = isNoData ? 'No data' : e.key;
+                      final displayBarColor = isNoData
+                          ? const Color(0xFFB7BDB7)
+                          : barColor;
                       const railHeight = plotHeight;
                       return InkWell(
-                        onTap: () => onTap(e.key),
+                        onTap: isNoData ? null : () => onTap(e.key),
                         borderRadius: BorderRadius.circular(10),
                         child: SizedBox(
                           width: 68,
@@ -2320,7 +2345,7 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
                                 height: valueLabelHeight,
                                 child: Center(
                                   child: Text(
-                                    '${e.value}',
+                                    displayValue,
                                     style: const TextStyle(
                                       color: _hint,
                                       fontWeight: FontWeight.w900,
@@ -2338,23 +2363,31 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
                                     width: 34,
                                     height: railHeight,
                                     decoration: BoxDecoration(
-                                      color: Colors.black.withValues(alpha: 0.12),
+                                      color: Colors.black.withValues(
+                                        alpha: 0.12,
+                                      ),
                                     ),
                                     child: Align(
                                       alignment: Alignment.bottomCenter,
                                       child: TweenAnimationBuilder<double>(
-                                        tween: Tween<double>(begin: 0, end: ratio),
-                                        duration: const Duration(milliseconds: 600),
+                                        tween: Tween<double>(
+                                          begin: 0,
+                                          end: ratio,
+                                        ),
+                                        duration: const Duration(
+                                          milliseconds: 600,
+                                        ),
                                         curve: Curves.easeOutCubic,
                                         builder: (context, animatedRatio, _) {
                                           return Container(
                                             width: 34,
                                             height: railHeight * animatedRatio,
                                             decoration: BoxDecoration(
-                                              color: barColor,
+                                              color: displayBarColor,
                                               boxShadow: [
                                                 BoxShadow(
-                                                  color: barColor.withValues(alpha: 0.25),
+                                                  color: displayBarColor
+                                                      .withValues(alpha: 0.25),
                                                   blurRadius: 6,
                                                   offset: const Offset(0, 2),
                                                 ),
@@ -2372,7 +2405,7 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
                                 height: xLabelHeight,
                                 child: Center(
                                   child: Text(
-                                    e.key,
+                                    displayLabel,
                                     maxLines: 2,
                                     overflow: TextOverflow.ellipsis,
                                     textAlign: TextAlign.center,
@@ -2403,25 +2436,15 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
     Map<String, _MonthSeverityPoint> data,
     ValueChanged<String> onTap,
   ) {
-    if (data.isEmpty) {
-      return _chartEmptyState(
-        height: 240,
-        message: 'No trend data for the current filters.',
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: const [
-            _SkeletonVBar(height: 64),
-            _SkeletonVBar(height: 120),
-            _SkeletonVBar(height: 96),
-            _SkeletonVBar(height: 142),
-            _SkeletonVBar(height: 82),
-            _SkeletonVBar(height: 108),
-          ],
-        ),
-      );
-    }
-
-    final entries = data.entries.toList();
+    final isNoData = data.isEmpty || data.values.every((v) => v.total == 0);
+    final entries = isNoData
+        ? const [
+            MapEntry<String, _MonthSeverityPoint>(
+              'No data',
+              _MonthSeverityPoint(basic: 0, serious: 0),
+            ),
+          ]
+        : data.entries.toList();
     final maxVal = entries.fold<int>(1, (p, e) => math.max(p, e.value.total));
     final axisMax = _niceAxisMax(maxVal);
     final ticks = _axisTicks(maxVal);
@@ -2498,16 +2521,21 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
                     separatorBuilder: (_, __) => const SizedBox(width: 10),
                     itemBuilder: (context, i) {
                       final e = entries[i];
-                      final totalRatio = (e.value.total / axisMax).clamp(0.0, 1.0);
+                      final totalRatio = isNoData
+                          ? 0.28
+                          : (e.value.total / axisMax).clamp(0.0, 1.0);
                       final basicShare = e.value.total == 0
                           ? 0.0
                           : e.value.basic / e.value.total;
                       final seriousShare = e.value.total == 0
                           ? 0.0
                           : e.value.serious / e.value.total;
+                      final displayTotal = isNoData ? '0' : '${e.value.total}';
+                      final displayLabel = isNoData ? 'No data' : e.key;
+                      final mutedGray = const Color(0xFFB7BDB7);
                       const railHeight = plotHeight;
                       return InkWell(
-                        onTap: () => onTap(e.key),
+                        onTap: isNoData ? null : () => onTap(e.key),
                         borderRadius: BorderRadius.circular(10),
                         child: SizedBox(
                           width: 72,
@@ -2517,7 +2545,7 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
                                 height: valueLabelHeight,
                                 child: Center(
                                   child: Text(
-                                    '${e.value.total}',
+                                    displayTotal,
                                     style: const TextStyle(
                                       color: _hint,
                                       fontWeight: FontWeight.w900,
@@ -2542,7 +2570,9 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
                                           begin: 0,
                                           end: totalRatio,
                                         ),
-                                        duration: const Duration(milliseconds: 600),
+                                        duration: const Duration(
+                                          milliseconds: 600,
+                                        ),
                                         curve: Curves.easeOutCubic,
                                         builder: (context, animatedRatio, _) {
                                           return SizedBox(
@@ -2551,19 +2581,33 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
                                             child: Column(
                                               children: [
                                                 Expanded(
-                                                  flex: (seriousShare * 1000)
-                                                      .round()
-                                                      .clamp(1, 1000),
+                                                  flex: isNoData
+                                                      ? 1
+                                                      : (seriousShare * 1000)
+                                                            .round()
+                                                            .clamp(1, 1000),
                                                   child: Container(
-                                                    color: const Color(0xFFEF6C00),
+                                                    color: isNoData
+                                                        ? mutedGray
+                                                        : const Color(
+                                                            0xFFEF6C00,
+                                                          ),
                                                   ),
                                                 ),
                                                 Expanded(
-                                                  flex: (basicShare * 1000)
-                                                      .round()
-                                                      .clamp(1, 1000),
+                                                  flex: isNoData
+                                                      ? 1
+                                                      : (basicShare * 1000)
+                                                            .round()
+                                                            .clamp(1, 1000),
                                                   child: Container(
-                                                    color: const Color(0xFF2E7D32),
+                                                    color: isNoData
+                                                        ? mutedGray
+                                                        : _previewGreen(
+                                                            const Color(
+                                                              0xFF2E7D32,
+                                                            ),
+                                                          ),
                                                   ),
                                                 ),
                                               ],
@@ -2580,7 +2624,7 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
                                 height: xLabelHeight,
                                 child: Center(
                                   child: Text(
-                                    e.key,
+                                    displayLabel,
                                     maxLines: 2,
                                     overflow: TextOverflow.ellipsis,
                                     textAlign: TextAlign.center,
@@ -2614,12 +2658,13 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
     required VoidCallback onTapSerious,
   }) {
     final total = basic + serious;
-    final basicRatio = total == 0 ? 0.0 : basic / total;
-    final seriousRatio = total == 0 ? 0.0 : serious / total;
+    final isNoData = total == 0;
+    final basicRatio = isNoData ? 0.0 : basic / total;
+    final seriousRatio = isNoData ? 0.0 : serious / total;
     int hoveredSegment = -1; // -1 none, 0 basic, 1 serious
 
     int detectHoveredSegment(Offset localPosition, double size) {
-      if (total == 0) return -1;
+      if (isNoData) return -1;
       final center = Offset(size / 2, size / 2);
       final dx = localPosition.dx - center.dx;
       final dy = localPosition.dy - center.dy;
@@ -2652,10 +2697,9 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
       builder: (context, setLocalState) {
         final showBasic = hoveredSegment == 0;
         final showSerious = hoveredSegment == 1;
-        final basicPercent = total == 0 ? 0 : ((basic / total) * 100).round();
-        final seriousPercent = total == 0
-            ? 0
-            : ((serious / total) * 100).round();
+        final basicPercent = isNoData ? 0 : ((basic / total) * 100).round();
+        final seriousPercent = isNoData ? 0 : ((serious / total) * 100).round();
+        final neutral = const Color(0xFFB7BDB7);
 
         return Column(
           children: [
@@ -2695,6 +2739,7 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
                         painter: _DonutSplitPainter(
                           basicRatio: basicRatio,
                           seriousRatio: seriousRatio,
+                          muted: _previewMutedCharts,
                         ),
                       ),
                     ),
@@ -2728,21 +2773,31 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
                               width: 8,
                               height: 8,
                               decoration: BoxDecoration(
-                                color: showBasic
-                                    ? const Color(0xFF2E7D32)
-                                    : const Color(0xFFEF6C00),
+                                color: isNoData
+                                    ? neutral
+                                    : (showBasic
+                                          ? _previewGreen(
+                                              const Color(0xFF2E7D32),
+                                            )
+                                          : const Color(0xFFEF6C00)),
                                 shape: BoxShape.circle,
                               ),
                             ),
                             const SizedBox(width: 6),
                             Text(
-                              showBasic
-                                  ? 'Basic $basicPercent%'
-                                  : 'Serious $seriousPercent%',
+                              isNoData
+                                  ? 'No data'
+                                  : (showBasic
+                                        ? 'Basic $basicPercent%'
+                                        : 'Serious $seriousPercent%'),
                               style: TextStyle(
-                                color: showBasic
-                                    ? const Color(0xFF2E7D32)
-                                    : const Color(0xFFEF6C00),
+                                color: isNoData
+                                    ? neutral
+                                    : (showBasic
+                                          ? _previewGreen(
+                                              const Color(0xFF2E7D32),
+                                            )
+                                          : const Color(0xFFEF6C00)),
                                 fontWeight: FontWeight.w800,
                                 fontSize: 12,
                               ),
@@ -2755,15 +2810,15 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Text(
-                        '$total',
+                        isNoData ? '0' : '$total',
                         style: const TextStyle(
                           color: _textDark,
                           fontWeight: FontWeight.w900,
                           fontSize: 24,
                         ),
                       ),
-                      const Text(
-                        'Total',
+                      Text(
+                        isNoData ? 'No data' : 'Total',
                         style: TextStyle(
                           color: _hint,
                           fontWeight: FontWeight.w700,
@@ -2782,14 +2837,16 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
                 _legendPill(
                   label: 'Basic',
                   count: basic,
-                  color: const Color(0xFF2E7D32),
+                  color: isNoData
+                      ? neutral
+                      : _previewGreen(const Color(0xFF2E7D32)),
                   onTap: onTapBasic,
                 ),
                 const SizedBox(width: 14),
                 _legendPill(
                   label: 'Serious',
                   count: serious,
-                  color: const Color(0xFFEF6C00),
+                  color: isNoData ? neutral : const Color(0xFFEF6C00),
                   onTap: onTapSerious,
                 ),
               ],
@@ -2835,22 +2892,10 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
   }
 
   Widget _stackedDepartmentBars(List<_DeptRow> rows) {
-    if (rows.isEmpty) {
-      return _chartEmptyState(
-        height: 180,
-        message: 'No department mix data for the current filters.',
-        child: Column(
-          children: const [
-            _SkeletonHBar(widthFactor: 0.86),
-            SizedBox(height: 12),
-            _SkeletonHBar(widthFactor: 0.72),
-            SizedBox(height: 12),
-            _SkeletonHBar(widthFactor: 0.91),
-          ],
-        ),
-      );
-    }
-    final top = rows.take(10).toList();
+    final isNoData = rows.isEmpty || rows.every((r) => r.total == 0);
+    final top = isNoData
+        ? const [_DeptRow('No data', 0, 0, 0)]
+        : rows.take(10).toList();
     final maxTotal = top.fold<int>(1, (p, r) => math.max(p, r.total));
     return Container(
       width: double.infinity,
@@ -2866,7 +2911,9 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
       ),
       child: Column(
         children: top.map((r) {
-          final totalRatio = (r.total / maxTotal).clamp(0.0, 1.0);
+          final totalRatio = isNoData
+              ? 0.26
+              : (r.total / maxTotal).clamp(0.0, 1.0);
           final basicShare = r.total == 0 ? 0.0 : r.basic / r.total;
           final seriousShare = r.total == 0 ? 0.0 : r.serious / r.total;
           return Padding(
@@ -2886,7 +2933,7 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
                       ),
                     ),
                     Text(
-                      '${r.total}',
+                      isNoData ? '0' : '${r.total}',
                       style: const TextStyle(
                         color: _hint,
                         fontWeight: FontWeight.w900,
@@ -2916,21 +2963,31 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
                               child: Row(
                                 children: [
                                   Expanded(
-                                    flex: (basicShare * 1000).round().clamp(
-                                      1,
-                                      1000,
-                                    ),
+                                    flex: isNoData
+                                        ? 1
+                                        : (basicShare * 1000).round().clamp(
+                                            1,
+                                            1000,
+                                          ),
                                     child: Container(
-                                      color: const Color(0xFF2E7D32),
+                                      color: isNoData
+                                          ? const Color(0xFFB7BDB7)
+                                          : _previewGreen(
+                                              const Color(0xFF2E7D32),
+                                            ),
                                     ),
                                   ),
                                   Expanded(
-                                    flex: (seriousShare * 1000).round().clamp(
-                                      1,
-                                      1000,
-                                    ),
+                                    flex: isNoData
+                                        ? 1
+                                        : (seriousShare * 1000).round().clamp(
+                                            1,
+                                            1000,
+                                          ),
                                     child: Container(
-                                      color: const Color(0xFFEF6C00),
+                                      color: isNoData
+                                          ? const Color(0xFFB7BDB7)
+                                          : const Color(0xFFEF6C00),
                                     ),
                                   ),
                                 ],
@@ -2951,27 +3008,7 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
   }
 
   Widget _studentHistogram(List<_StudentCount> students) {
-    if (students.isEmpty) {
-      return _chartEmptyState(
-        height: 210,
-        message: 'No student distribution data for the current filters.',
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: const [
-            _SkeletonVBar(height: 110),
-            _SkeletonVBar(height: 92),
-            _SkeletonVBar(height: 72),
-            _SkeletonVBar(height: 58),
-          ],
-        ),
-      );
-    }
-    final buckets = <String, int>{
-      '1': 0,
-      '2': 0,
-      '3': 0,
-      '4+': 0,
-    };
+    final buckets = <String, int>{'1': 0, '2': 0, '3': 0, '4+': 0};
     for (final s in students) {
       if (s.count >= 4) {
         buckets['4+'] = (buckets['4+'] ?? 0) + 1;
@@ -2980,7 +3017,12 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
         buckets[key] = (buckets[key] ?? 0) + 1;
       }
     }
-    return _verticalBarChart(buckets, (_) {}, maxItems: 4, barColor: const Color(0xFF558B2F));
+    return _verticalBarChart(
+      buckets,
+      (_) {},
+      maxItems: 4,
+      barColor: _previewGreen(const Color(0xFF558B2F)),
+    );
   }
 
   Widget _table(
@@ -2988,21 +3030,11 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
     List<List<String>> rows, {
     required ValueChanged<List<String>> onRowTap,
   }) {
-    if (rows.isEmpty) {
-      return _chartEmptyState(
-        height: 170,
-        message: 'No table data for the current filters.',
-        child: Column(
-          children: const [
-            _SkeletonTableRow(),
-            SizedBox(height: 10),
-            _SkeletonTableRow(),
-            SizedBox(height: 10),
-            _SkeletonTableRow(),
-          ],
-        ),
-      );
-    }
+    final displayRows = rows.isEmpty
+        ? [
+            ['No data', for (var i = 1; i < headers.length; i++) '0'],
+          ]
+        : rows;
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       child: DataTable(
@@ -3022,10 +3054,10 @@ class _ViolationAnalyticsPageState extends State<ViolationAnalyticsPage> {
               ),
             )
             .toList(),
-        rows: rows
+        rows: displayRows
             .map(
               (r) => DataRow(
-                onSelectChanged: (_) => onRowTap(r),
+                onSelectChanged: rows.isEmpty ? null : (_) => onRowTap(r),
                 cells: r
                     .map(
                       (c) => DataCell(
@@ -3200,10 +3232,7 @@ class _ActiveAnalyticsFilterChipData {
 class _HoverDismissFilterChip extends StatelessWidget {
   final String label;
   final VoidCallback onRemove;
-  const _HoverDismissFilterChip({
-    required this.label,
-    required this.onRemove,
-  });
+  const _HoverDismissFilterChip({required this.label, required this.onRemove});
 
   @override
   Widget build(BuildContext context) {
@@ -3524,12 +3553,13 @@ class _Metrics {
           : DateFormat('MMM yyyy').format(c.date!);
       month[m] = (month[m] ?? 0) + 1;
       final currentSeverity =
-          monthSeverity[m] ??
-          const _MonthSeverityPoint(basic: 0, serious: 0);
+          monthSeverity[m] ?? const _MonthSeverityPoint(basic: 0, serious: 0);
       monthSeverity[m] = _MonthSeverityPoint(
-        basic: currentSeverity.basic +
+        basic:
+            currentSeverity.basic +
             (c.concern.toLowerCase() == 'basic' ? 1 : 0),
-        serious: currentSeverity.serious +
+        serious:
+            currentSeverity.serious +
             (c.concern.toLowerCase() == 'serious' ? 1 : 0),
       );
       cat[c.category] = (cat[c.category] ?? 0) + 1;
@@ -3568,28 +3598,30 @@ class _Metrics {
     }
 
     Map<String, int> sortMonthsChronological(Map<String, int> m) {
-      final e = m.entries.toList()..sort((a, b) {
-        final ao = monthOrder(a.key);
-        final bo = monthOrder(b.key);
-        if (ao < 0 && bo < 0) return a.key.compareTo(b.key);
-        if (ao < 0) return 1;
-        if (bo < 0) return -1;
-        return ao.compareTo(bo);
-      });
+      final e = m.entries.toList()
+        ..sort((a, b) {
+          final ao = monthOrder(a.key);
+          final bo = monthOrder(b.key);
+          if (ao < 0 && bo < 0) return a.key.compareTo(b.key);
+          if (ao < 0) return 1;
+          if (bo < 0) return -1;
+          return ao.compareTo(bo);
+        });
       return {for (final x in e) x.key: x.value};
     }
 
     Map<String, _MonthSeverityPoint> sortMonthSeverityChronological(
       Map<String, _MonthSeverityPoint> m,
     ) {
-      final e = m.entries.toList()..sort((a, b) {
-        final ao = monthOrder(a.key);
-        final bo = monthOrder(b.key);
-        if (ao < 0 && bo < 0) return a.key.compareTo(b.key);
-        if (ao < 0) return 1;
-        if (bo < 0) return -1;
-        return ao.compareTo(bo);
-      });
+      final e = m.entries.toList()
+        ..sort((a, b) {
+          final ao = monthOrder(a.key);
+          final bo = monthOrder(b.key);
+          if (ao < 0 && bo < 0) return a.key.compareTo(b.key);
+          if (ao < 0) return 1;
+          if (bo < 0) return -1;
+          return ao.compareTo(bo);
+        });
       return {for (final x in e) x.key: x.value};
     }
 
@@ -3625,10 +3657,12 @@ class _Metrics {
 class _DonutSplitPainter extends CustomPainter {
   final double basicRatio;
   final double seriousRatio;
+  final bool muted;
 
   const _DonutSplitPainter({
     required this.basicRatio,
     required this.seriousRatio,
+    this.muted = false,
   });
 
   @override
@@ -3638,7 +3672,7 @@ class _DonutSplitPainter extends CustomPainter {
     final start = -math.pi / 2;
 
     final basePaint = Paint()
-      ..color = const Color(0xFFE8F2E8)
+      ..color = muted ? const Color(0xFFE0E3E0) : const Color(0xFFE8F2E8)
       ..style = PaintingStyle.stroke
       ..strokeWidth = stroke
       ..strokeCap = StrokeCap.round;
@@ -3648,7 +3682,7 @@ class _DonutSplitPainter extends CustomPainter {
     final seriousSweep = (seriousRatio.clamp(0.0, 1.0)) * math.pi * 2;
 
     final basicPaint = Paint()
-      ..color = const Color(0xFF2E7D32)
+      ..color = muted ? const Color(0xFFB7BDB7) : const Color(0xFF2E7D32)
       ..style = PaintingStyle.stroke
       ..strokeWidth = stroke
       ..strokeCap = StrokeCap.round;
@@ -3729,4 +3763,3 @@ class _DonutDistributionPainter extends CustomPainter {
     return false;
   }
 }
-

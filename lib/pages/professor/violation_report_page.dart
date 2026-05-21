@@ -3,7 +3,6 @@ import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:firebase_storage/firebase_storage.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart'
     show kIsWeb, defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
@@ -13,10 +12,12 @@ import 'package:syncfusion_flutter_pdfviewer/pdfviewer.dart';
 
 import '../../services/student_directory_policy.dart';
 import '../../services/academic_settings_service.dart';
+import '../../services/institution_label_service.dart';
 import '../../services/violation_case_service.dart';
-import '../osa_admin/institution_setup_page.dart';
+import '../../services/osa_setup_status_service.dart';
 import '../shared/widgets/unsaved_changes_guard.dart';
 import 'package:apps/pages/shared/widgets/app_inline_notice.dart';
+import 'package:apps/services/app_firestore.dart';
 
 class ViolationReportPage extends StatefulWidget {
   final VoidCallback? onOpenMyReportsInShell;
@@ -61,6 +62,9 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
   String? _studentUid;
   String? _selectedStudentPhotoUrl;
   String _selectedStudentCollegeId = '';
+  String _selectedStudentCollegeLabel = '';
+  String _selectedStudentProgramId = '';
+  String _selectedStudentProgramLabel = '';
 
   // Concern + Category + Type (3-level structure)
   String? _concern; // basic | serious
@@ -87,9 +91,10 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
   bool _incidentModified = false;
   bool _checkingAcademicContext = true;
   bool _hasActiveSchoolYear = false;
+  bool _hasViolationCategories = false;
+  bool _hasViolationTypes = false;
   String? _activeSchoolYearLabel;
   String? _academicContextError;
-  String _viewerRole = '';
 
   // Student cache
   bool _loadingStudents = false;
@@ -146,18 +151,14 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
     _removeStudentSearchOverlay();
 
     try {
-      final currentUser = FirebaseAuth.instance.currentUser;
-      final activeSy = await _academicSvc.getActiveSY();
-      var role = '';
-      if (currentUser != null) {
-        final userSnap = await FirebaseFirestore.instance
-            .collection('users')
-            .doc(currentUser.uid)
-            .get();
-        role = (userSnap.data()?['role'] ?? '').toString().trim().toLowerCase();
-      }
+      final results = await Future.wait<Object?>([
+        _academicSvc.getActiveSY(),
+        OsaSetupStatusService().load(),
+      ]);
       if (!mounted) return;
 
+      final activeSy = results[0] as Map<String, dynamic>?;
+      final setupStatus = results[1] as OsaSetupStatus;
       final hasActive = activeSy != null;
       final label = hasActive
           ? ((activeSy['label'] ?? activeSy['id'] ?? '').toString().trim())
@@ -165,10 +166,11 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
 
       setState(() {
         _hasActiveSchoolYear = hasActive;
+        _hasViolationCategories = setupStatus.hasViolationCategories;
+        _hasViolationTypes = setupStatus.hasViolationTypes;
         _activeSchoolYearLabel = (label == null || label.isEmpty)
             ? null
             : label;
-        _viewerRole = role;
       });
       if (!hasActive) {
         _removeStudentSearchOverlay();
@@ -181,9 +183,10 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
       if (!mounted) return;
       setState(() {
         _hasActiveSchoolYear = false;
+        _hasViolationCategories = false;
+        _hasViolationTypes = false;
         _activeSchoolYearLabel = null;
         _academicContextError = e.toString();
-        _viewerRole = '';
       });
     } finally {
       if (mounted) {
@@ -192,150 +195,76 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
     }
   }
 
-  bool get _canOpenSchoolYearSetup {
-    return _viewerRole == 'super_admin' ||
-        _viewerRole == 'osa_admin' ||
-        _viewerRole == 'department_admin';
-  }
-
-  Future<void> _openSchoolYearSetup() async {
-    if (!_canOpenSchoolYearSetup || !mounted) return;
-    await Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const InstitutionSetupPage()),
-    );
-    if (!mounted) return;
-    await _loadAcademicContext();
-  }
-
-  Widget _buildNoActiveSchoolYearGate({required double scale}) {
-    return Container(
-      width: double.infinity,
-      padding: EdgeInsets.all(18 * scale),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+  Widget _buildReportSetupGate({required double scale}) {
+    final missingSchoolYear = !_hasActiveSchoolYear;
+    final missingViolationCategories = !_hasViolationCategories;
+    final missingViolationTypes = !_hasViolationTypes;
+    final title = 'Reporting is not yet available';
+    final subtitle = 'Please contact OSA before filing a report on this page.';
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 640),
+        child: Container(
+          width: double.infinity,
+          padding: EdgeInsets.symmetric(
+            horizontal: 24 * scale,
+            vertical: 20 * scale,
+          ),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(color: primaryColor.withValues(alpha: 0.10)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.05),
+                blurRadius: 20,
+                offset: const Offset(0, 10),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              Container(
-                width: 36,
-                height: 36,
-                decoration: BoxDecoration(
-                  color: primaryColor.withValues(alpha: 0.10),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: const Icon(
-                  Icons.calendar_month_rounded,
+              Text(
+                title,
+                textAlign: TextAlign.center,
+                style: TextStyle(
                   color: primaryColor,
+                  fontWeight: FontWeight.w900,
+                  fontSize: (17.0 * scale).clamp(17.0, 19.0),
+                  height: 1.12,
                 ),
               ),
-              const SizedBox(width: 10),
-              Expanded(
+              SizedBox(height: 10 * scale),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 560),
                 child: Text(
-                  'Reporting is unavailable',
+                  subtitle,
+                  textAlign: TextAlign.center,
                   style: TextStyle(
-                    color: textDark,
-                    fontWeight: FontWeight.w900,
-                    fontSize: (16.0 * scale).clamp(16.0, 18.0),
+                    color: hintColor,
+                    fontWeight: FontWeight.w700,
+                    fontSize: (13.0 * scale).clamp(12.8, 13.8),
+                    height: 1.25,
                   ),
                 ),
               ),
-            ],
-          ),
-          SizedBox(height: 12 * scale),
-          Container(
-            width: double.infinity,
-            padding: EdgeInsets.all(12 * scale),
-            decoration: BoxDecoration(
-              color: const Color(0xFFFFF7E8),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: const Color(0xFFF5D9A3)),
-            ),
-            child: Text(
-              'No active school year is configured. Report Violation is locked until an admin sets an active school year and semester dates.',
-              style: TextStyle(
-                color: const Color(0xFF8A5C12),
-                fontWeight: FontWeight.w800,
-                fontSize: (12.8 * scale).clamp(12.8, 14.0),
-              ),
-            ),
-          ),
-          if ((_activeSchoolYearLabel ?? '').isNotEmpty) ...[
-            SizedBox(height: 8 * scale),
-            Text(
-              'Current active school year: $_activeSchoolYearLabel',
-              style: TextStyle(
-                color: hintColor,
-                fontWeight: FontWeight.w700,
-                fontSize: (12.5 * scale).clamp(12.5, 14.0),
-              ),
-            ),
-          ],
-          if ((_academicContextError ?? '').isNotEmpty) ...[
-            SizedBox(height: 8 * scale),
-            Text(
-              'Check failed: $_academicContextError',
-              style: TextStyle(
-                color: Colors.red.shade700,
-                fontWeight: FontWeight.w700,
-                fontSize: (12.2 * scale).clamp(12.2, 13.5),
-              ),
-            ),
-          ],
-          if (!_canOpenSchoolYearSetup) ...[
-            SizedBox(height: 8 * scale),
-            Text(
-              'Please contact an administrator to activate a school year.',
-              style: TextStyle(
-                color: hintColor,
-                fontWeight: FontWeight.w700,
-                fontSize: (12.4 * scale).clamp(12.4, 13.8),
-              ),
-            ),
-          ],
-          SizedBox(height: 12 * scale),
-          Row(
-            children: [
-              if (_canOpenSchoolYearSetup) ...[
-                FilledButton.icon(
-                  onPressed: _checkingAcademicContext ? null : _openSchoolYearSetup,
-                  icon: const Icon(Icons.settings_rounded),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: primaryColor,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                  label: const Text(
-                    'Open School Year & Semesters',
-                    style: TextStyle(fontWeight: FontWeight.w900),
+              if ((_academicContextError ?? '').isNotEmpty) ...[
+                SizedBox(height: 8 * scale),
+                Text(
+                  'Check failed: $_academicContextError',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.red.shade700,
+                    fontWeight: FontWeight.w700,
+                    fontSize: (12.2 * scale).clamp(12.2, 13.5),
                   ),
                 ),
-                const SizedBox(width: 10),
               ],
-              OutlinedButton.icon(
-                onPressed: _checkingAcademicContext ? null : _loadAcademicContext,
-                icon: const Icon(Icons.refresh_rounded),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: primaryColor,
-                  side: BorderSide(color: primaryColor.withValues(alpha: 0.40)),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                ),
-                label: const Text(
-                  'Refresh',
-                  style: TextStyle(fontWeight: FontWeight.w900),
-                ),
-              ),
             ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -395,7 +324,7 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
     });
 
     try {
-      final snap = await FirebaseFirestore.instance
+      final snap = await AppFirestore.instance
           .collection('users')
           .where('role', isEqualTo: 'student')
           .limit(700)
@@ -459,6 +388,35 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
       return _safeString(data['programId']);
     }
     return _safeString(data['program']);
+  }
+
+  String _programCodeOf(Map<String, dynamic> data) {
+    final programId = _programIdOf(data).trim();
+    if (programId.isEmpty) return '--';
+    final code = programId.split('-').first.trim();
+    return code.isEmpty ? programId : code;
+  }
+
+  String _programCodeFromLabel(String label) {
+    final value = _safeString(label);
+    if (value.isEmpty || value == '--') return '--';
+    final code = value.split('-').first.trim();
+    return code.isEmpty ? value : code;
+  }
+
+  String _programLabelFromLabel(String label) {
+    final value = _safeString(label);
+    if (value.isEmpty || value == '--') return '--';
+    return value;
+  }
+
+  Future<String> _resolveProgramPreviewLabel(Map<String, dynamic> data) async {
+    final programId = _programIdOf(data).trim();
+    if (programId.isEmpty) return '--';
+    final label = await InstitutionLabelService.resolveProgramLabel(programId);
+    final resolved = _programLabelFromLabel(label);
+    if (resolved == '--' || resolved == programId) return '--';
+    return resolved;
   }
 
   String _collegeIdOf(Map<String, dynamic> data) {
@@ -843,17 +801,8 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
                                 final d = doc.data();
                                 final name = _studentDisplayName(d);
                                 final no = _studentNoOf(d);
-                                final programId = _programIdOf(d);
-                                final collegeId = _collegeIdOf(d);
                                 final photoUrl = _photoUrlOf(d);
-                                final primaryMeta = <String>[
-                                  if (no.isNotEmpty) no,
-                                  if (programId.isNotEmpty) programId,
-                                ].join(' | ');
-                                final secondaryMeta = <String>[
-                                  if (collegeId.isNotEmpty) collegeId,
-                                ].join(' | ');
-
+                                final primaryMeta = no;
                                 return ListTile(
                                   dense: true,
                                   contentPadding: const EdgeInsets.symmetric(
@@ -884,17 +833,29 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
                                             fontWeight: FontWeight.w700,
                                           ),
                                         ),
-                                      if (secondaryMeta.isNotEmpty)
-                                        Text(
-                                          secondaryMeta,
-                                          style: TextStyle(
-                                            color: hintColor.withValues(
-                                              alpha: 0.9,
+                                      FutureBuilder<String>(
+                                        future: _resolveProgramPreviewLabel(d),
+                                        initialData: '--',
+                                        builder: (context, snapshot) {
+                                          final programLabel = _safeString(
+                                            snapshot.data,
+                                          );
+                                          if (programLabel.isEmpty ||
+                                              programLabel == '--') {
+                                            return const SizedBox.shrink();
+                                          }
+                                          return Text(
+                                            programLabel,
+                                            style: TextStyle(
+                                              color: hintColor.withValues(
+                                                alpha: 0.9,
+                                              ),
+                                              fontWeight: FontWeight.w600,
+                                              fontSize: 12,
                                             ),
-                                            fontWeight: FontWeight.w600,
-                                            fontSize: 12,
-                                          ),
-                                        ),
+                                          );
+                                        },
+                                      ),
                                     ],
                                   ),
                                   onTap: () {
@@ -953,16 +914,45 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
       _studentUid = doc.id;
       _selectedStudentPhotoUrl = _photoUrlOf(data);
       _selectedStudentCollegeId = _collegeIdOf(data);
+      _selectedStudentCollegeLabel = '';
+      _selectedStudentProgramId = programId;
+      _selectedStudentProgramLabel = '';
 
       _studentNoCtrl.text = studentNo;
       _studentNameCtrl.text = studentName;
-      _programCtrl.text = programId;
+      _programCtrl.text = 'Loading...';
       _searchCtrl.clear();
     });
     _syncUnsavedState();
+    _resolveSelectedStudentLabels();
 
     _removeStudentSearchOverlay();
     FocusScope.of(context).unfocus();
+  }
+
+  Future<void> _resolveSelectedStudentLabels() async {
+    final collegeId = _selectedStudentCollegeId.trim();
+    final programId = _selectedStudentProgramId.trim();
+    if (collegeId.isEmpty && programId.isEmpty) return;
+
+    final collegeFuture = collegeId.isEmpty
+        ? Future<String>.value('')
+        : InstitutionLabelService.resolveCollegeLabel(collegeId);
+    final programFuture = programId.isEmpty
+        ? Future<String>.value('')
+        : InstitutionLabelService.resolveProgramLabel(programId);
+
+    final results = await Future.wait([collegeFuture, programFuture]);
+    if (!mounted) return;
+    if (_selectedStudentCollegeId.trim() != collegeId ||
+        _selectedStudentProgramId.trim() != programId) {
+      return;
+    }
+    setState(() {
+      _selectedStudentCollegeLabel = results[0].trim();
+      _selectedStudentProgramLabel = _programLabelFromLabel(results[1].trim());
+      _programCtrl.text = _selectedStudentProgramLabel;
+    });
   }
 
   void _clearSelectedStudent() {
@@ -970,6 +960,9 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
       _studentUid = null;
       _selectedStudentPhotoUrl = null;
       _selectedStudentCollegeId = '';
+      _selectedStudentCollegeLabel = '';
+      _selectedStudentProgramId = '';
+      _selectedStudentProgramLabel = '';
       _studentNoCtrl.clear();
       _studentNameCtrl.clear();
       _programCtrl.clear();
@@ -983,7 +976,7 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
   // CATEGORIES STREAM
   // =========================
   Stream<QuerySnapshot<Map<String, dynamic>>> _categoriesStream() {
-    return FirebaseFirestore.instance
+    return AppFirestore.instance
         .collection('violation_categories')
         .where('isActive', isEqualTo: true)
         .snapshots();
@@ -1002,7 +995,7 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
     try {
       final entries = await Future.wait(
         categories.map((doc) async {
-          final agg = await FirebaseFirestore.instance
+          final agg = await AppFirestore.instance
               .collection('violation_cases')
               .where('categoryId', isEqualTo: doc.id)
               .count()
@@ -1029,7 +1022,7 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
   Stream<QuerySnapshot<Map<String, dynamic>>> _typesStream() {
     if (_categoryId == null) return const Stream.empty();
 
-    return FirebaseFirestore.instance
+    return AppFirestore.instance
         .collection('violation_types')
         .where('isActive', isEqualTo: true)
         .where('categoryId', isEqualTo: _categoryId)
@@ -1049,7 +1042,7 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
     try {
       final entries = await Future.wait(
         types.map((doc) async {
-          final agg = await FirebaseFirestore.instance
+          final agg = await AppFirestore.instance
               .collection('violation_cases')
               .where('typeId', isEqualTo: doc.id)
               .count()
@@ -1674,7 +1667,7 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
   Future<bool> _confirmSubmitWithSummary() async {
     final studentName = _studentNameCtrl.text.trim();
     final studentNo = _studentNoCtrl.text.trim();
-    final program = _programCtrl.text.trim();
+    final program = _programLabelFromLabel(_selectedStudentProgramLabel);
     final concern = _displayLabel(_concern ?? '');
     final category = (_categoryName ?? '').trim();
     final type = (_typeName ?? '').trim();
@@ -1789,7 +1782,7 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
                                       const SizedBox(height: 2),
                                       Text(
                                         '${studentNo.isEmpty ? 'No ID' : studentNo}'
-                                        '${program.isEmpty ? '' : ' | $program'}',
+                                        '${program == '--' ? '' : ' | $program'}',
                                         maxLines: 1,
                                         overflow: TextOverflow.ellipsis,
                                         style: TextStyle(
@@ -2122,6 +2115,26 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
       );
       return;
     }
+    if (!_hasViolationCategories) {
+      AppScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Reporting is unavailable. Violation categories are missing.',
+          ),
+        ),
+      );
+      return;
+    }
+    if (!_hasViolationTypes) {
+      AppScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Reporting is unavailable. Specific violation types are missing.',
+          ),
+        ),
+      );
+      return;
+    }
     if (!(_formKey.currentState?.validate() ?? false)) return;
 
     if (_studentUid == null) {
@@ -2296,17 +2309,19 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
     required bool split,
   }) {
     if (split) {
-      return Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Expanded(
-            child: _studentInfoCard(scale: scale, forceFillHeight: false),
-          ),
-          SizedBox(width: 10 * scale),
-          Expanded(
-            child: _violationDetailsCard(scale: scale, forceFillHeight: false),
-          ),
-        ],
+      return IntrinsicHeight(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Expanded(
+              child: _studentInfoCard(scale: scale, forceFillHeight: true),
+            ),
+            SizedBox(width: 10 * scale),
+            Expanded(
+              child: _violationDetailsCard(scale: scale, forceFillHeight: true),
+            ),
+          ],
+        ),
       );
     }
 
@@ -2388,6 +2403,14 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
         final pad = compactModal
             ? (10.0 * scale).clamp(8.0, 14.0)
             : (16.0 * scale).clamp(14.0, 22.0);
+        final viewportHeight = MediaQuery.sizeOf(context).height;
+        final viewportPadding =
+            MediaQuery.paddingOf(context).vertical +
+            (compactModal ? 18 * scale : 26 * scale);
+        final gateMinHeight = (viewportHeight - viewportPadding).clamp(
+          0.0,
+          double.infinity,
+        );
         final twoColumnDetails = w >= 980;
 
         final bool desktop = w >= 1100;
@@ -2402,101 +2425,151 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
           child: Scaffold(
             backgroundColor: Colors.white,
             body: SafeArea(
-              child: SingleChildScrollView(
-                padding: EdgeInsets.fromLTRB(
-                  pad,
-                  compactModal ? 8 * scale : 12 * scale,
-                  pad,
-                  compactModal ? 10 * scale : 14 * scale,
-                ),
-                child: Center(
-                  child: ConstrainedBox(
-                    constraints: BoxConstraints(maxWidth: maxCanvas),
-                    child: Column(
-                      children: [
-                        if (_checkingAcademicContext)
-                          Container(
+              child:
+                  _checkingAcademicContext ||
+                      !_hasActiveSchoolYear ||
+                      !_hasViolationCategories ||
+                      !_hasViolationTypes
+                  ? SizedBox.expand(
+                      child: Padding(
+                        padding: EdgeInsets.fromLTRB(
+                          pad,
+                          compactModal ? 6 * scale : 8 * scale,
+                          pad,
+                          compactModal ? 10 * scale : 14 * scale,
+                        ),
+                        child: Center(
+                          child: _checkingAcademicContext
+                              ? Container(
+                                  width: double.infinity,
+                                  constraints: BoxConstraints(
+                                    maxWidth: compactModal ? 420 : 520,
+                                  ),
+                                  padding: EdgeInsets.all(24 * scale),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white,
+                                    borderRadius: BorderRadius.circular(18),
+                                    border: Border.all(
+                                      color: Colors.black.withValues(
+                                        alpha: 0.08,
+                                      ),
+                                    ),
+                                  ),
+                                  child: const Center(
+                                    child: CircularProgressIndicator(
+                                      color: primaryColor,
+                                    ),
+                                  ),
+                                )
+                              : _buildReportSetupGate(scale: scale),
+                        ),
+                      ),
+                    )
+                  : SingleChildScrollView(
+                      padding: EdgeInsets.fromLTRB(
+                        pad,
+                        compactModal ? 8 * scale : 12 * scale,
+                        pad,
+                        compactModal ? 10 * scale : 14 * scale,
+                      ),
+                      child: Center(
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(maxWidth: maxCanvas),
+                          child: SizedBox(
                             width: double.infinity,
-                            padding: EdgeInsets.all(24 * scale),
-                            decoration: BoxDecoration(
-                              color: Colors.white,
-                              borderRadius: BorderRadius.circular(18),
-                              border: Border.all(
-                                color: Colors.black.withValues(alpha: 0.08),
-                              ),
-                            ),
-                            child: const Center(
-                              child: CircularProgressIndicator(
-                                color: primaryColor,
-                              ),
-                            ),
-                          )
-                        else if (!_hasActiveSchoolYear)
-                          _buildNoActiveSchoolYearGate(scale: scale)
-                        else
-                        SizedBox(
-                          width: double.infinity,
-                          child: Form(
-                            key: _formKey,
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                _buildSectionCard(
-                                  title: 'Student Selection',
-                                  subtitle:
-                                      'Search and select the student for this report.',
-                                  scale: scale,
-                                  compact: compactModal,
-                                  child: _searchSection(scale: scale),
-                                ),
-                                SizedBox(
-                                  height: compactModal ? 8 * scale : 12 * scale,
-                                ),
-                                if (twoColumnDetails)
-                                  Row(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Expanded(
-                                        child: _buildSectionCard(
-                                          title: 'Student Information',
-                                          subtitle:
-                                              'Review auto-filled student information for the selected student.',
-                                          scale: scale,
-                                          compact: compactModal,
-                                          child: _studentInfoCard(
-                                            scale: scale,
-                                            forceFillHeight: false,
-                                          ),
-                                        ),
-                                      ),
-                                      SizedBox(width: 12 * scale),
-                                      Expanded(
-                                        child: _buildSectionCard(
-                                          title: 'Violation Details',
-                                          subtitle:
-                                              'Complete the violation category, type, and incident date/time.',
-                                          scale: scale,
-                                          compact: compactModal,
-                                          child: _violationDetailsCard(
-                                            scale: scale,
-                                            forceFillHeight: false,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  )
-                                else ...[
+                            child: Form(
+                              key: _formKey,
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
                                   _buildSectionCard(
-                                    title: 'Student Information',
+                                    title: 'Student Selection',
                                     subtitle:
-                                        'Review auto-filled student information for the selected student.',
+                                        'Search and select the student for this report.',
                                     scale: scale,
                                     compact: compactModal,
-                                    child: _studentInfoCard(
+                                    child: _searchSection(scale: scale),
+                                  ),
+                                  SizedBox(
+                                    height: compactModal
+                                        ? 8 * scale
+                                        : 12 * scale,
+                                  ),
+                                  if (twoColumnDetails)
+                                    Row(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Expanded(
+                                          child: _buildSectionCard(
+                                            title: 'Student Information',
+                                            subtitle:
+                                                'Review auto-filled student information for the selected student.',
+                                            scale: scale,
+                                            compact: compactModal,
+                                            child: _studentInfoCard(
+                                              scale: scale,
+                                              forceFillHeight: false,
+                                            ),
+                                          ),
+                                        ),
+                                        SizedBox(width: 12 * scale),
+                                        Expanded(
+                                          child: _buildSectionCard(
+                                            title: 'Violation Details',
+                                            subtitle:
+                                                'Complete the violation category, type, and incident date/time.',
+                                            scale: scale,
+                                            compact: compactModal,
+                                            child: _violationDetailsCard(
+                                              scale: scale,
+                                              forceFillHeight: false,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    )
+                                  else ...[
+                                    _buildSectionCard(
+                                      title: 'Student Information',
+                                      subtitle:
+                                          'Review auto-filled student information for the selected student.',
                                       scale: scale,
-                                      forceFillHeight: false,
+                                      compact: compactModal,
+                                      child: _studentInfoCard(
+                                        scale: scale,
+                                        forceFillHeight: false,
+                                      ),
                                     ),
+                                    SizedBox(
+                                      height: compactModal
+                                          ? 8 * scale
+                                          : 12 * scale,
+                                    ),
+                                    _buildSectionCard(
+                                      title: 'Violation Details',
+                                      subtitle:
+                                          'Complete the violation category, type, and incident date/time.',
+                                      scale: scale,
+                                      compact: compactModal,
+                                      child: _violationDetailsCard(
+                                        scale: scale,
+                                        forceFillHeight: false,
+                                      ),
+                                    ),
+                                  ],
+                                  SizedBox(
+                                    height: compactModal
+                                        ? 8 * scale
+                                        : 12 * scale,
+                                  ),
+                                  _buildSectionCard(
+                                    title: 'Incident Notes',
+                                    subtitle:
+                                        'Provide incident details for review.',
+                                    scale: scale,
+                                    compact: compactModal,
+                                    child: _notesCard(scale: scale),
                                   ),
                                   SizedBox(
                                     height: compactModal
@@ -2504,51 +2577,26 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
                                         : 12 * scale,
                                   ),
                                   _buildSectionCard(
-                                    title: 'Violation Details',
+                                    title: 'Evidence',
                                     subtitle:
-                                        'Complete the violation category, type, and incident date/time.',
+                                        'Attach photo, image, or PDF files related to the reported incident.',
                                     scale: scale,
                                     compact: compactModal,
-                                    child: _violationDetailsCard(
-                                      scale: scale,
-                                      forceFillHeight: false,
-                                    ),
+                                    child: _narrativeEvidenceCard(scale: scale),
                                   ),
+                                  SizedBox(
+                                    height: compactModal
+                                        ? 10 * scale
+                                        : 14 * scale,
+                                  ),
+                                  _buildActions(scale, stacked: stackActions),
                                 ],
-                                SizedBox(
-                                  height: compactModal ? 8 * scale : 12 * scale,
-                                ),
-                                _buildSectionCard(
-                                  title: 'Incident Notes',
-                                  subtitle: 'Provide incident details for review.',
-                                  scale: scale,
-                                  compact: compactModal,
-                                  child: _notesCard(scale: scale),
-                                ),
-                                SizedBox(
-                                  height: compactModal ? 8 * scale : 12 * scale,
-                                ),
-                                _buildSectionCard(
-                                  title: 'Evidence',
-                                  subtitle:
-                                      'Attach photo, image, or PDF files related to the reported incident.',
-                                  scale: scale,
-                                  compact: compactModal,
-                                  child: _narrativeEvidenceCard(scale: scale),
-                                ),
-                                SizedBox(
-                                  height: compactModal ? 10 * scale : 14 * scale,
-                                ),
-                                _buildActions(scale, stacked: stackActions),
-                              ],
+                              ),
                             ),
                           ),
                         ),
-                      ],
+                      ),
                     ),
-                  ),
-                ),
-              ),
             ),
           ),
         );
@@ -2619,132 +2667,88 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-          Container(
-            width: double.infinity,
-            padding: EdgeInsets.all(12 * scale),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.black.withValues(alpha: 0.10)),
-            ),
-            child: Row(
-              children: [
-                Container(
-                  width: 32,
-                  height: 32,
-                  decoration: BoxDecoration(
-                    color: primaryColor.withValues(alpha: 0.10),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: const Icon(
-                    Icons.info_outline_rounded,
-                    color: primaryColor,
-                  ),
-                ),
-                const SizedBox(width: 10),
-                const Expanded(
-                  child: Text(
-                    'Select a student to view their profile details.',
-                    style: TextStyle(
-                      color: hintColor,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ),
-              ],
-            ),
+        Container(
+          width: double.infinity,
+          padding: EdgeInsets.all(12 * scale),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.black.withValues(alpha: 0.10)),
           ),
-          SizedBox(height: 10 * scale),
-          if (_studentUid != null) ...[
-            Container(
-              width: double.infinity,
-              padding: EdgeInsets.all(10 * scale),
-              decoration: BoxDecoration(
-                color: primaryColor.withValues(alpha: 0.06),
-                borderRadius: BorderRadius.circular(14 * scale),
-                border: Border.all(color: primaryColor.withValues(alpha: 0.22)),
-              ),
-              child: Row(
-                children: [
-                  _studentAvatarWithPreview(
-                    name: _studentNameCtrl.text.trim().isEmpty
-                        ? 'Student'
-                        : _studentNameCtrl.text.trim(),
-                    photoUrl: _selectedStudentPhotoUrl ?? '',
-                    size: (54 * scale).clamp(48.0, 62.0),
-                  ),
-                  SizedBox(width: 10 * scale),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          _studentNameCtrl.text.trim().isEmpty
-                              ? 'Selected student'
-                              : _studentNameCtrl.text.trim(),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: textDark,
-                            fontWeight: FontWeight.w900,
-                            fontSize: (14.2 * scale).clamp(14.2, 16.0),
-                          ),
-                        ),
-                        SizedBox(height: 2 * scale),
-                        Text(
-                          [
-                            if (_studentNoCtrl.text.trim().isNotEmpty)
-                              _studentNoCtrl.text.trim(),
-                            if (_programCtrl.text.trim().isNotEmpty)
-                              _programCtrl.text.trim(),
-                          ].join(' | '),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: hintColor,
-                            fontWeight: FontWeight.w700,
-                            fontSize: (12.4 * scale).clamp(12.4, 13.8),
-                          ),
-                        ),
-                        if (_selectedStudentCollegeId.trim().isNotEmpty)
-                          Padding(
-                            padding: EdgeInsets.only(top: 2 * scale),
-                            child: Text(
-                              [
-                                if (_selectedStudentCollegeId.trim().isNotEmpty)
-                                  _selectedStudentCollegeId.trim(),
-                              ].join(' | '),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                color: hintColor.withValues(alpha: 0.9),
-                                fontWeight: FontWeight.w600,
-                                fontSize: (12.0 * scale).clamp(12.0, 13.2),
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
-                  SizedBox(width: 8 * scale),
-                  TextButton(
-                    onPressed: _clearSelectedStudent,
-                    style: TextButton.styleFrom(
-                      minimumSize: const Size(0, 0),
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 2,
+          child: _studentUid == null
+              ? Row(
+                  children: [
+                    Container(
+                      width: 32,
+                      height: 32,
+                      decoration: BoxDecoration(
+                        color: primaryColor.withValues(alpha: 0.10),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(
+                        Icons.info_outline_rounded,
+                        color: primaryColor,
                       ),
                     ),
-                    child: const Text('Clear'),
-                  ),
-                ],
-              ),
-            ),
-            SizedBox(height: 10 * scale),
-          ],
-
+                    const SizedBox(width: 10),
+                    const Expanded(
+                      child: Text(
+                        'Select a student to view their profile details.',
+                        style: TextStyle(
+                          color: hintColor,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ],
+                )
+              : Row(
+                  children: [
+                    _studentAvatarWithPreview(
+                      name: _studentNameCtrl.text.trim().isEmpty
+                          ? 'Student'
+                          : _studentNameCtrl.text.trim(),
+                      photoUrl: _selectedStudentPhotoUrl ?? '',
+                      size: 32,
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            _studentNameCtrl.text.trim().isEmpty
+                                ? 'Selected student'
+                                : _studentNameCtrl.text.trim(),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: textDark,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    TextButton(
+                      onPressed: _clearSelectedStudent,
+                      style: TextButton.styleFrom(
+                        minimumSize: const Size(0, 0),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 2,
+                        ),
+                      ),
+                      child: const Text('Clear'),
+                    ),
+                  ],
+                ),
+        ),
+        SizedBox(height: 10 * scale),
+        if (_studentUid != null) ...[
           TextFormField(
             controller: _studentNoCtrl,
             readOnly: true,
@@ -2760,23 +2764,6 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
             ),
           ),
           SizedBox(height: 10 * scale),
-
-          TextFormField(
-            controller: _studentNameCtrl,
-            readOnly: true,
-            showCursor: false,
-            style: TextStyle(
-              color: textDark,
-              fontWeight: FontWeight.w800,
-              fontSize: (13.5 * scale).clamp(13.5, 15.0),
-            ),
-            decoration: _decor(
-              label: "Student Name",
-              icon: Icons.person_outline_rounded,
-            ),
-          ),
-          SizedBox(height: 10 * scale),
-
           TextFormField(
             controller: _programCtrl,
             readOnly: true,
@@ -2786,12 +2773,10 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
               fontWeight: FontWeight.w800,
               fontSize: (13.5 * scale).clamp(13.5, 15.0),
             ),
-            decoration: _decor(
-              label: "Program / Course",
-              icon: Icons.school_outlined,
-            ),
+            decoration: _decor(label: "Program", icon: Icons.school_outlined),
           ),
-
+          SizedBox(height: 10 * scale),
+        ],
         if (forceFillHeight) const Spacer(),
       ],
     );
@@ -2807,290 +2792,290 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-          // Step 1: Category (concern auto-derived from selected category)
-          StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-            stream: _categoriesStream(),
-            builder: (context, snap) {
-              if (snap.hasData) {
-                _categoryCache = snap.data!.docs.toList()
-                  ..sort((a, b) {
-                    final aCount = _categoryReportCounts[a.id] ?? 0;
-                    final bCount = _categoryReportCounts[b.id] ?? 0;
-                    final countCmp = bCount.compareTo(aCount);
-                    if (countCmp != 0) return countCmp;
-                    final aName = (a.data()['name'] ?? '')
-                        .toString()
-                        .toLowerCase();
-                    final bName = (b.data()['name'] ?? '')
-                        .toString()
-                        .toLowerCase();
-                    return aName.compareTo(bName);
-                  });
-                _ensureCategoryCounts(_categoryCache);
-              }
-
-              final docs = _categoryCache;
-
-              if (snap.hasError) {
-                return Padding(
-                  padding: EdgeInsets.only(top: 8 * scale),
-                  child: Text(
-                    "Category error: ${snap.error}",
-                    style: TextStyle(
-                      color: Colors.red,
-                      fontWeight: FontWeight.w800,
-                      fontSize: (12.8 * scale).clamp(12.8, 14.0),
-                    ),
-                  ),
-                );
-              }
-
-              if (snap.connectionState == ConnectionState.waiting &&
-                  docs.isEmpty) {
-                return Padding(
-                  padding: EdgeInsets.only(top: 8 * scale),
-                  child: const LinearProgressIndicator(),
-                );
-              }
-
-              if (docs.isEmpty) {
-                return Padding(
-                  padding: EdgeInsets.only(top: 8 * scale),
-                  child: Text(
-                    "No categories found. Please seed default data first.",
-                    style: TextStyle(
-                      color: Colors.orange,
-                      fontWeight: FontWeight.w700,
-                      fontSize: (12.8 * scale).clamp(12.8, 14.0),
-                    ),
-                  ),
-                );
-              }
-
-              return DropdownButtonFormField<String>(
-                key: ValueKey(_categoryId),
-                initialValue: _categoryId,
-                decoration: _decor(
-                  label: "Violation Category",
-                  icon: Icons.category_rounded,
-                  isDropdown: true,
-                ),
-                items: docs.map((d) {
-                  final name = (d.data()['name'] ?? '').toString();
-                  return DropdownMenuItem(
-                    value: d.id,
-                    child: Text(name, overflow: TextOverflow.ellipsis),
-                  );
-                }).toList(),
-                onChanged: (id) {
-                  if (id == null) return;
-                  final picked = docs.firstWhere((d) => d.id == id);
-                  final data = picked.data();
-                  final pickedName = (data['name'] ?? '').toString();
-                  final mappedConcern = (data['concern'] ?? '')
+        // Step 1: Category (concern auto-derived from selected category)
+        StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+          stream: _categoriesStream(),
+          builder: (context, snap) {
+            if (snap.hasData) {
+              _categoryCache = snap.data!.docs.toList()
+                ..sort((a, b) {
+                  final aCount = _categoryReportCounts[a.id] ?? 0;
+                  final bCount = _categoryReportCounts[b.id] ?? 0;
+                  final countCmp = bCount.compareTo(aCount);
+                  if (countCmp != 0) return countCmp;
+                  final aName = (a.data()['name'] ?? '')
                       .toString()
-                      .trim()
                       .toLowerCase();
-                  setState(() {
-                    _categoryId = id;
-                    _categoryName = pickedName;
-                    _concern = mappedConcern.isEmpty ? null : mappedConcern;
-                    _typeId = null;
-                    _typeName = null;
-                    _typeCache = [];
-                  });
-                  _syncUnsavedState();
-                },
-                validator: (v) => v == null ? "Required" : null,
+                  final bName = (b.data()['name'] ?? '')
+                      .toString()
+                      .toLowerCase();
+                  return aName.compareTo(bName);
+                });
+              _ensureCategoryCounts(_categoryCache);
+            }
+
+            final docs = _categoryCache;
+
+            if (snap.hasError) {
+              return Padding(
+                padding: EdgeInsets.only(top: 8 * scale),
+                child: Text(
+                  "Category error: ${snap.error}",
+                  style: TextStyle(
+                    color: Colors.red,
+                    fontWeight: FontWeight.w800,
+                    fontSize: (12.8 * scale).clamp(12.8, 14.0),
+                  ),
+                ),
               );
-            },
-          ),
-          SizedBox(height: 10 * scale),
+            }
 
-          // Step 2: Specific Type
-          StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-            stream: _typesStream(),
-            builder: (context, snap) {
-              if (snap.hasData) {
-                _typeCache = snap.data!.docs.toList()
-                  ..sort((a, b) {
-                    final aCount = _typeReportCounts[a.id] ?? 0;
-                    final bCount = _typeReportCounts[b.id] ?? 0;
-                    final countCmp = bCount.compareTo(aCount);
-                    if (countCmp != 0) return countCmp;
-                    final aLabel = (a.data()['label'] ?? '')
-                        .toString()
-                        .toLowerCase();
-                    final bLabel = (b.data()['label'] ?? '')
-                        .toString()
-                        .toLowerCase();
-                    return aLabel.compareTo(bLabel);
-                  });
-                _ensureTypeCounts(_typeCache);
-              }
+            if (snap.connectionState == ConnectionState.waiting &&
+                docs.isEmpty) {
+              return Padding(
+                padding: EdgeInsets.only(top: 8 * scale),
+                child: const LinearProgressIndicator(),
+              );
+            }
 
-              final docs = _typeCache;
-
-              if (snap.hasError) {
-                return Padding(
-                  padding: EdgeInsets.only(top: 8 * scale),
-                  child: Text(
-                    "Type error: ${snap.error}",
-                    style: TextStyle(
-                      color: Colors.red,
-                      fontWeight: FontWeight.w800,
-                      fontSize: (12.8 * scale).clamp(12.8, 14.0),
-                    ),
+            if (docs.isEmpty) {
+              return Padding(
+                padding: EdgeInsets.only(top: 8 * scale),
+                child: Text(
+                  "No categories found. Please seed default data first.",
+                  style: TextStyle(
+                    color: Colors.orange,
+                    fontWeight: FontWeight.w700,
+                    fontSize: (12.8 * scale).clamp(12.8, 14.0),
                   ),
-                );
-              }
+                ),
+              );
+            }
 
-              if (snap.connectionState == ConnectionState.waiting &&
-                  _categoryId != null &&
-                  docs.isEmpty) {
-                return Padding(
-                  padding: EdgeInsets.only(top: 8 * scale),
-                  child: const LinearProgressIndicator(),
+            return DropdownButtonFormField<String>(
+              key: ValueKey(_categoryId),
+              initialValue: _categoryId,
+              decoration: _decor(
+                label: "Violation Category",
+                icon: Icons.category_rounded,
+                isDropdown: true,
+              ),
+              items: docs.map((d) {
+                final name = (d.data()['name'] ?? '').toString();
+                return DropdownMenuItem(
+                  value: d.id,
+                  child: Text(name, overflow: TextOverflow.ellipsis),
                 );
-              }
+              }).toList(),
+              onChanged: (id) {
+                if (id == null) return;
+                final picked = docs.firstWhere((d) => d.id == id);
+                final data = picked.data();
+                final pickedName = (data['name'] ?? '').toString();
+                final mappedConcern = (data['concern'] ?? '')
+                    .toString()
+                    .trim()
+                    .toLowerCase();
+                setState(() {
+                  _categoryId = id;
+                  _categoryName = pickedName;
+                  _concern = mappedConcern.isEmpty ? null : mappedConcern;
+                  _typeId = null;
+                  _typeName = null;
+                  _typeCache = [];
+                });
+                _syncUnsavedState();
+              },
+              validator: (v) => v == null ? "Required" : null,
+            );
+          },
+        ),
+        SizedBox(height: 10 * scale),
 
-              if (_categoryId != null && docs.isEmpty) {
-                return Padding(
-                  padding: EdgeInsets.only(top: 8 * scale),
-                  child: Text(
-                    "No specific types found for this category.",
-                    style: TextStyle(
-                      color: hintColor,
-                      fontWeight: FontWeight.w700,
-                      fontSize: (12.8 * scale).clamp(12.8, 14.0),
-                    ),
+        // Step 2: Specific Type
+        StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+          stream: _typesStream(),
+          builder: (context, snap) {
+            if (snap.hasData) {
+              _typeCache = snap.data!.docs.toList()
+                ..sort((a, b) {
+                  final aCount = _typeReportCounts[a.id] ?? 0;
+                  final bCount = _typeReportCounts[b.id] ?? 0;
+                  final countCmp = bCount.compareTo(aCount);
+                  if (countCmp != 0) return countCmp;
+                  final aLabel = (a.data()['label'] ?? '')
+                      .toString()
+                      .toLowerCase();
+                  final bLabel = (b.data()['label'] ?? '')
+                      .toString()
+                      .toLowerCase();
+                  return aLabel.compareTo(bLabel);
+                });
+              _ensureTypeCounts(_typeCache);
+            }
+
+            final docs = _typeCache;
+
+            if (snap.hasError) {
+              return Padding(
+                padding: EdgeInsets.only(top: 8 * scale),
+                child: Text(
+                  "Type error: ${snap.error}",
+                  style: TextStyle(
+                    color: Colors.red,
+                    fontWeight: FontWeight.w800,
+                    fontSize: (12.8 * scale).clamp(12.8, 14.0),
                   ),
-                );
-              }
+                ),
+              );
+            }
 
-              return DropdownButtonFormField<String>(
-                key: ValueKey(_typeId),
-                initialValue: _typeId,
+            if (snap.connectionState == ConnectionState.waiting &&
+                _categoryId != null &&
+                docs.isEmpty) {
+              return Padding(
+                padding: EdgeInsets.only(top: 8 * scale),
+                child: const LinearProgressIndicator(),
+              );
+            }
+
+            if (_categoryId != null && docs.isEmpty) {
+              return Padding(
+                padding: EdgeInsets.only(top: 8 * scale),
+                child: Text(
+                  "No specific types found for this category.",
+                  style: TextStyle(
+                    color: hintColor,
+                    fontWeight: FontWeight.w700,
+                    fontSize: (12.8 * scale).clamp(12.8, 14.0),
+                  ),
+                ),
+              );
+            }
+
+            return DropdownButtonFormField<String>(
+              key: ValueKey(_typeId),
+              initialValue: _typeId,
+              decoration: _decor(
+                label: _categoryId == null
+                    ? "Specific Type (select category first)"
+                    : "Specific Violation",
+                icon: Icons.warning_amber_rounded,
+                isDropdown: true,
+              ),
+              items: docs.map((d) {
+                final label = (d.data()['label'] ?? '').toString();
+                return DropdownMenuItem(
+                  value: d.id,
+                  child: Text(label, overflow: TextOverflow.ellipsis),
+                );
+              }).toList(),
+              onChanged: (_categoryId == null)
+                  ? null
+                  : (id) {
+                      if (id == null) return;
+                      final picked = docs.firstWhere((d) => d.id == id);
+                      final pickedLabel = (picked.data()['label'] ?? '')
+                          .toString();
+                      setState(() {
+                        _typeId = id;
+                        _typeName = pickedLabel;
+                      });
+                      _syncUnsavedState();
+                    },
+              validator: (v) => v == null ? "Required" : null,
+            );
+          },
+        ),
+
+        SizedBox(height: 10 * scale),
+
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final dateField = InkWell(
+              borderRadius: BorderRadius.circular(12),
+              onTap: _pickIncidentDate,
+              child: InputDecorator(
                 decoration: _decor(
-                  label: _categoryId == null
-                      ? "Specific Type (select category first)"
-                      : "Specific Violation",
-                  icon: Icons.warning_amber_rounded,
-                  isDropdown: true,
+                  label: "Incident Date",
+                  icon: Icons.event_rounded,
                 ),
-                items: docs.map((d) {
-                  final label = (d.data()['label'] ?? '').toString();
-                  return DropdownMenuItem(
-                    value: d.id,
-                    child: Text(label, overflow: TextOverflow.ellipsis),
-                  );
-                }).toList(),
-                onChanged: (_categoryId == null)
-                    ? null
-                    : (id) {
-                        if (id == null) return;
-                        final picked = docs.firstWhere((d) => d.id == id);
-                        final pickedLabel = (picked.data()['label'] ?? '')
-                            .toString();
-                        setState(() {
-                          _typeId = id;
-                          _typeName = pickedLabel;
-                        });
-                        _syncUnsavedState();
-                      },
-                validator: (v) => v == null ? "Required" : null,
-              );
-            },
-          ),
-
-          SizedBox(height: 10 * scale),
-
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final dateField = InkWell(
-                borderRadius: BorderRadius.circular(12),
-                onTap: _pickIncidentDate,
-                child: InputDecorator(
-                  decoration: _decor(
-                    label: "Incident Date",
-                    icon: Icons.event_rounded,
-                  ),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          _incidentDateText(_incidentAt),
-                          style: TextStyle(
-                            color: textDark,
-                            fontWeight: FontWeight.w900,
-                            fontSize: (13.5 * scale).clamp(13.5, 15.0),
-                          ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        _incidentDateText(_incidentAt),
+                        style: TextStyle(
+                          color: textDark,
+                          fontWeight: FontWeight.w900,
+                          fontSize: (13.5 * scale).clamp(13.5, 15.0),
                         ),
                       ),
-                      Icon(
-                        Icons.edit_calendar_rounded,
-                        color: primaryColor.withValues(alpha: 0.9),
-                      ),
-                    ],
-                  ),
+                    ),
+                    Icon(
+                      Icons.edit_calendar_rounded,
+                      color: primaryColor.withValues(alpha: 0.9),
+                    ),
+                  ],
                 ),
-              );
-              final timeField = InkWell(
-                borderRadius: BorderRadius.circular(12),
-                onTap: _pickIncidentTime,
-                child: InputDecorator(
-                  decoration: _decor(
-                    label: "Incident Time",
-                    icon: Icons.access_time_rounded,
-                  ),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          _incidentTimeText(_incidentAt),
-                          style: TextStyle(
-                            color: textDark,
-                            fontWeight: FontWeight.w900,
-                            fontSize: (13.5 * scale).clamp(13.5, 15.0),
-                          ),
+              ),
+            );
+            final timeField = InkWell(
+              borderRadius: BorderRadius.circular(12),
+              onTap: _pickIncidentTime,
+              child: InputDecorator(
+                decoration: _decor(
+                  label: "Incident Time",
+                  icon: Icons.access_time_rounded,
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        _incidentTimeText(_incidentAt),
+                        style: TextStyle(
+                          color: textDark,
+                          fontWeight: FontWeight.w900,
+                          fontSize: (13.5 * scale).clamp(13.5, 15.0),
                         ),
                       ),
-                      Icon(
-                        Icons.schedule_rounded,
-                        color: primaryColor.withValues(alpha: 0.9),
-                      ),
-                    ],
-                  ),
+                    ),
+                    Icon(
+                      Icons.schedule_rounded,
+                      color: primaryColor.withValues(alpha: 0.9),
+                    ),
+                  ],
                 ),
-              );
+              ),
+            );
 
-              return Column(
-                children: [
-                  dateField,
-                  SizedBox(height: 10 * scale),
-                  timeField,
-                ],
-              );
-            },
-          ),
-          SizedBox(height: 8 * scale),
-          Align(
-            alignment: Alignment.centerRight,
-            child: TextButton.icon(
-              onPressed: _useCurrentIncidentDateTime,
-              icon: const Icon(Icons.update_rounded, size: 16),
-              style: TextButton.styleFrom(
-                foregroundColor: primaryColor,
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                minimumSize: const Size(0, 0),
-                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              ),
-              label: const Text(
-                'Use current date/time',
-                style: TextStyle(fontWeight: FontWeight.w800),
-              ),
+            return Column(
+              children: [
+                dateField,
+                SizedBox(height: 10 * scale),
+                timeField,
+              ],
+            );
+          },
+        ),
+        SizedBox(height: 8 * scale),
+        Align(
+          alignment: Alignment.centerRight,
+          child: TextButton.icon(
+            onPressed: _useCurrentIncidentDateTime,
+            icon: const Icon(Icons.update_rounded, size: 16),
+            style: TextButton.styleFrom(
+              foregroundColor: primaryColor,
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              minimumSize: const Size(0, 0),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            label: const Text(
+              'Use current date/time',
+              style: TextStyle(fontWeight: FontWeight.w800),
             ),
           ),
+        ),
 
         if (forceFillHeight) const Spacer(),
       ],
@@ -3135,7 +3120,10 @@ class _ViolationReportPageState extends State<ViolationReportPage> {
               icon: const Icon(Icons.delete_outline_rounded, color: Colors.red),
               label: const Text(
                 "Clear",
-                style: TextStyle(color: Colors.red, fontWeight: FontWeight.w900),
+                style: TextStyle(
+                  color: Colors.red,
+                  fontWeight: FontWeight.w900,
+                ),
               ),
             ),
           ),

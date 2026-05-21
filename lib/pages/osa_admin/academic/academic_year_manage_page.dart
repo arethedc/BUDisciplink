@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import '../../../services/academic_settings_service.dart';
 import 'package:apps/pages/shared/widgets/app_inline_notice.dart';
+import 'package:apps/services/app_firestore.dart';
 
 const bg = Color(0xFFF5F6FB);
 const headerGreen = Color(0xFF2F6C44);
@@ -39,7 +40,7 @@ class _AcademicYearManagePageState extends State<AcademicYearManagePage> {
         child: Padding(
           padding: const EdgeInsets.all(14),
           child: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-            stream: FirebaseFirestore.instance
+            stream: AppFirestore.instance
                 .collection('academic_years')
                 .doc(widget.syId)
                 .snapshots(),
@@ -695,4 +696,3 @@ class _Error extends StatelessWidget {
     );
   }
 }
-

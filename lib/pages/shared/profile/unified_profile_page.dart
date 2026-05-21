@@ -4,6 +4,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
 import 'package:apps/services/user_preferences_service.dart';
+import 'package:apps/services/app_firestore.dart';
+import 'package:apps/services/institution_label_service.dart';
 
 class UnifiedProfilePage extends StatefulWidget {
   const UnifiedProfilePage({super.key});
@@ -34,6 +36,10 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
   String _role = '';
   String _accountStatus = '';
   String _studentVerificationStatus = '';
+  String _collegeDisplay = '';
+  String _programDisplay = '';
+  String _studentLookupKey = '';
+  int _studentLookupSeq = 0;
   Map<String, dynamic>? _latestData;
   bool _notificationSoundEnabled = false;
   bool _systemPrefsLoading = true;
@@ -119,6 +125,69 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
     _employeeNoCtrl.text =
         (employeeProfile['employeeNo'] ?? data['employeeNo'] ?? '').toString();
     _departmentCtrl.text = (employeeProfile['department'] ?? '').toString();
+
+    final lookupKey = '${_collegeCtrl.text.trim()}|${_programCtrl.text.trim()}';
+    if (_isStudent && lookupKey != _studentLookupKey) {
+      _studentLookupKey = lookupKey;
+      _loadStudentProgramLabels(
+        collegeId: _collegeCtrl.text.trim(),
+        programId: _programCtrl.text.trim(),
+      );
+    } else if (!_isStudent) {
+      _studentLookupKey = '';
+      final employeeCollegeKey = _departmentCtrl.text.trim();
+      if (employeeCollegeKey.isNotEmpty) {
+        _collegeDisplay = employeeCollegeKey;
+        InstitutionLabelService.resolveCollegeLabel(employeeCollegeKey)
+            .then((label) {
+              if (!mounted) return;
+              if (_departmentCtrl.text.trim() != employeeCollegeKey) return;
+              setState(() => _collegeDisplay = label.trim());
+            })
+            .catchError((_) {
+              if (!mounted) return;
+              if (_departmentCtrl.text.trim() != employeeCollegeKey) return;
+              setState(() => _collegeDisplay = '--');
+            });
+      } else {
+        _collegeDisplay = '';
+      }
+      _programDisplay = '';
+    }
+  }
+
+  Future<void> _loadStudentProgramLabels({
+    required String collegeId,
+    required String programId,
+  }) async {
+    final seq = ++_studentLookupSeq;
+    try {
+      final collegeLabel = collegeId.trim().isEmpty
+          ? '--'
+          : await InstitutionLabelService.resolveCollegeLabel(
+              collegeId.trim(),
+            ).timeout(const Duration(seconds: 6));
+      final programLabel = programId.trim().isEmpty
+          ? '--'
+          : await InstitutionLabelService.resolveProgramLabel(
+              programId.trim(),
+            ).timeout(const Duration(seconds: 6));
+
+      if (!mounted || seq != _studentLookupSeq) return;
+      setState(() {
+        _collegeDisplay = collegeLabel;
+        _programDisplay = programLabel;
+      });
+      return;
+    } catch (_) {
+      // Keep profile readable with stored IDs if lookup is unavailable.
+    }
+
+    if (!mounted || seq != _studentLookupSeq) return;
+    setState(() {
+      _collegeDisplay = '--';
+      _programDisplay = '--';
+    });
   }
 
   Future<void> _loadSystemPreferences() async {
@@ -231,7 +300,19 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
   Future<String> _resolvePhotoUrl(String source) async {
     final value = source.trim();
     if (value.isEmpty) return '';
-    if (_isHttpPhotoUrl(value)) return value;
+    if (_isHttpPhotoUrl(value)) {
+      if (value.contains('firebasestorage.googleapis.com') ||
+          value.contains('firebasestorage.app')) {
+        try {
+          return await FirebaseStorage.instance
+              .refFromURL(value)
+              .getDownloadURL();
+        } catch (_) {
+          return value;
+        }
+      }
+      return value;
+    }
     try {
       if (value.startsWith('gs://')) {
         return await FirebaseStorage.instance
@@ -247,20 +328,41 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
   Widget _buildProfilePhotoAvatar(String sourceUrl) {
     final source = sourceUrl.trim();
     const fallback = Icon(Icons.person_rounded, color: hint, size: 30);
+    final fallbackAvatar = Container(
+      width: 60,
+      height: 60,
+      decoration: const BoxDecoration(
+        color: Color(0xFFF2F5F2),
+        shape: BoxShape.circle,
+      ),
+      alignment: Alignment.center,
+      child: fallback,
+    );
 
-    if (source.isEmpty) {
-      return CircleAvatar(
-        radius: 30,
-        backgroundColor: Color(0xFFF2F5F2),
-        child: fallback,
+    Widget photoAvatar(String url) {
+      return ClipOval(
+        child: Image.network(
+          url,
+          width: 60,
+          height: 60,
+          fit: BoxFit.cover,
+          webHtmlElementStrategy: WebHtmlElementStrategy.prefer,
+          errorBuilder: (_, __, ___) => fallbackAvatar,
+        ),
       );
     }
 
+    if (source.isEmpty) {
+      return fallbackAvatar;
+    }
+
     if (_isHttpPhotoUrl(source)) {
-      return CircleAvatar(
-        radius: 30,
-        backgroundColor: const Color(0xFFF2F5F2),
-        foregroundImage: NetworkImage(source),
+      return FutureBuilder<String>(
+        future: _resolvePhotoUrl(source),
+        builder: (context, snapshot) {
+          final resolved = (snapshot.data ?? source).trim();
+          return resolved.isEmpty ? fallbackAvatar : photoAvatar(resolved);
+        },
       );
     }
 
@@ -268,12 +370,7 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
       future: _resolvePhotoUrl(source),
       builder: (context, snapshot) {
         final resolved = (snapshot.data ?? '').trim();
-        return CircleAvatar(
-          radius: 30,
-          backgroundColor: const Color(0xFFF2F5F2),
-          foregroundImage: resolved.isEmpty ? null : NetworkImage(resolved),
-          child: resolved.isEmpty ? fallback : null,
-        );
+        return resolved.isEmpty ? fallbackAvatar : photoAvatar(resolved);
       },
     );
   }
@@ -296,13 +393,13 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
   }
 
   Widget _buildCombinedUserLogsList({required String uid}) {
-    final profileLogsStream = FirebaseFirestore.instance
+    final profileLogsStream = AppFirestore.instance
         .collection('users')
         .doc(uid)
         .collection('profile_logs')
         .orderBy('createdAtEpochMs', descending: true)
         .snapshots();
-    final authLogsStream = FirebaseFirestore.instance
+    final authLogsStream = AppFirestore.instance
         .collection('users')
         .doc(uid)
         .collection('auth_logs')
@@ -363,7 +460,7 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
               });
             }
 
-            DateTime _entryDate(Map<String, dynamic> entry) {
+            DateTime entryDate(Map<String, dynamic> entry) {
               final data =
                   (entry['data'] as Map<String, dynamic>?) ??
                   <String, dynamic>{};
@@ -373,7 +470,7 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
                   );
             }
 
-            entries.sort((a, b) => _entryDate(b).compareTo(_entryDate(a)));
+            entries.sort((a, b) => entryDate(b).compareTo(entryDate(a)));
 
             if (entries.isEmpty) {
               return const Center(
@@ -404,11 +501,12 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
                 final details = (data['details'] ?? data['description'] ?? '')
                     .toString()
                     .trim();
-                final actorName = (data['actorName'] ?? data['actor'] ?? 'System')
-                    .toString()
-                    .trim();
+                final actorName =
+                    (data['actorName'] ?? data['actor'] ?? 'System')
+                        .toString()
+                        .trim();
                 final actorRole = (data['actorRole'] ?? '').toString().trim();
-                final createdAt = _entryDate(entry);
+                final createdAt = entryDate(entry);
 
                 Color chipColor = Colors.blueGrey;
                 switch (action) {
@@ -572,9 +670,7 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
                   ),
                 ),
                 const Divider(height: 1),
-                Expanded(
-                  child: _buildCombinedUserLogsList(uid: uid),
-                ),
+                Expanded(child: _buildCombinedUserLogsList(uid: uid)),
               ],
             ),
           ),
@@ -615,35 +711,112 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
     );
   }
 
+  Widget _plainDetailField({
+    required String label,
+    required String value,
+    required IconData icon,
+  }) {
+    final displayValue = value.trim().isEmpty ? '--' : value.trim();
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 34,
+          height: 34,
+          decoration: BoxDecoration(
+            color: primary.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Icon(icon, color: primary, size: 18),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: const TextStyle(
+                  color: hint,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 12,
+                ),
+              ),
+              const SizedBox(height: 3),
+              Text(
+                displayValue,
+                style: const TextStyle(
+                  color: textDark,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 14,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _profileField({
+    required String label,
+    required IconData icon,
+    required TextEditingController controller,
+    bool editable = true,
+    String? readOnlyValue,
+    String? Function(String?)? validator,
+  }) {
+    if (!_editing || !editable) {
+      return _plainDetailField(
+        label: label,
+        icon: icon,
+        value: readOnlyValue ?? controller.text,
+      );
+    }
+    return TextFormField(
+      controller: controller,
+      readOnly: false,
+      decoration: _decor(label: label, icon: icon, enabled: true),
+      validator: validator,
+      style: const TextStyle(fontWeight: FontWeight.w700, color: textDark),
+    );
+  }
+
   Widget _section({required String title, required List<Widget> children}) {
     return Container(
+      clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(12),
         border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.02),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
-          ),
-        ],
       ),
-      padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            title.toUpperCase(),
-            style: const TextStyle(
-              color: hint,
-              fontWeight: FontWeight.w900,
-              fontSize: 12,
-              letterSpacing: 1,
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            decoration: BoxDecoration(
+              border: Border(
+                bottom: BorderSide(color: Colors.black.withValues(alpha: 0.08)),
+              ),
+            ),
+            child: Text(
+              title,
+              style: const TextStyle(
+                color: primary,
+                fontWeight: FontWeight.w900,
+                fontSize: 16,
+              ),
             ),
           ),
-          const SizedBox(height: 12),
-          ...children,
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: children,
+            ),
+          ),
         ],
       ),
     );
@@ -682,10 +855,7 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
     return Scaffold(
       backgroundColor: bg,
       body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-        stream: FirebaseFirestore.instance
-            .collection('users')
-            .doc(uid)
-            .snapshots(),
+        stream: AppFirestore.instance.collection('users').doc(uid).snapshots(),
         builder: (context, snap) {
           if (snap.hasError) {
             return Center(child: Text('Error: ${snap.error}'));
@@ -807,13 +977,12 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
                                     ],
                                   ],
                                 ),
-                                if (compact)
-                                  const SizedBox(height: 10),
+                                if (compact) const SizedBox(height: 10),
                                 if (compact)
                                   SizedBox(
                                     width: double.infinity,
                                     child: logsButton,
-                                  )
+                                  ),
                               ],
                             );
                           },
@@ -824,64 +993,33 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
                         title: 'Basic Information',
                         children: [
                           _row([
-                            TextFormField(
+                            _profileField(
+                              label: 'First Name',
+                              icon: Icons.person_outline,
                               controller: _firstNameCtrl,
-                              readOnly: !_editing,
-                              decoration: _decor(
-                                label: 'First Name',
-                                icon: Icons.person_outline,
-                                enabled: _editing,
-                              ),
                               validator: (v) =>
                                   (v ?? '').trim().isEmpty ? 'Required' : null,
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w700,
-                                color: textDark,
-                              ),
                             ),
-                            TextFormField(
+                            _profileField(
+                              label: 'Last Name',
+                              icon: Icons.person_outline,
                               controller: _lastNameCtrl,
-                              readOnly: !_editing,
-                              decoration: _decor(
-                                label: 'Last Name',
-                                icon: Icons.person_outline,
-                                enabled: _editing,
-                              ),
                               validator: (v) =>
                                   (v ?? '').trim().isEmpty ? 'Required' : null,
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w700,
-                                color: textDark,
-                              ),
                             ),
                           ]),
                           const SizedBox(height: 12),
                           _row([
-                            TextFormField(
+                            _profileField(
+                              label: 'Middle Name',
+                              icon: Icons.person_outline,
                               controller: _middleNameCtrl,
-                              readOnly: !_editing,
-                              decoration: _decor(
-                                label: 'Middle Name',
-                                icon: Icons.person_outline,
-                                enabled: _editing,
-                              ),
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w700,
-                                color: textDark,
-                              ),
                             ),
-                            TextFormField(
+                            _profileField(
+                              label: 'Email Address',
+                              icon: Icons.email_outlined,
                               controller: _emailCtrl,
-                              readOnly: true,
-                              decoration: _decor(
-                                label: 'Email Address',
-                                icon: Icons.email_outlined,
-                                enabled: false,
-                              ),
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w700,
-                                color: textDark,
-                              ),
+                              editable: false,
                             ),
                           ]),
                         ],
@@ -894,93 +1032,58 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
                         children: _isStudent
                             ? [
                                 _row([
-                                  TextFormField(
+                                  _profileField(
+                                    label: 'Student Number',
+                                    icon: Icons.badge_outlined,
                                     controller: _studentNoCtrl,
-                                    readOnly: true,
-                                    decoration: _decor(
-                                      label: 'Student Number',
-                                      icon: Icons.badge_outlined,
-                                      enabled: false,
-                                    ),
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.w700,
-                                      color: textDark,
-                                    ),
+                                    editable: false,
                                   ),
                                 ]),
                                 const SizedBox(height: 12),
                                 _row([
-                                  TextFormField(
+                                  _profileField(
+                                    label: 'College',
+                                    icon: Icons.account_balance_outlined,
                                     controller: _collegeCtrl,
-                                    readOnly: !_editing,
-                                    decoration: _decor(
-                                      label: 'College',
-                                      icon: Icons.account_balance_outlined,
-                                      enabled: _editing,
-                                    ),
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.w700,
-                                      color: textDark,
-                                    ),
+                                    readOnlyValue:
+                                        _collegeDisplay.trim().isEmpty
+                                        ? 'Loading...'
+                                        : _collegeDisplay,
                                   ),
-                                  TextFormField(
+                                  _profileField(
+                                    label: 'Program/Course',
+                                    icon: Icons.school_outlined,
                                     controller: _programCtrl,
-                                    readOnly: !_editing,
-                                    decoration: _decor(
-                                      label: 'Program/Course',
-                                      icon: Icons.school_outlined,
-                                      enabled: _editing,
-                                    ),
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.w700,
-                                      color: textDark,
-                                    ),
+                                    readOnlyValue:
+                                        _programDisplay.trim().isEmpty
+                                        ? 'Loading...'
+                                        : _programDisplay,
                                   ),
                                 ]),
                               ]
                             : [
                                 _row([
-                                  TextFormField(
+                                  _profileField(
+                                    label: 'Employee ID',
+                                    icon: Icons.badge_outlined,
                                     controller: _employeeNoCtrl,
-                                    readOnly: true,
-                                    decoration: _decor(
-                                      label: 'Employee ID',
-                                      icon: Icons.badge_outlined,
-                                      enabled: false,
-                                    ),
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.w700,
-                                      color: textDark,
-                                    ),
+                                    editable: false,
                                   ),
                                   if (_roleNeedsDepartment)
-                                    TextFormField(
+                                    _profileField(
+                                      label: 'College',
+                                      icon: Icons.business_outlined,
                                       controller: _departmentCtrl,
-                                      readOnly: !_editing,
-                                      decoration: _decor(
-                                        label: 'Department',
-                                        icon: Icons.business_outlined,
-                                        enabled: _editing,
-                                      ),
-                                      style: const TextStyle(
-                                        fontWeight: FontWeight.w700,
-                                        color: textDark,
-                                      ),
+                                      readOnlyValue:
+                                          _collegeDisplay.trim().isEmpty
+                                          ? 'Loading...'
+                                          : _collegeDisplay,
                                     )
                                   else
-                                    TextFormField(
-                                      initialValue: _roleLabel(_role),
-                                      readOnly: true,
-                                      decoration: _decor(
-                                        label: 'Account Type',
-                                        icon:
-                                            Icons.admin_panel_settings_outlined,
-                                        enabled: false,
-                                      ),
-                                      style: const TextStyle(
-                                        fontWeight: FontWeight.w700,
-                                        color: textDark,
-                                      ),
+                                    _plainDetailField(
+                                      label: 'Account Type',
+                                      icon: Icons.admin_panel_settings_outlined,
+                                      value: _roleLabel(_role),
                                     ),
                                 ]),
                               ],

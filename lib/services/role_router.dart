@@ -1,16 +1,9 @@
-import 'package:apps/pages/osa_admin/osa_dashboard.dart';
-import 'package:apps/pages/department_admin/department_admin_dashboard.dart';
-import 'package:apps/pages/counseling_admin/counseling_dashboard.dart';
-import 'package:apps/pages/guard/guard_dashboard.dart';
-import 'package:apps/pages/professor/professor_dashboard.dart';
+import 'package:go_router/go_router.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-
-import '../pages/student/student_dashboard.dart';
-import '../pages/auth/complete_profile_page.dart';
-import '../pages/shared/pending_approval_page.dart';
-import '../pages/super_admin/super_admin_dashboard.dart';
+import 'package:apps/services/app_firestore.dart';
+import 'package:apps/services/app_router.dart';
 
 class RoleRouter {
   static Future<void> route(
@@ -21,7 +14,7 @@ class RoleRouter {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
       // If you have a welcome route, send them there safely
-      Navigator.pushNamedAndRemoveUntil(context, '/welcome', (r) => false);
+      context.go(AppRoutes.welcome);
       return;
     }
 
@@ -41,7 +34,7 @@ class RoleRouter {
     final uid = user.uid;
 
     // ✅ Handle missing Firestore user doc safely
-    final usersRef = FirebaseFirestore.instance.collection('users').doc(uid);
+    final usersRef = AppFirestore.instance.collection('users').doc(uid);
     DocumentSnapshot<Map<String, dynamic>> doc;
     if (fastPathForSplash) {
       // Try cache first for faster startup; fall back to server when needed.
@@ -61,7 +54,7 @@ class RoleRouter {
       // No doc means app logic didn't create it yet (or deleted); force safe exit
       await FirebaseAuth.instance.signOut();
       if (!context.mounted) return;
-      Navigator.pushNamedAndRemoveUntil(context, '/welcome', (r) => false);
+      context.go(AppRoutes.welcome);
       return;
     }
 
@@ -140,15 +133,17 @@ class RoleRouter {
         await syncStudentVerification('pending_email_verification');
         if (!context.mounted) return;
       }
+      final email = (freshUser.email ?? '').trim();
+      await FirebaseAuth.instance.signOut();
       if (!context.mounted) return;
-      Navigator.pushNamedAndRemoveUntil(
-        context,
-        '/verify-email',
-        (r) => false,
-        arguments: {
-          'source': 'logged_unverified',
-          'prefillEmail': freshUser.email ?? '',
-        },
+      context.go(
+        Uri(
+          path: AppRoutes.login,
+          queryParameters: {
+            if (email.isNotEmpty) 'prefillEmail': email,
+            'reason': 'unverified',
+          },
+        ).toString(),
       );
       return;
     }
@@ -156,7 +151,7 @@ class RoleRouter {
     if (effectiveAccountStatus != 'active') {
       await FirebaseAuth.instance.signOut();
       if (!context.mounted) return;
-      Navigator.pushNamedAndRemoveUntil(context, '/welcome', (r) => false);
+      context.go(AppRoutes.welcome);
       return;
     }
 
@@ -171,94 +166,70 @@ class RoleRouter {
 
       if (effectiveStudentVerification == 'pending_profile') {
         if (!context.mounted) return;
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (_) => const CompleteProfilePage()),
-        );
+        context.go(AppRoutes.completeProfile);
         return;
       }
 
       if (effectiveStudentVerification == 'rejected') {
         if (!context.mounted) return;
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (_) => const CompleteProfilePage()),
-        );
+        context.go(AppRoutes.completeProfile);
         return;
       }
 
       if (effectiveStudentVerification == 'pending_approval') {
         if (!context.mounted) return;
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (_) => const PendingApprovalPage()),
-        );
+        context.go(AppRoutes.pendingApproval);
         return;
       }
 
       if (effectiveStudentVerification == 'verified') {
         if (!context.mounted) return;
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (_) => const StudentDashboard()),
-        );
+        context.go(AppRoutes.studentDefault());
         return;
       }
 
       // Unknown status: safe fallback (avoid confusing access)
       await FirebaseAuth.instance.signOut();
       if (!context.mounted) return;
-      Navigator.pushNamedAndRemoveUntil(context, '/welcome', (r) => false);
+      context.go(AppRoutes.welcome);
       return;
     }
 
     // SUPER ADMIN (for testing)
     if (role == 'super_admin') {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (_) => const SuperAdminDashboard()),
-      );
+      if (!context.mounted) return;
+      context.go(AppRoutes.superAdminDefault());
       return;
     }
     if (role == 'professor') {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (_) => const ProfessorDashboard()),
-      );
+      if (!context.mounted) return;
+      context.go(AppRoutes.professorDefault());
       return;
     }
     if (role == 'osa_admin') {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (_) => const OsaDashboard()),
-      );
+      if (!context.mounted) return;
+      context.go(AppRoutes.osaAdminDefault());
       return;
     }
     if (role == 'department_admin' || role == 'dean') {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (_) => const DepartmentAdminDashboard()),
-      );
+      if (!context.mounted) return;
+      context.go(AppRoutes.departmentAdminDefault());
       return;
     }
     if (role == 'counseling_admin') {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (_) => const CounselingDashboard()),
-      );
+      if (!context.mounted) return;
+      context.go(AppRoutes.counselingAdminDefault());
       return;
     }
     if (role == 'guard') {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (_) => const GuardDashboard()),
-      );
+      if (!context.mounted) return;
+      context.go(AppRoutes.guardDefault());
       return;
     }
 
     // Default: unknown role -> fail safe to avoid hanging on login.
     await FirebaseAuth.instance.signOut();
     if (!context.mounted) return;
-    Navigator.pushNamedAndRemoveUntil(context, '/welcome', (r) => false);
+    context.go(AppRoutes.welcome);
   }
 }

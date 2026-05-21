@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import '../auth/login_page.dart';
+import 'package:go_router/go_router.dart';
 
 class LandingPage extends StatelessWidget {
   const LandingPage({super.key});
@@ -26,11 +26,7 @@ class LandingPage extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     // App icon / logo
-                    Icon(
-                      Icons.school,
-                      size: iconSize,
-                      color: Colors.green,
-                    ),
+                    Icon(Icons.school, size: iconSize, color: Colors.green),
 
                     const SizedBox(height: 20),
 
@@ -50,12 +46,7 @@ class LandingPage extends StatelessWidget {
                     // Login button
                     ElevatedButton(
                       onPressed: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (context) => const LoginPage(),
-                          ),
-                        );
+                        context.go('/login');
                       },
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.green,

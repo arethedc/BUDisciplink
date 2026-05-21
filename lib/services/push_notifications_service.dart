@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
+import 'package:apps/services/app_firestore.dart';
 
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
@@ -133,7 +134,7 @@ class PushNotificationsService {
     required String token,
   }) async {
     try {
-      await FirebaseFirestore.instance
+      await AppFirestore.instance
           .collection('users')
           .doc(uid)
           .collection('fcmTokens')
@@ -156,7 +157,7 @@ class PushNotificationsService {
     required String token,
   }) async {
     try {
-      await FirebaseFirestore.instance
+      await AppFirestore.instance
           .collection('users')
           .doc(uid)
           .collection('fcmTokens')

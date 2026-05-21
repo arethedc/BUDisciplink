@@ -2,6 +2,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import '../shared/widgets/app_branding.dart';
 import 'package:apps/pages/shared/widgets/app_inline_notice.dart';
 
@@ -66,7 +67,7 @@ class _SetPasswordPageState extends State<SetPasswordPage> {
 
   String _resolveSetPasswordContinueUrl(String email) {
     if (kIsWeb) {
-      return '${Uri.base.origin}/#/set-password?prefillEmail=${Uri.encodeComponent(email)}&source=signup';
+      return '${Uri.base.origin}/set-password?prefillEmail=${Uri.encodeComponent(email)}&source=signup';
     }
     const configured = String.fromEnvironment('PASSWORD_RESET_CONTINUE_URL');
     return configured;
@@ -74,7 +75,7 @@ class _SetPasswordPageState extends State<SetPasswordPage> {
 
   String _resolveVerifyContinueUrl(String email) {
     if (kIsWeb) {
-      return '${Uri.base.origin}/#/verify-email?prefillEmail=${Uri.encodeComponent(email)}&source=signup';
+      return '${Uri.base.origin}/verify-email?prefillEmail=${Uri.encodeComponent(email)}&source=signup';
     }
     const configured = String.fromEnvironment('PASSWORD_VERIFY_CONTINUE_URL');
     if (configured.isNotEmpty) return configured;
@@ -320,11 +321,11 @@ class _SetPasswordPageState extends State<SetPasswordPage> {
           backgroundColor: Colors.green,
         ),
       );
-      Navigator.pushNamedAndRemoveUntil(
-        context,
-        '/login',
-        (_) => false,
-        arguments: {'prefillEmail': _emailCtrl.text.trim()},
+      context.go(
+        Uri(
+          path: '/login',
+          queryParameters: {'prefillEmail': _emailCtrl.text.trim()},
+        ).toString(),
       );
     } on FirebaseAuthException catch (e) {
       var msg = e.message ?? 'Failed to set password.';
@@ -632,16 +633,15 @@ class _SetPasswordPageState extends State<SetPasswordPage> {
                                 SizedBox(
                                   height: 50,
                                   child: ElevatedButton(
-                                    onPressed: () =>
-                                        Navigator.pushNamedAndRemoveUntil(
-                                          context,
-                                          '/login',
-                                          (_) => false,
-                                          arguments: {
-                                            'prefillEmail': _emailCtrl.text
-                                                .trim(),
-                                          },
-                                        ),
+                                    onPressed: () => context.go(
+                                      Uri(
+                                        path: '/login',
+                                        queryParameters: {
+                                          'prefillEmail': _emailCtrl.text
+                                              .trim(),
+                                        },
+                                      ).toString(),
+                                    ),
                                     style: ElevatedButton.styleFrom(
                                       backgroundColor: primary,
                                       foregroundColor: Colors.white,
@@ -849,12 +849,7 @@ class _SetPasswordPageState extends State<SetPasswordPage> {
                                 ),
                                 const SizedBox(height: 8),
                                 TextButton(
-                                  onPressed: () =>
-                                      Navigator.pushNamedAndRemoveUntil(
-                                        context,
-                                        '/login',
-                                        (_) => false,
-                                      ),
+                                  onPressed: () => context.go('/login'),
                                   child: const Text('Back to Login'),
                                 ),
                               ],
@@ -870,4 +865,3 @@ class _SetPasswordPageState extends State<SetPasswordPage> {
     );
   }
 }
-

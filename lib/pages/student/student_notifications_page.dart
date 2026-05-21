@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:apps/pages/shared/widgets/app_layout_tokens.dart';
+import 'package:apps/services/app_firestore.dart';
 
 enum _StudentNotificationsFilter { all, unread }
 
@@ -35,7 +36,7 @@ class _StudentNotificationsPageState extends State<StudentNotificationsPage> {
     }
 
     // Read from a per-user notifications subcollection to avoid collectionGroup indexes.
-    final stream = FirebaseFirestore.instance
+    final stream = AppFirestore.instance
         .collection('users')
         .doc(user.uid)
         .collection('notifications')
